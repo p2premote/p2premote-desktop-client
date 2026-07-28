@@ -1,0 +1,742 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineConfig {
+    pub server_url: String,
+    pub auth_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub access_token_expires_at: Option<i64>,
+    pub user_email: Option<String>,
+    pub device_id: Option<i64>,
+    pub device_uuid: Option<String>,
+    /// 桌面端克隆检测基线；移动端不采集。
+    #[serde(default)]
+    pub device_fingerprint: Option<String>,
+    #[serde(default)]
+    pub device_fingerprint_platform: Option<String>,
+    #[serde(default)]
+    pub device_fingerprint_version: u32,
+    /// WireGuard CLI 调试覆盖路径。Windows 用户态 WG 忽略该字段；Linux 默认
+    /// 固定使用安装包内的静态 wg，仅保留自定义绝对路径用于诊断。
+    #[serde(default)]
+    pub wg_path: String,
+    /// 旧版 WireGuard Tunnel Service 路径。Windows 正常运行已忽略，仅用于覆盖升级时
+    /// 清理仍存在于旧安装目录的 wg0；Linux 用户态回退也忽略该旧字段，固定使用包内
+    /// wireguard-go。
+    #[serde(default)]
+    pub wireguard_path: String,
+    /// p2premote-punch 动态库路径（gonc wgvpn FFI）。
+    #[serde(default)]
+    pub p2p_punch_path: String,
+    /// Service 日志级别。由 service 使用，GUI 不提供自定义入口。
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    #[serde(default)]
+    pub auto_start: bool,
+    /// 加密的保存密码（用于自动登录）。存 machine config 供 service 与 UI 共用。
+    #[serde(default)]
+    pub saved_password: Option<String>,
+    /// 是否记住密码
+    #[serde(default)]
+    pub remember_me: bool,
+    /// 是否自动登录
+    #[serde(default)]
+    pub auto_login: bool,
+    /// wgvpn LAN 访问配置，由 service 持久化，GUI/web 只通过 IPC 读写。
+    #[serde(default)]
+    pub wgvpn_lan_access_enabled: bool,
+    #[serde(default)]
+    pub wgvpn_lan_cidrs: Vec<String>,
+    /// UI 语言（"zh-CN" | "en"）。None/空 表示未设置，由前端探测系统语言后写入。
+    /// service 侧仅持久化与缓存，供批次4 后端 message 按语言选词。
+    #[serde(default)]
+    pub locale: Option<String>,
+    /// 允许访问 Web UI 的单个远端 IP。空值表示仅允许本机回环地址。
+    #[serde(default)]
+    pub web_admin_allowed_ip: Option<String>,
+    /// Web UI 安全码。启用远端访问时必须配置；不限制复杂度。
+    #[serde(default)]
+    pub web_admin_security_code: Option<String>,
+    /// 是否启动 Web UI 监听。默认开启，关闭后需重启 service 才会生效。
+    #[serde(default = "default_webui_enabled")]
+    pub webui_enabled: bool,
+    /// 本机本次网络检测得到的公网 IP；service 启动时清空，防止复用陈旧网络信息。
+    #[serde(default)]
+    pub cached_public_ip: Option<String>,
+    /// 与 cached_public_ip 配套的展示归属地。
+    #[serde(default)]
+    pub cached_public_ip_location: Option<String>,
+    #[serde(default)]
+    pub cached_public_network_checked_at: i64,
+}
+
+impl Default for MachineConfig {
+    fn default() -> Self {
+        Self {
+            server_url: "https://cli.p2premote.top".to_string(),
+            auth_token: None,
+            refresh_token: None,
+            access_token_expires_at: None,
+            user_email: None,
+            device_id: None,
+            device_uuid: None,
+            device_fingerprint: None,
+            device_fingerprint_platform: None,
+            device_fingerprint_version: 0,
+            wg_path: if cfg!(windows) {
+                String::new()
+            } else {
+                default_wg_path().to_string_lossy().to_string()
+            },
+            wireguard_path: String::new(),
+            p2p_punch_path: default_p2p_punch_path().to_string_lossy().to_string(),
+            log_level: default_log_level(),
+            auto_start: false,
+            saved_password: None,
+            remember_me: false,
+            auto_login: false,
+            wgvpn_lan_access_enabled: false,
+            wgvpn_lan_cidrs: Vec::new(),
+            locale: None,
+            web_admin_allowed_ip: None,
+            web_admin_security_code: None,
+            webui_enabled: true,
+            cached_public_ip: None,
+            cached_public_ip_location: None,
+            cached_public_network_checked_at: 0,
+        }
+    }
+}
+
+/// 旧进程留下的公网网络信息不能跨 service 重启复用。
+pub fn clear_cached_public_network_info() -> Result<()> {
+    let mut config = load_machine_config()?;
+    if config.cached_public_ip.is_some() || config.cached_public_ip_location.is_some() {
+        config.cached_public_ip = None;
+        config.cached_public_ip_location = None;
+        config.cached_public_network_checked_at = 0;
+        save_machine_config(&config)?;
+    }
+    Ok(())
+}
+
+pub fn platform_executable_name(base: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("{}.exe", base)
+    }
+
+    #[cfg(not(windows))]
+    {
+        base.to_string()
+    }
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_webui_enabled() -> bool {
+    true
+}
+
+pub fn default_service_binary_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "p2premote-service.exe"
+    }
+
+    #[cfg(not(windows))]
+    {
+        "p2premote-service"
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_install_root_dir() -> PathBuf {
+    if let Ok(root) = std::env::var("P2PREMOTE_INSTALL_ROOT") {
+        let path = PathBuf::from(root);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    if exe_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name == "resources")
+        .unwrap_or(false)
+    {
+        return exe_dir.parent().map(|p| p.to_path_buf()).unwrap_or(exe_dir);
+    }
+
+    exe_dir
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_resources_dir() -> PathBuf {
+    linux_install_root_dir().join("resources")
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_run_dir() -> PathBuf {
+    linux_install_root_dir().join("run")
+}
+
+pub fn default_wireguard_binary_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "wireguard.exe"
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        "wireguard-go"
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
+    {
+        "wireguard"
+    }
+}
+
+pub fn default_wireguard_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        return linux_resources_dir().join(default_wireguard_binary_name());
+    }
+
+    #[cfg(windows)]
+    {
+        return install_root_dir()
+            .join("resources")
+            .join(default_wireguard_binary_name());
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(windows)))]
+    {
+        PathBuf::from(default_wireguard_binary_name())
+    }
+}
+
+/// wg.exe（命令行工具）默认二进制名。
+pub fn default_wg_binary_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "wg.exe"
+    }
+
+    #[cfg(not(windows))]
+    {
+        "wg"
+    }
+}
+
+/// WireGuard CLI 默认路径。Linux 固定使用安装包内的静态二进制，不依赖系统
+/// wireguard-tools 或 glibc；Windows 路径仅用于识别和清理旧版本遗留资源。
+pub fn default_wg_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        return linux_resources_dir().join(default_wg_binary_name());
+    }
+
+    #[cfg(windows)]
+    {
+        return install_root_dir()
+            .join("resources")
+            .join(default_wg_binary_name());
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(windows)))]
+    {
+        PathBuf::from(default_wg_binary_name())
+    }
+}
+
+/// 解析 WireGuard CLI 路径。Linux 将旧版本保存的 PATH 命令 `wg` 迁移到随包
+/// 静态二进制；显式自定义路径仍保留，便于诊断和开发环境覆盖。
+pub fn effective_wg_path(configured: &str) -> PathBuf {
+    let configured = configured.trim();
+    #[cfg(target_os = "linux")]
+    {
+        if configured.is_empty() || PathBuf::from(configured) == PathBuf::from("wg") {
+            return default_wg_path();
+        }
+    }
+
+    if configured.is_empty() {
+        default_wg_path()
+    } else {
+        PathBuf::from(configured)
+    }
+}
+
+pub fn default_p2p_punch_binary_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "p2premote-punch.dll"
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        "libp2premote-punch.a"
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
+    {
+        "libp2premote-punch.dylib"
+    }
+}
+
+pub fn default_p2p_punch_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        return linux_resources_dir().join(default_p2p_punch_binary_name());
+    }
+
+    #[cfg(windows)]
+    {
+        return install_root_dir()
+            .join("resources")
+            .join(default_p2p_punch_binary_name());
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(windows)))]
+    {
+        PathBuf::from(default_p2p_punch_binary_name())
+    }
+}
+
+pub fn default_service_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        return linux_resources_dir().join(default_service_binary_name());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        PathBuf::from(default_service_binary_name())
+    }
+}
+
+/// Windows 安装根目录。
+///
+/// Tauri 主程序位于安装根目录，service / cli 位于 `resources` 子目录。
+/// 因此不能直接使用 `current_exe().parent()/data`，否则 UI 会写 `$INSTDIR/data`，
+/// service 会写 `$INSTDIR/resources/data`，导致登录态和配置分裂。
+#[cfg(windows)]
+pub fn install_root_dir() -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    if exe_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("resources"))
+        .unwrap_or(false)
+    {
+        return exe_dir.parent().map(|p| p.to_path_buf()).unwrap_or(exe_dir);
+    }
+
+    exe_dir
+}
+
+/// 运行时数据根目录。
+///
+/// Windows: 安装根目录下 `data` 子目录。只支持管理员安装/使用，不做多用户隔离。
+/// Linux: 安装根目录下 `data` 子目录，对齐 Windows 的单 prefix 布局。
+pub fn install_data_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        return install_root_dir().join("data");
+    }
+
+    #[cfg(not(windows))]
+    {
+        linux_install_root_dir().join("data")
+    }
+}
+
+/// 运行时配置目录（machine config）。
+pub fn machine_config_dir() -> PathBuf {
+    install_data_dir()
+}
+
+/// 运行时日志目录。
+pub fn machine_log_dir() -> PathBuf {
+    // 允许通过环境变量覆盖（调试/运维用）
+    if let Ok(log_dir) = std::env::var("P2PREMOTE_SERVICE_LOG_DIR") {
+        let path = PathBuf::from(log_dir);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    #[cfg(windows)]
+    {
+        return install_data_dir().join("logs");
+    }
+
+    #[cfg(not(windows))]
+    {
+        linux_install_root_dir().join("logs")
+    }
+}
+
+pub fn machine_config_path() -> PathBuf {
+    machine_config_dir().join("config.json")
+}
+
+/// 进程内只设置一次权限
+static DIR_PERMISSIONS_SET: AtomicBool = AtomicBool::new(false);
+
+pub fn ensure_machine_dirs() -> Result<()> {
+    let config_dir = machine_config_dir();
+    #[cfg(target_os = "linux")]
+    {
+        fs::create_dir_all(linux_resources_dir())
+            .context("failed to create Linux resources dir")?;
+        fs::create_dir_all(linux_run_dir()).context("failed to create Linux run dir")?;
+    }
+    fs::create_dir_all(&config_dir).context("failed to create machine config dir")?;
+    fs::create_dir_all(machine_log_dir()).context("failed to create machine log dir")?;
+    if !DIR_PERMISSIONS_SET.swap(true, Ordering::SeqCst) {
+        secure_config_dir(&config_dir);
+    }
+    Ok(())
+}
+
+/// 收紧配置目录权限：仅 SYSTEM + Administrators 可访问
+fn secure_config_dir(dir: &Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let dir_str = match dir.to_str() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let output = std::process::Command::new("icacls")
+            .args([
+                dir_str,
+                "/inheritance:r",
+                "/grant:r",
+                "SYSTEM:(OI)(CI)F",
+                "/grant:r",
+                "Administrators:(OI)(CI)F",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                tracing::info!("[config] secured directory: {}", dir_str);
+            }
+            Ok(out) => {
+                // 非 admin 进程会失败，service 以 SYSTEM 运行时下次启动会修复
+                tracing::debug!(
+                    "[config] icacls failed (non-admin?): {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            Err(e) => {
+                tracing::debug!("[config] failed to run icacls: {}", e);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // 仅 service 所属用户可访问（与 Windows 下"仅 SYSTEM+Admins"语义一致）。
+        // machine config 含 token/saved_password，不能全局可读写（旧版 0o777 是安全隐患）。
+        if let Err(e) = fs::set_permissions(dir, fs::Permissions::from_mode(0o700)) {
+            tracing::warn!("[config] chmod 700 failed: {}", e);
+        }
+    }
+}
+
+pub fn load_machine_config() -> Result<MachineConfig> {
+    let path = machine_config_path();
+    if !path.exists() {
+        return Ok(MachineConfig::default());
+    }
+
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read machine config: {}", path.display()))?;
+    let cfg = parse_machine_config(&content)
+        .with_context(|| format!("failed to parse machine config: {}", path.display()))?;
+    Ok(cfg)
+}
+
+/// 配置文件允许 JSONC 注释和尾随逗号，便于用户直接维护 `config.json`。
+fn parse_machine_config(content: &str) -> Result<MachineConfig> {
+    json5::from_str::<MachineConfig>(content).context("invalid JSONC configuration")
+}
+
+pub fn save_machine_config(config: &MachineConfig) -> Result<()> {
+    ensure_machine_dirs()?;
+    atomic_write_json(&machine_config_path(), config)
+}
+
+/// 清除所有凭据：token/refresh/expires/user_email/device + saved_password/remember_me/auto_login。
+///
+/// 用于登出——确保登出后下次启动不会自动登录，符合"登出即忘记此设备凭据"的安全预期。
+pub fn clear_machine_credentials(config: &mut MachineConfig) {
+    config.auth_token = None;
+    config.refresh_token = None;
+    config.access_token_expires_at = None;
+    config.user_email = None;
+    config.device_id = None;
+    config.saved_password = None;
+    config.remember_me = false;
+    config.auto_login = false;
+}
+
+pub fn ensure_machine_config() -> Result<MachineConfig> {
+    ensure_machine_dirs()?;
+    Ok(load_machine_config().unwrap_or_default())
+}
+
+/// 从机器指纹派生 IPC control secret，不存盘
+pub fn derive_control_secret() -> String {
+    let fingerprint = get_machine_fingerprint();
+    let mut hasher = Sha256::new();
+    hasher.update(b"p2premote-ipc-secret:");
+    hasher.update(fingerprint.as_bytes());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .take(32)
+        .collect()
+}
+
+/// 跨平台机器指纹，仅用于派生本机 IPC control secret。
+///
+/// Windows 读 HKLM MachineGuid（SYSTEM 与普通用户均可读，与进程身份无关），
+/// 因此 service 与 UI 能算出同一指纹。
+pub fn get_machine_fingerprint() -> String {
+    #[cfg(windows)]
+    {
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+        use winreg::RegKey;
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        if let Ok(key) = hklm.open_subkey(r"SOFTWARE\Microsoft\Cryptography") {
+            if let Ok(guid) = key.get_value::<String, _>("MachineGuid") {
+                return guid.trim().to_string();
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/etc/machine-id") {
+            let id = content.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+        if let Ok(content) = std::fs::read_to_string("/var/lib/dbus/machine-id") {
+            let id = content.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+    }
+
+    hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// saved_password 加密密钥（内置固定，SHA-256 派生保证恰好 32 字节）。
+///
+/// 设计取舍：项目当前只允许管理员安装/使用，不考虑多用户隔离；账号密码仍是敏感数据，
+/// 真正的本地安全边界由受保护的 machine config 目录承担。固定密钥只用于避免
+/// service(SYSTEM) 与 UI 进程因身份不同导致无法互相解密。若未来要支持多用户，
+/// 需要重新设计为按用户隔离的凭据存储，不能继续复用这一策略。
+const SAVED_PASSWORD_KEY_SEED: &[u8] = b"p2premote-saved-password-encryption-key-v1";
+static SAVED_PASSWORD_KEY: once_cell::sync::Lazy<[u8; 32]> =
+    once_cell::sync::Lazy::new(|| Sha256::digest(SAVED_PASSWORD_KEY_SEED).into());
+
+/// 派生密码加密密钥。
+///
+/// 采用内置固定密钥（不依赖 MachineGuid 等机器指纹），简化存储与跨进程一致性。
+pub fn derive_password_key() -> [u8; 32] {
+    *SAVED_PASSWORD_KEY
+}
+
+/// 解密 saved_password（AES-256-GCM，与 UI 侧 encrypt_password 对应）。
+///
+/// 返回明文密码，失败返回 None（如密钥变更导致老数据无法解密）。
+pub fn decrypt_saved_password(encrypted: &str) -> Option<String> {
+    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+    use base64::Engine;
+
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(encrypted)
+        .ok()?;
+    if data.len() < 12 {
+        return None;
+    }
+    let key = derive_password_key();
+    let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
+    let (nonce_bytes, ciphertext) = data.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let plaintext = cipher.decrypt(nonce, ciphertext).ok()?;
+    String::from_utf8(plaintext).ok()
+}
+
+/// 加密 saved_password（AES-256-GCM）。
+///
+/// 与 [`decrypt_saved_password`] 对称，格式 = base64(nonce(12B) || ciphertext)。
+pub fn encrypt_saved_password(password: &str) -> Result<String> {
+    use aes_gcm::aead::Aead;
+    use aes_gcm::{AeadCore, Aes256Gcm, KeyInit};
+    use base64::Engine;
+
+    let key = derive_password_key();
+    let cipher = Aes256Gcm::new_from_slice(&key).context("invalid key length")?;
+    let nonce = Aes256Gcm::generate_nonce(&mut rand::thread_rng());
+    let ciphertext = cipher
+        .encrypt(&nonce, password.as_bytes())
+        .map_err(|e| anyhow::anyhow!("encrypt password failed: {:?}", e))?;
+    let mut data = nonce.to_vec();
+    data.extend_from_slice(&ciphertext);
+    Ok(base64::engine::general_purpose::STANDARD.encode(data))
+}
+
+pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+    }
+
+    let json = serde_json::to_vec_pretty(value).context("failed to serialize json")?;
+    let tmp_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "config.json".into());
+    let tmp_path = path.with_file_name(format!(
+        "{}.{}.{}.tmp",
+        file_name,
+        std::process::id(),
+        tmp_suffix
+    ));
+    fs::write(&tmp_path, &json)
+        .with_context(|| format!("failed to write temp file: {}", tmp_path.display()))?;
+
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        // Windows: rename 失败时（目标文件被 service 持有），回退直接覆盖
+        tracing::debug!(
+            "[config] atomic rename failed: {}, falling back to direct write",
+            e
+        );
+        fs::write(path, &json)
+            .with_context(|| format!("failed to write config file: {}", path.display()))?;
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // 仅 service 所属用户可读写（machine config 含 token/saved_password）
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod wgvpn_tests {
+    use super::*;
+
+    #[test]
+    fn default_config_has_platform_wireguard_paths() {
+        let cfg = MachineConfig::default();
+        assert!(cfg.webui_enabled);
+        if cfg!(windows) {
+            assert!(cfg.wg_path.is_empty());
+            assert!(cfg.wireguard_path.is_empty());
+        } else {
+            assert!(!cfg.wg_path.is_empty(), "Linux wg_path 不能为空");
+        }
+        assert!(!cfg.p2p_punch_path.is_empty(), "p2p_punch_path 不能为空");
+    }
+
+    #[test]
+    fn machine_config_accepts_jsonc_comments_and_trailing_commas() {
+        let json = serde_json::to_string_pretty(&MachineConfig::default()).unwrap();
+        let jsonc = format!(
+            "// 用户可维护的服务配置\n{}",
+            json.replacen("\n}", ",\n  // 保留尾随逗号\n}", 1)
+        );
+        let config = parse_machine_config(&jsonc).unwrap();
+        assert!(config.webui_enabled);
+    }
+
+    #[test]
+    fn bundled_full_config_demo_parses_as_jsonc() {
+        let demo = include_str!("../../src-tauri/resources/config-demo-full.json");
+        let config = parse_machine_config(demo).unwrap();
+        assert!(config.webui_enabled);
+        assert_eq!(config.server_url, "https://cli.p2premote.top");
+    }
+
+    #[test]
+    fn default_wg_path_returns_exe_on_windows() {
+        let path = default_wg_path();
+        #[cfg(windows)]
+        assert!(path.to_string_lossy().ends_with("wg.exe"));
+        #[cfg(not(windows))]
+        assert!(path.to_string_lossy().ends_with("wg"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn effective_wg_path_migrates_legacy_path_default() {
+        assert_eq!(
+            effective_wg_path("wg"),
+            linux_resources_dir().join(default_wg_binary_name())
+        );
+        assert_eq!(
+            effective_wg_path("/usr/local/bin/wg"),
+            PathBuf::from("/usr/local/bin/wg")
+        );
+    }
+
+    #[test]
+    fn default_wireguard_path_returns_exe_on_windows() {
+        let path = default_wireguard_path();
+        #[cfg(windows)]
+        assert!(path.to_string_lossy().ends_with("wireguard.exe"));
+        #[cfg(not(windows))]
+        assert!(path.to_string_lossy().ends_with("wireguard"));
+    }
+
+    #[test]
+    fn default_p2p_punch_path_returns_dynamic_library_name() {
+        let path = default_p2p_punch_path();
+        #[cfg(windows)]
+        assert!(path.to_string_lossy().ends_with("p2premote-punch.dll"));
+        #[cfg(target_os = "linux")]
+        assert!(path.to_string_lossy().ends_with("libp2premote-punch.a"));
+    }
+}

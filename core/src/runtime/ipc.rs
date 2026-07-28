@@ -1,0 +1,944 @@
+//! IPC server, client connection handling, and command response helpers.
+
+use super::*;
+
+pub(super) fn spawn_control_server(shared: Arc<Mutex<SharedRuntimeState>>, wake: Arc<Notify>) {
+    tokio::spawn(async move {
+        let wake_for_shutdown = wake.clone();
+        if let Err(err) = control_server_loop(shared, wake).await {
+            error!("[ServiceControl] {}", err);
+            request_shutdown();
+            wake_for_shutdown.notify_one();
+        }
+    });
+}
+
+pub(super) async fn control_server_loop(
+    shared: Arc<Mutex<SharedRuntimeState>>,
+    wake: Arc<Notify>,
+) -> Result<()> {
+    loop {
+        let stream = accept_ipc_client().await?;
+
+        let shared = shared.clone();
+        let wake = wake.clone();
+
+        // 每个连接 spawn 独立 task
+        tokio::spawn(async move {
+            if let Err(err) = handle_client(stream, &shared, &wake).await {
+                tracing::debug!("[ServiceControl] client handler error: {}", err);
+            }
+        });
+    }
+}
+
+pub(super) async fn handle_client(
+    stream: IpcStream,
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    wake: &Arc<Notify>,
+) -> Result<()> {
+    use tokio::time::timeout;
+
+    let mut conn = Connection::new(stream);
+
+    // 握手：等待客户端发送 Data::Handshake
+    let handshake = match timeout(Duration::from_secs(5), conn.next()).await {
+        Ok(Ok(Some(Data::Handshake { secret }))) => secret,
+        Ok(Ok(Some(_))) => return Err(anyhow!("expected handshake, got other message")),
+        Ok(Ok(None)) => return Err(anyhow!("no handshake received")),
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(anyhow!("handshake timeout")),
+    };
+
+    let _ = ensure_machine_config()?;
+    let expected_secret = derive_control_secret();
+
+    if handshake != expected_secret {
+        conn.send(&Data::CommandResponse {
+            ok: false,
+            message: "unauthorized".to_string(),
+            status: None,
+            request_id: None,
+            data: None,
+        })
+        .await
+        .ok();
+        return Err(anyhow!("unauthorized control connection"));
+    }
+
+    // 握手成功
+    info!("[ServiceControl] client connected and authenticated");
+    conn.send(&Data::CommandResponse {
+        ok: true,
+        message: "ok".to_string(),
+        status: None,
+        request_id: None,
+        data: None,
+    })
+    .await
+    .context("failed to send handshake ack")?;
+
+    // 订阅状态变化广播
+    let mut status_rx = shared
+        .lock()
+        .status_tx()
+        .map(|tx| tx.subscribe())
+        .unwrap_or_else(|| {
+            let (tx, rx) = tokio::sync::broadcast::channel(1);
+            drop(tx);
+            rx
+        });
+
+    // 消息循环
+    loop {
+        tokio::select! {
+            // 客户端命令
+            msg = conn.next() => {
+                match msg? {
+                    Some(data) => {
+                        tracing::info!("[ServiceControl] received: {:?}", data_variant(&data));
+                        let response = handle_data(data, shared).await;
+                        // 批量唤醒：多条命令只触发一次 bootstrap / shutdown
+                        {
+                            let state = shared.lock();
+                            if state.reconnect_requested || state.shutdown_requested {
+                                wake.notify_one();
+                            }
+                        }
+                        if let Some(resp) = response {
+                            conn.send(&resp).await.ok();
+                        }
+                    }
+                    None => break,
+                }
+            }
+            // 服务端状态变化推送
+            status = status_rx.recv() => {
+                match status {
+                    Ok(status) => {
+                        conn.send(&Data::StatusChanged(status)).await.ok();
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // 消息太多跳过，下次继续
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn cmd_response(ok: bool, message: &str, status: Option<RuntimeStatus>) -> Data {
+    Data::CommandResponse {
+        ok,
+        message: message.to_string(),
+        status,
+        request_id: None,
+        data: None,
+    }
+}
+
+/// 构造带结构化数据（如设备列表）的命令响应。
+pub(super) fn cmd_response_with_data(
+    ok: bool,
+    message: &str,
+    status: Option<RuntimeStatus>,
+    data: serde_json::Value,
+) -> Data {
+    Data::CommandResponse {
+        ok,
+        message: message.to_string(),
+        status,
+        request_id: None,
+        data: Some(data),
+    }
+}
+
+/// 加载 machine config；失败时返回错误响应（供 handle_data 用 `?`-like 早返回）。
+///
+/// 消除各 handler 重复的 `match load_machine_config() { Ok(c)=>c, Err(e)=>return Some(cmd_response(false,...)) }` 样板。
+pub(super) fn load_config_or_err() -> Result<crate::config::MachineConfig, Data> {
+    load_machine_config().map_err(|e| cmd_response(false, &e.to_string(), None))
+}
+
+pub(super) fn normalize_lan_cidrs_for_config(
+    cidrs: Vec<String>,
+) -> std::result::Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for raw in cidrs {
+        let item = raw.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let item = normalize_ipv4_cidr_for_config(item)?;
+        if !normalized.iter().any(|existing| existing == &item) {
+            normalized.push(item);
+        }
+    }
+    Ok(normalized)
+}
+
+pub(super) fn normalize_ipv4_cidr_for_config(cidr: &str) -> std::result::Result<String, String> {
+    let (ip, bits) =
+        crate::wgvpn_exchange::parse_ipv4_cidr(cidr).map_err(|e| format!("{}: {}", e, cidr))?;
+    let mask = crate::wgvpn_exchange::ipv4_mask_from_prefix(bits);
+    let network = (ip & mask).to_be_bytes();
+    Ok(format!(
+        "{}.{}.{}.{}/{}",
+        network[0], network[1], network[2], network[3], bits
+    ))
+}
+
+/// 把 anyhow::Result 统一包装成 cmd_response。
+/// Ok(()) → 成功响应；Err → 失败响应。
+pub(super) fn response_from_result<T>(
+    result: Result<T>,
+    ok_data: impl FnOnce(T) -> serde_json::Value,
+) -> Data {
+    match result {
+        Ok(v) => cmd_response_with_data(true, "ok", None, ok_data(v)),
+        Err(e) => cmd_response(false, &e.to_string(), None),
+    }
+}
+
+pub(super) fn data_variant(data: &Data) -> &'static str {
+    match data {
+        Data::Handshake { .. } => "Handshake",
+        Data::Ping => "Ping",
+        Data::Status => "Status",
+        Data::RegisterDevice => "RegisterDevice",
+        Data::StartActiveTunnelJob { .. } => "StartActiveTunnelJob",
+        Data::StartAnonymousActiveTunnelJob { .. } => "StartAnonymousActiveTunnelJob",
+        Data::StopActiveTunnelJob { .. } => "StopActiveTunnelJob",
+        Data::RefreshTunnelStatus => "RefreshTunnelStatus",
+        Data::RefreshNetworkInfo => "RefreshNetworkInfo",
+        Data::ReloadConfig => "ReloadConfig",
+        Data::UpdateAuth => "UpdateAuth",
+        Data::Logout => "Logout",
+        Data::RebuildDeviceIdentity => "RebuildDeviceIdentity",
+        Data::AcknowledgeDeviceIdentityNotification => "AcknowledgeDeviceIdentityNotification",
+        Data::Reconnect => "Reconnect",
+        Data::StopTunnel { .. } => "StopTunnel",
+        Data::StopActiveTunnel { .. } => "StopActiveTunnel",
+        Data::TestTunnelSpeed { .. } => "TestTunnelSpeed",
+        Data::ShutdownGracefully => "ShutdownGracefully",
+        Data::GetDeviceList => "GetDeviceList",
+        Data::UpdateDeviceAlias { .. } => "UpdateDeviceAlias",
+        Data::DeleteDevice { .. } => "DeleteDevice",
+        Data::UpdateDeviceInfo { .. } => "UpdateDeviceInfo",
+        Data::SetDevicePassword { .. } => "SetDevicePassword",
+        Data::GenerateConnectCode { .. } => "GenerateConnectCode",
+        Data::MarkCurrentDeviceOffline => "MarkCurrentDeviceOffline",
+        Data::Login { .. } => "Login",
+        Data::TryAutoLogin => "TryAutoLogin",
+        Data::GetUserProfile => "GetUserProfile",
+        Data::GetInviteInfo => "GetInviteInfo",
+        Data::SaveLoginSettings { .. } => "SaveLoginSettings",
+        Data::GetSavedLogin => "GetSavedLogin",
+        Data::HasSavedToken => "HasSavedToken",
+        Data::GetLoginPreferences => "GetLoginPreferences",
+        Data::SetAutoStartConfig { .. } => "SetAutoStartConfig",
+        Data::SetLocale { .. } => "SetLocale",
+        Data::GetLocale => "GetLocale",
+        Data::GetWgvpnLanAccessConfig => "GetWgvpnLanAccessConfig",
+        Data::SaveWgvpnLanAccessConfig { .. } => "SaveWgvpnLanAccessConfig",
+        Data::CommandResponse { .. } => "CommandResponse",
+        Data::StatusChanged(_) => "StatusChanged",
+        Data::WgvpnStart { .. } => "WgvpnStart",
+        Data::WgvpnStop { .. } => "WgvpnStop",
+        Data::WgvpnList => "WgvpnList",
+    }
+}
+pub(super) async fn handle_data(
+    data: Data,
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+) -> Option<Data> {
+    match data {
+        Data::Ping => Some(cmd_response(true, "pong", None)),
+        Data::Status => Some(cmd_response(true, "ok", Some(shared.lock().status.clone()))),
+        Data::RegisterDevice => {
+            let mut config = match load_machine_config() {
+                Ok(config) => config,
+                Err(err) => {
+                    return Some(cmd_response(
+                        false,
+                        &err.to_string(),
+                        Some(shared.lock().status.clone()),
+                    ));
+                }
+            };
+            match register_current_device_auto(&mut config).await {
+                Ok(device) => {
+                    let status_report = collect_device_status_report(&mut config).await;
+                    let heartbeat_result = match status_report {
+                        Ok(report) => send_device_status_report(&mut config, &report).await,
+                        Err(err) => Err(err),
+                    };
+                    let device_json =
+                        serde_json::to_value(&device).unwrap_or(serde_json::Value::Null);
+                    update_status(shared, |s| {
+                        s.logged_in = true;
+                        s.device_id = Some(device.device_id);
+                        s.device_uuid = Some(device.device_uuid.clone());
+                        s.current_device = Some(device);
+                        if heartbeat_result.is_ok() {
+                            s.last_heartbeat_at = Some(now_ts());
+                        }
+                    });
+                    shared.lock().reconnect_requested = true;
+                    match heartbeat_result {
+                        Ok(()) => Some(cmd_response_with_data(
+                            true,
+                            "device registered",
+                            Some(shared.lock().status.clone()),
+                            device_json,
+                        )),
+                        Err(err) => {
+                            set_last_error(
+                                shared,
+                                format!("device registered but heartbeat failed: {}", err),
+                            );
+                            Some(cmd_response(
+                                false,
+                                &format!("device registered but heartbeat failed: {}", err),
+                                Some(shared.lock().status.clone()),
+                            ))
+                        }
+                    }
+                }
+                Err(err) => Some(cmd_response(
+                    false,
+                    &err.to_string(),
+                    Some(shared.lock().status.clone()),
+                )),
+            }
+        }
+        Data::StartActiveTunnelJob {
+            target_device_id,
+            target_device_uuid,
+            connect_code,
+            temporary_password,
+            lan_cidrs,
+        } => start_active_tunnel_job(
+            shared,
+            target_device_id,
+            target_device_uuid,
+            connect_code,
+            temporary_password,
+            lan_cidrs,
+        ),
+        Data::StartAnonymousActiveTunnelJob {
+            connect_code,
+            temporary_password,
+        } => start_anonymous_active_tunnel_job(shared, connect_code, temporary_password).await,
+        Data::StopActiveTunnelJob { target_device_id } => {
+            stop_active_tunnel_job(shared, target_device_id)
+        }
+        Data::RefreshTunnelStatus => {
+            refresh_wgvpn_sessions_with_options(shared, false, true);
+            Some(cmd_response(
+                true,
+                "tunnel status refreshed",
+                Some(shared.lock().status.clone()),
+            ))
+        }
+        Data::RefreshNetworkInfo => match refresh_network_info(shared).await {
+            Ok(public_ip) => Some(cmd_response_with_data(
+                true,
+                "network info refreshed",
+                Some(shared.lock().status.clone()),
+                serde_json::json!({ "public_ip": public_ip }),
+            )),
+            Err(err) => Some(cmd_response(
+                false,
+                &err.to_string(),
+                Some(shared.lock().status.clone()),
+            )),
+        },
+        // --- 设备管理命令：统一由 service 持有 token 调服务器 ---
+        Data::GetDeviceList => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            match get_device_list(&mut config).await {
+                Ok(mut list) => {
+                    // 旧服务端尚未返回 public_ip_location 时，当前设备仍可从本机
+                    // 已验证的缓存恢复显示；远端设备必须继续以服务端上报值为准。
+                    if let (Some(current_device_id), Some(location)) = (
+                        config.device_id,
+                        config
+                            .cached_public_ip_location
+                            .clone()
+                            .filter(|value| !value.trim().is_empty()),
+                    ) {
+                        if let Some(current) = list
+                            .iter_mut()
+                            .find(|item| item.device_id == current_device_id)
+                        {
+                            if current
+                                .public_ip_location
+                                .as_deref()
+                                .is_none_or(|value| value.trim().is_empty())
+                            {
+                                current.public_ip_location = Some(location);
+                            }
+                        }
+                    }
+                    if let Some(current) = config
+                        .device_id
+                        .and_then(|device_id| list.iter().find(|item| item.device_id == device_id))
+                        .cloned()
+                    {
+                        update_status(shared, |status| {
+                            status.public_ip = current.public_ip.clone();
+                            status.current_device = Some(current);
+                        });
+                    }
+                    Some(cmd_response_with_data(
+                        true,
+                        "ok",
+                        Some(shared.lock().status.clone()),
+                        serde_json::json!({ "code": 0, "msg": "ok", "data": list }),
+                    ))
+                }
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
+        }
+        Data::UpdateDeviceAlias { device_id, alias } => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(response_from_result(
+                update_device_alias(&mut config, device_id, alias).await,
+                |_| serde_json::Value::Null,
+            ))
+        }
+        Data::DeleteDevice { device_id } => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(response_from_result(
+                delete_device(&mut config, device_id).await,
+                |_| serde_json::Value::Null,
+            ))
+        }
+        Data::UpdateDeviceInfo {
+            device_id,
+            lan_ip,
+            public_ip,
+            service_port,
+        } => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(response_from_result(
+                update_device_info(&mut config, device_id, lan_ip, public_ip, service_port).await,
+                |_| serde_json::Value::Null,
+            ))
+        }
+        Data::SetDevicePassword {
+            device_id,
+            password,
+        } => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(response_from_result(
+                set_device_password(&mut config, device_id, password).await,
+                |_| serde_json::Value::Null,
+            ))
+        }
+        Data::GenerateConnectCode { device_id } => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(response_from_result(
+                generate_connect_code(&mut config, device_id).await,
+                |code| serde_json::json!({ "connect_code": code }),
+            ))
+        }
+        Data::MarkCurrentDeviceOffline => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            match mark_current_device_offline(&mut config).await {
+                Ok(()) => {
+                    // 仅通知服务器该设备下线，不改本地登录态（由后续 Data::Logout 处理）
+                    Some(cmd_response(true, "offline", None))
+                }
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
+        }
+        // --- 认证命令：login/try_auto_login/profile/invite 统一由 service 处理 ---
+        // 注意：登录响应**不返回真实 token**。service 是令牌唯一管理者，token 仅存
+        // machine config。UI 用占位符 SERVICE_SESSION_PLACEHOLDER 表示"已登录"，
+        // 不接触 access_token/refresh_token。
+        Data::Login {
+            identifier,
+            password,
+        } => match login_and_persist(&identifier, &password).await {
+            Ok(bundle) => {
+                let user_json =
+                    serde_json::to_value(&bundle.user).unwrap_or(serde_json::Value::Null);
+                update_status(shared, |s| {
+                    s.logged_in = true;
+                });
+                {
+                    let mut state = shared.lock();
+                    state.login_session_enabled = true;
+                    state.reconnect_requested = true;
+                }
+                Some(cmd_response_with_data(
+                    true,
+                    "login ok",
+                    Some(shared.lock().status.clone()),
+                    user_json,
+                ))
+            }
+            Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+        },
+        Data::TryAutoLogin => {
+            // 读 machine config 的 saved_password/remember_me/auto_login，解密后登录。
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            if !config.remember_me || !config.auto_login {
+                return Some(cmd_response_with_data(
+                    true,
+                    "skip",
+                    None,
+                    serde_json::json!({ "logged_in": false }),
+                ));
+            }
+            let password = match config.saved_password.as_ref() {
+                Some(enc) => match crate::config::decrypt_saved_password(enc) {
+                    Some(p) if !p.is_empty() => p,
+                    _ => {
+                        return Some(cmd_response_with_data(
+                            true,
+                            "skip",
+                            None,
+                            serde_json::json!({ "logged_in": false }),
+                        ));
+                    }
+                },
+                None => {
+                    return Some(cmd_response_with_data(
+                        true,
+                        "skip",
+                        None,
+                        serde_json::json!({ "logged_in": false }),
+                    ));
+                }
+            };
+            let identifier = config.user_email.clone().unwrap_or_default();
+            if identifier.is_empty() {
+                return Some(cmd_response_with_data(
+                    true,
+                    "skip",
+                    None,
+                    serde_json::json!({ "logged_in": false }),
+                ));
+            }
+            match login_and_persist(&identifier, &password).await {
+                Ok(bundle) => {
+                    let user_json =
+                        serde_json::to_value(&bundle.user).unwrap_or(serde_json::Value::Null);
+                    update_status(shared, |s| {
+                        s.logged_in = true;
+                    });
+                    shared.lock().reconnect_requested = true;
+                    Some(cmd_response_with_data(
+                        true,
+                        "auto login ok",
+                        Some(shared.lock().status.clone()),
+                        serde_json::json!({ "logged_in": true, "user": user_json }),
+                    ))
+                }
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
+        }
+        Data::GetUserProfile => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(response_from_result(
+                fetch_profile(&mut config).await,
+                |user| serde_json::to_value(&user).unwrap_or(serde_json::Value::Null),
+            ))
+        }
+        Data::GetInviteInfo => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(response_from_result(
+                fetch_invite_info(&mut config).await,
+                |invite| serde_json::to_value(&invite).unwrap_or(serde_json::Value::Null),
+            ))
+        }
+        // --- 登录设置管理：machine config 受保护，统一由 service 读写 ---
+        Data::SaveLoginSettings {
+            identifier,
+            remember_me,
+            password,
+            auto_login,
+        } => {
+            info!(
+                "[ServiceRuntime] saving login preferences: remember_me={}, auto_login={}, password_present={}",
+                remember_me,
+                auto_login,
+                !password.is_empty()
+            );
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            config.user_email = Some(identifier);
+            config.remember_me = remember_me;
+            config.auto_login = auto_login;
+            config.saved_password = if remember_me && !password.is_empty() {
+                match crate::config::encrypt_saved_password(&password) {
+                    Ok(enc) => Some(enc),
+                    Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+                }
+            } else {
+                None
+            };
+            Some(response_from_result(save_machine_config(&config), |_| {
+                serde_json::Value::Null
+            }))
+        }
+        Data::GetSavedLogin => {
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            if !config.remember_me {
+                return Some(cmd_response_with_data(
+                    true,
+                    "none",
+                    None,
+                    serde_json::Value::Null,
+                ));
+            }
+            let email = config.user_email.clone().unwrap_or_default();
+            let auto_login = config.auto_login;
+            let password = match config
+                .saved_password
+                .as_ref()
+                .and_then(|enc| crate::config::decrypt_saved_password(enc))
+            {
+                Some(p) if !p.is_empty() => p,
+                _ => {
+                    return Some(cmd_response_with_data(
+                        true,
+                        "none",
+                        None,
+                        serde_json::Value::Null,
+                    ))
+                }
+            };
+            Some(cmd_response_with_data(
+                true,
+                "ok",
+                None,
+                serde_json::json!([email, password, auto_login]),
+            ))
+        }
+        Data::HasSavedToken => {
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            let has = persistent_login_enabled(&config)
+                && config.auth_token.is_some()
+                && config.saved_password.is_some();
+            Some(cmd_response_with_data(
+                true,
+                "ok",
+                None,
+                serde_json::json!(has),
+            ))
+        }
+        Data::GetLoginPreferences => {
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(cmd_response_with_data(
+                true,
+                "ok",
+                None,
+                serde_json::json!({
+                    "remember_me": config.remember_me,
+                    "auto_login": config.auto_login,
+                    "auto_start": config.auto_start,
+                }),
+            ))
+        }
+        Data::SetAutoStartConfig { enabled } => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            config.auto_start = enabled;
+            Some(response_from_result(
+                save_machine_config(&config),
+                |_| serde_json::json!({ "auto_start": enabled }),
+            ))
+        }
+        Data::SetLocale { locale } => {
+            // 规范化：只接受 zh-CN / en，其余一律归一到 zh-CN，避免脏值入库。
+            let normalized = match locale.as_str() {
+                "en" | "en-US" | "en-us" => "en".to_string(),
+                _ => "zh-CN".to_string(),
+            };
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            config.locale = Some(normalized.clone());
+            match save_machine_config(&config) {
+                Ok(()) => {
+                    // Existing job/lifecycle messages are service-owned strings. Rebuild the
+                    // current snapshot and broadcast it immediately so every UI switches as a
+                    // whole instead of waiting for the next state transition.
+                    update_status(shared, |status| {
+                        status.locale = Some(normalized.clone());
+                        relocalize_runtime_status(status);
+                    });
+                    Some(cmd_response_with_data(
+                        true,
+                        "ok",
+                        None,
+                        serde_json::json!({ "locale": normalized }),
+                    ))
+                }
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
+        }
+        Data::GetLocale => {
+            let locale = shared.lock().status.locale.clone();
+            Some(cmd_response_with_data(
+                true,
+                "ok",
+                None,
+                serde_json::json!({ "locale": locale }),
+            ))
+        }
+        Data::GetWgvpnLanAccessConfig => {
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(cmd_response_with_data(
+                true,
+                "ok",
+                None,
+                serde_json::json!({
+                    "enabled": config.wgvpn_lan_access_enabled,
+                    "cidrs": config.wgvpn_lan_cidrs,
+                }),
+            ))
+        }
+        Data::SaveWgvpnLanAccessConfig { enabled, cidrs } => {
+            let normalized = match normalize_lan_cidrs_for_config(cidrs) {
+                Ok(items) => items,
+                Err(err) => return Some(cmd_response(false, &err, None)),
+            };
+            if enabled && normalized.is_empty() {
+                let msg = localized_message(
+                    current_locale(shared).as_deref(),
+                    "errors.lan_empty_when_enabled",
+                    &[],
+                );
+                return Some(cmd_response(false, &msg, None));
+            }
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            config.wgvpn_lan_access_enabled = enabled;
+            config.wgvpn_lan_cidrs = if enabled {
+                normalized.clone()
+            } else {
+                Vec::new()
+            };
+            Some(response_from_result(save_machine_config(&config), |_| {
+                serde_json::json!({
+                    "enabled": enabled,
+                    "cidrs": if enabled { normalized } else { Vec::new() },
+                })
+            }))
+        }
+        Data::ReloadConfig => {
+            let config = match load_machine_config() {
+                Ok(config) => config,
+                Err(err) => {
+                    return Some(cmd_response(
+                        false,
+                        &format!("failed to reload config: {}", err),
+                        Some(shared.lock().status.clone()),
+                    ));
+                }
+            };
+            if let Err(err) = crate::logging::reload_log_level(&config.log_level) {
+                return Some(cmd_response(
+                    false,
+                    &err,
+                    Some(shared.lock().status.clone()),
+                ));
+            }
+            shared.lock().reconnect_requested = true;
+            Some(cmd_response(
+                true,
+                "config reloaded",
+                Some(shared.lock().status.clone()),
+            ))
+        }
+        Data::UpdateAuth | Data::Reconnect => {
+            shared.lock().reconnect_requested = true;
+            Some(cmd_response(
+                true,
+                "reload scheduled",
+                Some(shared.lock().status.clone()),
+            ))
+        }
+        Data::StopTunnel { source_device_id } => stop_wgvpn_job(shared, source_device_id).await,
+        Data::StopActiveTunnel { target_device_id } => {
+            clear_active_tunnel_job_status(shared, target_device_id);
+            stop_wgvpn_job(shared, target_device_id).await
+        }
+        Data::TestTunnelSpeed { peer_device_id } => {
+            let (speed_tx, busy_flag) = {
+                let state = shared.lock();
+                let Some(control) = state.wgvpn_health_controls.get(&peer_device_id) else {
+                    return Some(cmd_response(false, "active tunnel is not connected", None));
+                };
+                // 并发去重：若已有测速在跑，拒绝新请求，避免 unbounded channel
+                // 堆积串行导致 health loop 长时间被占用（进而可能误触发断线）。
+                if control
+                    .speed_test_busy
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    return Some(cmd_response(false, "speed test already in progress", None));
+                }
+                (control.speed_tx.clone(), control.speed_test_busy.clone())
+            };
+            let (response_tx, response_rx) = oneshot::channel();
+            if speed_tx
+                .send(TunnelSpeedTestCommand {
+                    response: response_tx,
+                    busy_flag: busy_flag.clone(),
+                })
+                .is_err()
+            {
+                // health loop 已退出，释放 busy 标志供下次重试。
+                busy_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                return Some(cmd_response(
+                    false,
+                    "health control connection is unavailable",
+                    None,
+                ));
+            }
+            let result = tokio::time::timeout(Duration::from_secs(40), response_rx)
+                .await
+                .map_err(|_| anyhow!("tunnel speed test timed out"))
+                .and_then(|value| value.map_err(|_| anyhow!("health control connection closed")))
+                .and_then(|value| value.map_err(anyhow::Error::msg));
+            // 兜底：无论结果如何都释放 busy（health loop 正常路径也会释放，
+            // 这里防止 timeout 竞态：runtime 超时了但 health loop 还在跑）。
+            busy_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+            Some(response_from_result(result, |value| {
+                serde_json::to_value(value).unwrap_or_default()
+            }))
+        }
+        Data::Logout => {
+            cancel_all_active_tunnel_jobs(shared);
+            cancel_all_wgvpn_jobs(shared).await;
+            let mut config = load_machine_config().ok()?;
+            // 登出：清除全部凭据（token + saved_password + 记住密码/自动登录标志），
+            // 确保下次启动不会自动登录，符合"登出即忘记此设备凭据"的安全预期。
+            clear_machine_credentials(&mut config);
+            save_machine_config(&config).ok()?;
+            {
+                let mut state = shared.lock();
+                state.login_session_enabled = false;
+                state.reconnect_requested = true;
+            }
+            update_status(shared, |s| {
+                s.logged_in = false;
+            });
+            Some(cmd_response(
+                true,
+                "logged out",
+                Some(shared.lock().status.clone()),
+            ))
+        }
+        Data::RebuildDeviceIdentity => {
+            cancel_all_active_tunnel_jobs(shared);
+            cancel_all_wgvpn_jobs(shared).await;
+            let mut config = load_machine_config().ok()?;
+            rebuild_device_identity(&mut config);
+            save_machine_config(&config).ok()?;
+            {
+                let mut state = shared.lock();
+                state.reconnect_requested = true;
+                state.status.device_id = None;
+                state.status.device_uuid = config.device_uuid.clone();
+                state.status.device_identity_rebuilt = true;
+                state.status.device_identity_message = Some(localized_message(
+                    state.status.locale.as_deref(),
+                    "device_identity.manual_rebuilding",
+                    &[],
+                ));
+            }
+            Some(cmd_response(
+                true,
+                "device identity rebuilt",
+                Some(shared.lock().status.clone()),
+            ))
+        }
+        Data::AcknowledgeDeviceIdentityNotification => {
+            update_status(shared, |status| {
+                status.device_identity_rebuilt = false;
+                status.device_identity_message = None;
+            });
+            Some(cmd_response(
+                true,
+                "device identity notification acknowledged",
+                Some(shared.lock().status.clone()),
+            ))
+        }
+        Data::ShutdownGracefully => {
+            shared.lock().shutdown_requested = true;
+            Some(cmd_response(
+                true,
+                "shutdown scheduled",
+                Some(shared.lock().status.clone()),
+            ))
+        }
+        Data::WgvpnStart {
+            peer_device_id,
+            token,
+            is_active,
+            lan_cidrs,
+        } => start_wgvpn_job(shared, peer_device_id, token, is_active, lan_cidrs),
+        Data::WgvpnStop { peer_device_id } => stop_wgvpn_job(shared, peer_device_id).await,
+        Data::WgvpnList => Some(list_wgvpn(shared)),
+        // 客户端不应发送这些，忽略
+        Data::Handshake { .. } | Data::CommandResponse { .. } | Data::StatusChanged(_) => None,
+    }
+}

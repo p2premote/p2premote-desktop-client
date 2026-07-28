@@ -1,0 +1,16 @@
+[package]
+name = "p2premote-service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+p2premote-core = { path = "../core" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] }
+tracing-appender = "0.1"
+time = { version = "0.3", features = ["local-offset", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
