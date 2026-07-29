@@ -181,7 +181,7 @@ async fn main() -> Result<()> {
         Commands::Logout => {
             let _ = send_command(Data::Logout).await;
             let mut cfg = load_machine_config()?;
-            // 登出彻底清除凭据（token + saved_password + 记住密码标志），
+            // 登出彻底清除凭据（token + 记住会话标志），
             // 与 service 端 Data::Logout 行为一致。
             clear_machine_credentials(&mut cfg);
             save_machine_config(&cfg)?;

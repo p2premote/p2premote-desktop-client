@@ -129,24 +129,27 @@ pub enum Data {
         identifier: String,
         password: String,
     },
-    /// 自动登录：service 读 machine config 的 saved_password 解密后登录
+    /// 自动登录：service 用已保存 refresh token 恢复会话
     TryAutoLogin,
+    /// 用户手动确认使用已保存的 refresh token 恢复会话。
+    ResumeSavedSession {
+        auto_login: bool,
+    },
     /// 获取用户资料：service 调 /auth/profile（走 send_authed 自动刷新）
     GetUserProfile,
     /// 获取邀请信息：service 调 /auth/invite
     GetInviteInfo,
 
     // --- 客户端 → 服务端：登录设置管理（machine config 受保护，UI 无权直接读写） ---
-    /// 保存登录设置：service 加密密码后写入 machine config
+    /// 保存登录设置：service 仅保存 token 会话偏好，不持久化密码。
     SaveLoginSettings {
         identifier: String,
         remember_me: bool,
-        password: String,
         auto_login: bool,
     },
-    /// 读取保存的登录信息：service 解密 saved_password 返回（用于登录页预填）
+    /// 读取保存的登录标识和自动登录偏好。
     GetSavedLogin,
-    /// 检查是否有保存的凭证（auth_token + saved_password）
+    /// 检查是否有保存的 refresh token。
     HasSavedToken,
     /// 读取登录偏好（remember_me / auto_login，用于设置页展示）
     GetLoginPreferences,
@@ -566,20 +569,6 @@ async fn connect_ipc_stream() -> Result<IpcStream> {
 // ---- 服务端 accept（跨平台） ----
 
 #[cfg(windows)]
-struct OwnedWinHandle(windows_sys::Win32::Foundation::HANDLE);
-
-#[cfg(windows)]
-impl Drop for OwnedWinHandle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                windows_sys::Win32::Foundation::CloseHandle(self.0);
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
 struct LocalSecurityDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
 
 #[cfg(windows)]
@@ -594,100 +583,15 @@ impl Drop for LocalSecurityDescriptor {
 }
 
 #[cfg(windows)]
-fn token_user_sid(token: windows_sys::Win32::Foundation::HANDLE) -> Result<String> {
-    use windows_sys::Win32::Foundation::{GetLastError, ERROR_INSUFFICIENT_BUFFER};
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_USER};
-
-    let mut required = 0;
-    unsafe {
-        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
-    }
-    if required == 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
-        return Err(std::io::Error::last_os_error()).context("failed to size token user SID");
-    }
-
-    let mut buffer = vec![0u8; required as usize];
-    if unsafe {
-        GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            required,
-            &mut required,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error()).context("failed to read token user SID");
-    }
-
-    let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
-    let mut sid_text = std::ptr::null_mut();
-    if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_text) } == 0 {
-        return Err(std::io::Error::last_os_error()).context("failed to stringify token user SID");
-    }
-    let sid_text_guard = LocalSecurityDescriptor(sid_text.cast());
-    let len = unsafe {
-        let mut len = 0;
-        while *sid_text.add(len) != 0 {
-            len += 1;
-        }
-        len
-    };
-    let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, len) })
-        .context("active user SID is not valid UTF-16")?;
-    drop(sid_text_guard);
-    Ok(sid)
-}
+const CONTROL_PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)(A;;GRGW;;;RU)";
 
 #[cfg(windows)]
-fn current_process_user_sid() -> Result<String> {
-    use windows_sys::Win32::Security::TOKEN_QUERY;
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    let mut token = std::ptr::null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(std::io::Error::last_os_error()).context("failed to open process token");
-    }
-    let token = OwnedWinHandle(token);
-    token_user_sid(token.0)
-}
-
-#[cfg(windows)]
-fn active_console_user_sid() -> Result<Option<String>> {
-    use windows_sys::Win32::System::RemoteDesktop::{
-        WTSGetActiveConsoleSessionId, WTSQueryUserToken,
-    };
-
-    let session_id = unsafe { WTSGetActiveConsoleSessionId() };
-    if session_id == u32::MAX {
-        return Ok(None);
-    }
-    let mut token = std::ptr::null_mut();
-    if unsafe { WTSQueryUserToken(session_id, &mut token) } == 0 {
-        // Foreground/dev mode normally lacks SeTcbPrivilege. Restrict the pipe to
-        // that process owner instead; the installed LocalSystem service succeeds
-        // above and uses the active console user's SID.
-        return current_process_user_sid().map(Some);
-    }
-    let token = OwnedWinHandle(token);
-    token_user_sid(token.0).map(Some)
-}
-
-#[cfg(windows)]
-fn pipe_sddl_for_user(user_sid: &str) -> String {
-    // Protected DACL: LocalSystem and administrators retain full control; only
-    // the active desktop user receives client read/write access.
-    format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{})", user_sid)
-}
-
-#[cfg(windows)]
-fn pipe_security_descriptor(user_sid: &str) -> Result<LocalSecurityDescriptor> {
+fn pipe_security_descriptor() -> Result<LocalSecurityDescriptor> {
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
 
-    let sddl: Vec<u16> = pipe_sddl_for_user(user_sid)
+    let sddl: Vec<u16> = CONTROL_PIPE_SDDL
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
@@ -716,17 +620,9 @@ pub async fn accept_ipc_client() -> Result<IpcStream> {
 
     static FIRST_PIPE_INSTANCE: AtomicBool = AtomicBool::new(true);
 
-    let user_sid = loop {
-        if let Some(sid) = active_console_user_sid()? {
-            break sid;
-        }
-        // An auto-start service can run before the first interactive logon. Do
-        // not create a broadly accessible pipe while no desktop user exists.
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    };
     let first_pipe_instance = FIRST_PIPE_INSTANCE.swap(false, Ordering::SeqCst);
     let server = {
-        let descriptor = pipe_security_descriptor(&user_sid)?;
+        let descriptor = pipe_security_descriptor()?;
         let mut security_attributes = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
@@ -827,30 +723,24 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn control_pipe_dacl_is_limited_to_system_admins_and_selected_user() {
-        let sddl = pipe_sddl_for_user("S-1-5-21-1-2-3-1001");
+    fn control_pipe_dacl_allows_only_local_interactive_principals() {
         assert_eq!(
-            sddl,
-            "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;S-1-5-21-1-2-3-1001)"
+            CONTROL_PIPE_SDDL,
+            "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)(A;;GRGW;;;RU)"
         );
-        assert!(!sddl.contains(";;;WD)"));
-        assert!(!sddl.contains(";;;AU)"));
-        assert!(!sddl.contains(";;;IU)"));
+        assert!(!CONTROL_PIPE_SDDL.contains(";;;WD)"));
+        assert!(!CONTROL_PIPE_SDDL.contains(";;;AU)"));
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn selected_user_can_connect_to_secured_control_pipe() {
+    async fn local_interactive_user_can_connect_to_secured_control_pipe() {
         use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
         use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
-        let endpoint = format!(
-            r"\\.\pipe\p2premote-control-test-{}",
-            uuid::Uuid::new_v4()
-        );
-        let user_sid = current_process_user_sid().expect("current user SID");
+        let endpoint = format!(r"\\.\pipe\p2premote-control-test-{}", uuid::Uuid::new_v4());
         let server = {
-            let descriptor = pipe_security_descriptor(&user_sid).expect("security descriptor");
+            let descriptor = pipe_security_descriptor().expect("security descriptor");
             let mut attributes = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: descriptor.0,

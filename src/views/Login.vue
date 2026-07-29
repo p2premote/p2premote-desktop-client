@@ -50,10 +50,13 @@
         <el-form-item prop="password">
           <el-input
             v-model="loginForm.password"
-            type="password"
+            :type="isSavedPasswordSentinel ? 'text' : 'password'"
             :placeholder="$t('login.password_placeholder')"
             prefix-icon="Lock"
-            show-password
+            :show-password="!isSavedPasswordSentinel"
+            :class="{ 'saved-password-sentinel': isSavedPasswordSentinel }"
+            @focus="clearSavedPasswordSentinel"
+            @blur="restoreSavedPasswordSentinel"
           />
         </el-form-item>
 
@@ -91,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { invoke } from '../runtime/bridge'
@@ -122,6 +125,8 @@ const loginFormRef = ref<FormInstance>()
 const loading = ref(false)
 const mode = ref<LoginMode>('login')
 const alive = ref(true)
+const hasSavedCredential = ref(false)
+const SAVED_PASSWORD_SENTINEL = '●'.repeat(12)
 
 const loginForm = reactive({
   identifier: '',
@@ -137,6 +142,8 @@ const modeTitle = computed(() => {
   return t('login.subtitle')
 })
 
+const isSavedPasswordSentinel = computed(() => loginForm.password === SAVED_PASSWORD_SENTINEL)
+
 const loginRules = computed<FormRules>(() => ({
   identifier: [{ required: true, message: t('login.validation.username_required'), trigger: 'blur' }],
   password: [{ required: true, message: t('login.validation.password_required'), trigger: 'blur' }]
@@ -146,6 +153,24 @@ function switchMode(nextMode: LoginMode) {
   mode.value = nextMode
 }
 
+function clearSavedPasswordSentinel() {
+  if (isSavedPasswordSentinel.value) {
+    loginForm.password = ''
+  }
+}
+
+function restoreSavedPasswordSentinel() {
+  if (hasSavedCredential.value && loginForm.rememberMe && !loginForm.password) {
+    loginForm.password = SAVED_PASSWORD_SENTINEL
+  }
+}
+
+watch(() => loginForm.rememberMe, (rememberMe) => {
+  if (!rememberMe && isSavedPasswordSentinel.value) {
+    loginForm.password = ''
+  }
+})
+
 async function loadSavedLogin() {
   try {
     const saved = await invoke<[string, string, boolean] | null>('get_saved_login')
@@ -153,11 +178,12 @@ async function loadSavedLogin() {
       return
     }
 
-    const [identifier, password, autoLogin] = saved
+    const [identifier, , autoLogin] = saved
     loginForm.identifier = identifier
-    loginForm.password = password
     loginForm.rememberMe = true
     loginForm.autoLogin = autoLogin
+    hasSavedCredential.value = true
+    loginForm.password = SAVED_PASSWORD_SENTINEL
   } catch (error) {
     console.error('Failed to load saved login settings:', error)
   }
@@ -180,28 +206,31 @@ async function handleLogin() {
   loading.value = true
   // 登录成功会立即切换 App 的渲染分支并卸载登录组件。提前快照表单值，
   // 避免登录网络请求期间的异步回填或组件卸载影响随后保存的偏好。
+  const useSavedSession = isSavedPasswordSentinel.value
   const loginSettings = {
     identifier: loginForm.identifier,
     rememberMe: loginForm.rememberMe,
-    password: loginForm.rememberMe ? loginForm.password : '',
     autoLogin: loginForm.rememberMe && loginForm.autoLogin,
   }
   try {
-    const success = await authStore.login(loginForm.identifier, loginForm.password)
-    if (!success) {
-      ElMessage.error(t('login.message.failed'))
-      return
-    }
+    if (useSavedSession) {
+      await invoke('resume_saved_session', { autoLogin: loginSettings.autoLogin })
+    } else {
+      const success = await authStore.login(loginForm.identifier, loginForm.password)
+      if (!success) {
+        ElMessage.error(t('login.message.failed'))
+        return
+      }
 
-    await invoke('save_login_settings', {
-      identifier: loginSettings.identifier,
-      rememberMe: loginSettings.rememberMe,
-      password: loginSettings.password,
-      autoLogin: loginSettings.autoLogin
-    })
-    const saved = await invoke<{ remember_me: boolean; auto_login: boolean }>('get_settings')
-    if (saved.remember_me !== loginSettings.rememberMe || saved.auto_login !== loginSettings.autoLogin) {
-      throw new Error(t('login.message.settings_save_mismatch'))
+      await invoke('save_login_settings', {
+        identifier: loginSettings.identifier,
+        rememberMe: loginSettings.rememberMe,
+        autoLogin: loginSettings.autoLogin
+      })
+      const saved = await invoke<{ remember_me: boolean; auto_login: boolean }>('get_settings')
+      if (saved.remember_me !== loginSettings.rememberMe || saved.auto_login !== loginSettings.autoLogin) {
+        throw new Error(t('login.message.settings_save_mismatch'))
+      }
     }
 
     const canContinue = await checkForceUpdateAfterLogin()
@@ -272,6 +301,10 @@ onBeforeUnmount(() => {
 
 .login-card :deep(.el-input__wrapper) {
   min-height: 42px;
+}
+
+.login-card :deep(.saved-password-sentinel .el-input__inner) {
+  color: var(--fluent-text-tertiary);
 }
 
 .login-card :deep(.el-button) {

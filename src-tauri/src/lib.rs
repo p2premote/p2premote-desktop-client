@@ -142,8 +142,8 @@ fn show_system_notification(title: String, body: String) -> Result<(), String> {
 use commands::{
     auth::{
         fetch_user_profile, get_invite_info, get_saved_login, get_user_info, has_saved_token,
-        is_logged_in, login, logout, register_no_verify, reset_password, save_login_settings,
-        send_verification_code, try_auto_login,
+        is_logged_in, login, logout, register_no_verify, reset_password, resume_saved_session,
+        save_login_settings, send_verification_code, try_auto_login,
     },
     config::{
         check_update, exit_application, get_settings, get_wgvpn_lan_access_config,
@@ -365,6 +365,7 @@ pub fn run() {
             get_saved_login,
             save_login_settings,
             try_auto_login,
+            resume_saved_session,
             get_device_list,
             register_current_device_auto,
             update_device_alias,

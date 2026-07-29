@@ -203,6 +203,31 @@ pub(super) fn response_from_result<T>(
     }
 }
 
+async fn resume_saved_token_session(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    auto_login: bool,
+) -> Result<serde_json::Value> {
+    let mut config = load_machine_config()?;
+    if !config.remember_me || config.refresh_token.is_none() {
+        return Err(anyhow!("no saved session"));
+    }
+
+    let bundle = refresh_with_config(&mut config).await?;
+    config.auto_login = auto_login;
+    save_machine_config(&config)?;
+
+    let user_json = serde_json::to_value(&bundle.user).unwrap_or(serde_json::Value::Null);
+    update_status(shared, |s| {
+        s.logged_in = true;
+    });
+    {
+        let mut state = shared.lock();
+        state.login_session_enabled = true;
+        state.reconnect_requested = true;
+    }
+    Ok(serde_json::json!({ "logged_in": true, "user": user_json }))
+}
+
 pub(super) fn data_variant(data: &Data) -> &'static str {
     match data {
         Data::Handshake { .. } => "Handshake",
@@ -233,6 +258,7 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::MarkCurrentDeviceOffline => "MarkCurrentDeviceOffline",
         Data::Login { .. } => "Login",
         Data::TryAutoLogin => "TryAutoLogin",
+        Data::ResumeSavedSession { .. } => "ResumeSavedSession",
         Data::GetUserProfile => "GetUserProfile",
         Data::GetInviteInfo => "GetInviteInfo",
         Data::SaveLoginSettings { .. } => "SaveLoginSettings",
@@ -507,7 +533,7 @@ pub(super) async fn handle_data(
             Err(err) => Some(cmd_response(false, &err.to_string(), None)),
         },
         Data::TryAutoLogin => {
-            // 读 machine config 的 saved_password/remember_me/auto_login，解密后登录。
+            // 仅在用户开启自动登录时，用保存的 refresh token 恢复会话。
             let config = match load_config_or_err() {
                 Ok(c) => c,
                 Err(resp) => return Some(resp),
@@ -520,54 +546,15 @@ pub(super) async fn handle_data(
                     serde_json::json!({ "logged_in": false }),
                 ));
             }
-            let password = match config.saved_password.as_ref() {
-                Some(enc) => match crate::config::decrypt_saved_password(enc) {
-                    Some(p) if !p.is_empty() => p,
-                    _ => {
-                        return Some(cmd_response_with_data(
-                            true,
-                            "skip",
-                            None,
-                            serde_json::json!({ "logged_in": false }),
-                        ));
-                    }
-                },
-                None => {
-                    return Some(cmd_response_with_data(
-                        true,
-                        "skip",
-                        None,
-                        serde_json::json!({ "logged_in": false }),
-                    ));
-                }
-            };
-            let identifier = config.user_email.clone().unwrap_or_default();
-            if identifier.is_empty() {
-                return Some(cmd_response_with_data(
-                    true,
-                    "skip",
-                    None,
-                    serde_json::json!({ "logged_in": false }),
-                ));
-            }
-            match login_and_persist(&identifier, &password).await {
-                Ok(bundle) => {
-                    let user_json =
-                        serde_json::to_value(&bundle.user).unwrap_or(serde_json::Value::Null);
-                    update_status(shared, |s| {
-                        s.logged_in = true;
-                    });
-                    shared.lock().reconnect_requested = true;
-                    Some(cmd_response_with_data(
-                        true,
-                        "auto login ok",
-                        Some(shared.lock().status.clone()),
-                        serde_json::json!({ "logged_in": true, "user": user_json }),
-                    ))
-                }
-                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
-            }
+            Some(response_from_result(
+                resume_saved_token_session(shared, true).await,
+                |data| data,
+            ))
         }
+        Data::ResumeSavedSession { auto_login } => Some(response_from_result(
+            resume_saved_token_session(shared, auto_login).await,
+            |data| data,
+        )),
         Data::GetUserProfile => {
             let mut config = match load_config_or_err() {
                 Ok(c) => c,
@@ -592,14 +579,11 @@ pub(super) async fn handle_data(
         Data::SaveLoginSettings {
             identifier,
             remember_me,
-            password,
             auto_login,
         } => {
             info!(
-                "[ServiceRuntime] saving login preferences: remember_me={}, auto_login={}, password_present={}",
-                remember_me,
-                auto_login,
-                !password.is_empty()
+                "[ServiceRuntime] saving login preferences: remember_me={}, auto_login={}",
+                remember_me, auto_login
             );
             let mut config = match load_config_or_err() {
                 Ok(c) => c,
@@ -608,14 +592,6 @@ pub(super) async fn handle_data(
             config.user_email = Some(identifier);
             config.remember_me = remember_me;
             config.auto_login = auto_login;
-            config.saved_password = if remember_me && !password.is_empty() {
-                match crate::config::encrypt_saved_password(&password) {
-                    Ok(enc) => Some(enc),
-                    Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
-                }
-            } else {
-                None
-            };
             Some(response_from_result(save_machine_config(&config), |_| {
                 serde_json::Value::Null
             }))
@@ -625,7 +601,7 @@ pub(super) async fn handle_data(
                 Ok(c) => c,
                 Err(resp) => return Some(resp),
             };
-            if !config.remember_me {
+            if !config.remember_me || config.refresh_token.is_none() {
                 return Some(cmd_response_with_data(
                     true,
                     "none",
@@ -635,26 +611,12 @@ pub(super) async fn handle_data(
             }
             let email = config.user_email.clone().unwrap_or_default();
             let auto_login = config.auto_login;
-            let password = match config
-                .saved_password
-                .as_ref()
-                .and_then(|enc| crate::config::decrypt_saved_password(enc))
-            {
-                Some(p) if !p.is_empty() => p,
-                _ => {
-                    return Some(cmd_response_with_data(
-                        true,
-                        "none",
-                        None,
-                        serde_json::Value::Null,
-                    ))
-                }
-            };
             Some(cmd_response_with_data(
                 true,
                 "ok",
                 None,
-                serde_json::json!([email, password, auto_login]),
+                // 保持旧 WebUI 的三项数组兼容性；第二项不再承载密码。
+                serde_json::json!([email, "", auto_login]),
             ))
         }
         Data::HasSavedToken => {
@@ -662,9 +624,8 @@ pub(super) async fn handle_data(
                 Ok(c) => c,
                 Err(resp) => return Some(resp),
             };
-            let has = persistent_login_enabled(&config)
-                && config.auth_token.is_some()
-                && config.saved_password.is_some();
+            let has =
+                config.remember_me && config.auth_token.is_some() && config.refresh_token.is_some();
             Some(cmd_response_with_data(
                 true,
                 "ok",
@@ -869,7 +830,7 @@ pub(super) async fn handle_data(
             cancel_all_active_tunnel_jobs(shared);
             cancel_all_wgvpn_jobs(shared).await;
             let mut config = load_machine_config().ok()?;
-            // 登出：清除全部凭据（token + saved_password + 记住密码/自动登录标志），
+            // 登出：清除全部凭据（token + 记住密码/自动登录标志），
             // 确保下次启动不会自动登录，符合"登出即忘记此设备凭据"的安全预期。
             clear_machine_credentials(&mut config);
             save_machine_config(&config).ok()?;

@@ -8,7 +8,6 @@ build = "build.rs"
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
-aes-gcm = "0.10"
 base64 = "0.22"
 encoding_rs = "0.8"
 futures-util = "0.3"
@@ -41,4 +40,4 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 windows-service = "0.7"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_SystemInformation"] }

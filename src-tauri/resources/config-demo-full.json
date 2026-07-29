@@ -28,7 +28,6 @@
 
   // Service and login behavior.
   "auto_start": false,
-  "saved_password": null,
   "remember_me": false,
   "auto_login": false,
 

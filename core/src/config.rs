@@ -38,10 +38,7 @@ pub struct MachineConfig {
     pub log_level: String,
     #[serde(default)]
     pub auto_start: bool,
-    /// 加密的保存密码（用于自动登录）。存 machine config 供 service 与 UI 共用。
-    #[serde(default)]
-    pub saved_password: Option<String>,
-    /// 是否记住密码
+    /// 是否允许保留 refresh token 供后续手动或自动恢复会话。
     #[serde(default)]
     pub remember_me: bool,
     /// 是否自动登录
@@ -97,7 +94,6 @@ impl Default for MachineConfig {
             p2p_punch_path: default_p2p_punch_path().to_string_lossy().to_string(),
             log_level: default_log_level(),
             auto_start: false,
-            saved_password: None,
             remember_me: false,
             auto_login: false,
             wgvpn_lan_access_enabled: false,
@@ -462,7 +458,7 @@ fn secure_config_dir(dir: &Path) {
     {
         use std::os::unix::fs::PermissionsExt;
         // 仅 service 所属用户可访问（与 Windows 下"仅 SYSTEM+Admins"语义一致）。
-        // machine config 含 token/saved_password，不能全局可读写（旧版 0o777 是安全隐患）。
+        // machine config 含认证 token，不能全局可读写（旧版 0o777 是安全隐患）。
         if let Err(e) = fs::set_permissions(dir, fs::Permissions::from_mode(0o700)) {
             tracing::warn!("[config] chmod 700 failed: {}", e);
         }
@@ -492,7 +488,7 @@ pub fn save_machine_config(config: &MachineConfig) -> Result<()> {
     atomic_write_json(&machine_config_path(), config)
 }
 
-/// 清除所有凭据：token/refresh/expires/user_email/device + saved_password/remember_me/auto_login。
+/// 清除所有凭据：token/refresh/expires/user_email/device + remember_me/auto_login。
 ///
 /// 用于登出——确保登出后下次启动不会自动登录，符合"登出即忘记此设备凭据"的安全预期。
 pub fn clear_machine_credentials(config: &mut MachineConfig) {
@@ -501,7 +497,6 @@ pub fn clear_machine_credentials(config: &mut MachineConfig) {
     config.access_token_expires_at = None;
     config.user_email = None;
     config.device_id = None;
-    config.saved_password = None;
     config.remember_me = false;
     config.auto_login = false;
 }
@@ -563,63 +558,6 @@ pub fn get_machine_fingerprint() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-/// saved_password 加密密钥（内置固定，SHA-256 派生保证恰好 32 字节）。
-///
-/// 设计取舍：项目当前只允许管理员安装/使用，不考虑多用户隔离；账号密码仍是敏感数据，
-/// 真正的本地安全边界由受保护的 machine config 目录承担。固定密钥只用于避免
-/// service(SYSTEM) 与 UI 进程因身份不同导致无法互相解密。若未来要支持多用户，
-/// 需要重新设计为按用户隔离的凭据存储，不能继续复用这一策略。
-const SAVED_PASSWORD_KEY_SEED: &[u8] = b"p2premote-saved-password-encryption-key-v1";
-static SAVED_PASSWORD_KEY: once_cell::sync::Lazy<[u8; 32]> =
-    once_cell::sync::Lazy::new(|| Sha256::digest(SAVED_PASSWORD_KEY_SEED).into());
-
-/// 派生密码加密密钥。
-///
-/// 采用内置固定密钥（不依赖 MachineGuid 等机器指纹），简化存储与跨进程一致性。
-pub fn derive_password_key() -> [u8; 32] {
-    *SAVED_PASSWORD_KEY
-}
-
-/// 解密 saved_password（AES-256-GCM，与 UI 侧 encrypt_password 对应）。
-///
-/// 返回明文密码，失败返回 None（如密钥变更导致老数据无法解密）。
-pub fn decrypt_saved_password(encrypted: &str) -> Option<String> {
-    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
-    use base64::Engine;
-
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(encrypted)
-        .ok()?;
-    if data.len() < 12 {
-        return None;
-    }
-    let key = derive_password_key();
-    let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
-    let (nonce_bytes, ciphertext) = data.split_at(12);
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher.decrypt(nonce, ciphertext).ok()?;
-    String::from_utf8(plaintext).ok()
-}
-
-/// 加密 saved_password（AES-256-GCM）。
-///
-/// 与 [`decrypt_saved_password`] 对称，格式 = base64(nonce(12B) || ciphertext)。
-pub fn encrypt_saved_password(password: &str) -> Result<String> {
-    use aes_gcm::aead::Aead;
-    use aes_gcm::{AeadCore, Aes256Gcm, KeyInit};
-    use base64::Engine;
-
-    let key = derive_password_key();
-    let cipher = Aes256Gcm::new_from_slice(&key).context("invalid key length")?;
-    let nonce = Aes256Gcm::generate_nonce(&mut rand::thread_rng());
-    let ciphertext = cipher
-        .encrypt(&nonce, password.as_bytes())
-        .map_err(|e| anyhow::anyhow!("encrypt password failed: {:?}", e))?;
-    let mut data = nonce.to_vec();
-    data.extend_from_slice(&ciphertext);
-    Ok(base64::engine::general_purpose::STANDARD.encode(data))
-}
-
 pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -658,7 +596,7 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::PermissionsExt;
-        // 仅 service 所属用户可读写（machine config 含 token/saved_password）
+        // 仅 service 所属用户可读写（machine config 含认证 token）
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
     }
     Ok(())

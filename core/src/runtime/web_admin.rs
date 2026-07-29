@@ -260,10 +260,7 @@ fn session_cookie(headers: &HeaderMap) -> Option<&str> {
 
 pub(super) fn spawn_web_admin_server(shared: Arc<Mutex<SharedRuntimeState>>, wake: Arc<Notify>) {
     tokio::spawn(async move {
-        if !load_machine_config()
-            .unwrap_or_default()
-            .webui_enabled
-        {
+        if !load_machine_config().unwrap_or_default().webui_enabled {
             info!("[WebAdmin] listener disabled by webui_enabled=false");
             return;
         }
@@ -328,9 +325,12 @@ async fn web_admin_server_loop(state: WebAdminState) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .context("failed to bind web admin listener")?;
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .context("web admin server failed")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("web admin server failed")
 }
 
 fn web_admin_addr(remote_enabled: bool) -> Result<SocketAddr> {
@@ -351,10 +351,7 @@ fn web_admin_addr(remote_enabled: bool) -> Result<SocketAddr> {
 }
 
 pub(super) fn web_admin_addr_for_log() -> String {
-    if !load_machine_config()
-        .unwrap_or_default()
-        .webui_enabled
-    {
+    if !load_machine_config().unwrap_or_default().webui_enabled {
         return "disabled".to_string();
     }
     let remote_enabled = load_machine_config()
@@ -797,13 +794,11 @@ async fn handle_web_command(
         "save_login_settings" => {
             let identifier = arg_string(&args, &["identifier"])?;
             let remember_me = arg_bool(&args, &["rememberMe", "remember_me"]).unwrap_or(false);
-            let password = arg_string(&args, &["password"]).unwrap_or_default();
             let auto_login = arg_bool(&args, &["autoLogin", "auto_login"]).unwrap_or(false);
             let _ = dispatch_web_data(
                 Data::SaveLoginSettings {
                     identifier,
                     remember_me,
-                    password,
                     auto_login,
                 },
                 state,
@@ -1291,8 +1286,7 @@ mod tests {
         let mut loopback_with_rewritten_host = headers_with_origin("http://127.0.0.1:48083");
         loopback_with_rewritten_host.insert("host", HeaderValue::from_static("127.0.0.1"));
         assert!(web_origin_allowed(&loopback_with_rewritten_host));
-        let mut loopback_with_different_host_port =
-            headers_with_origin("http://127.0.0.1:48083");
+        let mut loopback_with_different_host_port = headers_with_origin("http://127.0.0.1:48083");
         loopback_with_different_host_port
             .insert("host", HeaderValue::from_static("127.0.0.1:48084"));
         assert!(web_origin_allowed(&loopback_with_different_host_port));
@@ -1360,5 +1354,4 @@ mod tests {
         assert!(WebSecurityState::from_values(Some("not-an-ip"), Some("1")).is_err());
         assert!(WebSecurityState::from_values(None, Some("1")).is_ok());
     }
-
 }

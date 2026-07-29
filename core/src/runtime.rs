@@ -137,7 +137,7 @@ impl Default for WgvpnHealthRuntime {
 pub(super) struct SharedRuntimeState {
     status: RuntimeStatus,
     /// 当前 service 生命周期是否已获准使用持久化令牌登录。
-    /// service 启动时仅由 remember_me + auto_login 开启；显式登录后保持到进程退出。
+    /// service 启动时仅由记住会话 + 自动登录 + token 开启；显式登录后保持到进程退出。
     login_session_enabled: bool,
     reconnect_requested: bool,
     shutdown_requested: bool,
@@ -627,7 +627,10 @@ pub fn request_shutdown() {
 }
 
 fn persistent_login_enabled(config: &crate::config::MachineConfig) -> bool {
-    config.remember_me && config.auto_login && config.saved_password.is_some()
+    config.remember_me
+        && config.auto_login
+        && config.auth_token.is_some()
+        && config.refresh_token.is_some()
 }
 
 async fn bootstrap_service(
@@ -672,7 +675,7 @@ async fn bootstrap_service(
     }
 
     // Token 始终需要持久化供当前 service 生命周期调用 API，但只有用户明确开启
-    // “记住密码 + 自动登录”时，新的 service 进程才可据此恢复登录。
+    // “记住会话 + 自动登录”时，新的 service 进程才可据此恢复登录。
     if !shared.lock().login_session_enabled {
         ws_client.disconnect().await;
         update_status(shared, |status| {
@@ -1239,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn service_restart_login_requires_both_preferences_and_saved_password() {
+    fn service_restart_login_requires_preferences_and_tokens() {
         let mut config = crate::config::MachineConfig::default();
         config.auth_token = Some("token".to_string());
         config.refresh_token = Some("refresh".to_string());
@@ -1247,9 +1250,6 @@ mod tests {
 
         config.remember_me = true;
         config.auto_login = true;
-        assert!(!persistent_login_enabled(&config));
-
-        config.saved_password = Some("encrypted".to_string());
         assert!(persistent_login_enabled(&config));
 
         config.auto_login = false;
