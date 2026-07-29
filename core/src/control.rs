@@ -565,43 +565,184 @@ async fn connect_ipc_stream() -> Result<IpcStream> {
 
 // ---- 服务端 accept（跨平台） ----
 
+#[cfg(windows)]
+struct OwnedWinHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedWinHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+struct LocalSecurityDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+
+#[cfg(windows)]
+impl Drop for LocalSecurityDescriptor {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(self.0 as _);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn token_user_sid(token: windows_sys::Win32::Foundation::HANDLE) -> Result<String> {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_INSUFFICIENT_BUFFER};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_USER};
+
+    let mut required = 0;
+    unsafe {
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+    }
+    if required == 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+        return Err(std::io::Error::last_os_error()).context("failed to size token user SID");
+    }
+
+    let mut buffer = vec![0u8; required as usize];
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error()).context("failed to read token user SID");
+    }
+
+    let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+    let mut sid_text = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_text) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to stringify token user SID");
+    }
+    let sid_text_guard = LocalSecurityDescriptor(sid_text.cast());
+    let len = unsafe {
+        let mut len = 0;
+        while *sid_text.add(len) != 0 {
+            len += 1;
+        }
+        len
+    };
+    let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, len) })
+        .context("active user SID is not valid UTF-16")?;
+    drop(sid_text_guard);
+    Ok(sid)
+}
+
+#[cfg(windows)]
+fn current_process_user_sid() -> Result<String> {
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to open process token");
+    }
+    let token = OwnedWinHandle(token);
+    token_user_sid(token.0)
+}
+
+#[cfg(windows)]
+fn active_console_user_sid() -> Result<Option<String>> {
+    use windows_sys::Win32::System::RemoteDesktop::{
+        WTSGetActiveConsoleSessionId, WTSQueryUserToken,
+    };
+
+    let session_id = unsafe { WTSGetActiveConsoleSessionId() };
+    if session_id == u32::MAX {
+        return Ok(None);
+    }
+    let mut token = std::ptr::null_mut();
+    if unsafe { WTSQueryUserToken(session_id, &mut token) } == 0 {
+        // Foreground/dev mode normally lacks SeTcbPrivilege. Restrict the pipe to
+        // that process owner instead; the installed LocalSystem service succeeds
+        // above and uses the active console user's SID.
+        return current_process_user_sid().map(Some);
+    }
+    let token = OwnedWinHandle(token);
+    token_user_sid(token.0).map(Some)
+}
+
+#[cfg(windows)]
+fn pipe_sddl_for_user(user_sid: &str) -> String {
+    // Protected DACL: LocalSystem and administrators retain full control; only
+    // the active desktop user receives client read/write access.
+    format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{})", user_sid)
+}
+
+#[cfg(windows)]
+fn pipe_security_descriptor(user_sid: &str) -> Result<LocalSecurityDescriptor> {
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+
+    let sddl: Vec<u16> = pipe_sddl_for_user(user_sid)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut descriptor = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("failed to build control pipe security descriptor");
+    }
+    Ok(LocalSecurityDescriptor(descriptor))
+}
+
 /// accept 一个 IPC 客户端连接
 #[cfg(windows)]
 pub async fn accept_ipc_client() -> Result<IpcStream> {
-    use std::os::windows::io::AsRawHandle;
-    use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::net::windows::named_pipe::ServerOptions;
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::Security::Authorization::{SetSecurityInfo, SE_KERNEL_OBJECT};
-    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
     static FIRST_PIPE_INSTANCE: AtomicBool = AtomicBool::new(true);
 
-    let first_pipe_instance = FIRST_PIPE_INSTANCE.swap(false, Ordering::SeqCst);
-    let server = ServerOptions::new()
-        .write_dac(true)
-        .first_pipe_instance(first_pipe_instance)
-        .create(IPC_ENDPOINT)
-        .with_context(|| format!("failed to create control pipe {}", IPC_ENDPOINT))?;
-
-    let security_result = unsafe {
-        SetSecurityInfo(
-            server.as_raw_handle() as _,
-            SE_KERNEL_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
+    let user_sid = loop {
+        if let Some(sid) = active_console_user_sid()? {
+            break sid;
+        }
+        // An auto-start service can run before the first interactive logon. Do
+        // not create a broadly accessible pipe while no desktop user exists.
+        tokio::time::sleep(Duration::from_secs(1)).await;
     };
-    if security_result != ERROR_SUCCESS {
-        return Err(anyhow!(
-            "failed to relax control pipe permissions: os error {}",
-            security_result
-        ));
-    }
+    let first_pipe_instance = FIRST_PIPE_INSTANCE.swap(false, Ordering::SeqCst);
+    let server = {
+        let descriptor = pipe_security_descriptor(&user_sid)?;
+        let mut security_attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(first_pipe_instance)
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(
+                    IPC_ENDPOINT,
+                    (&mut security_attributes as *mut SECURITY_ATTRIBUTES).cast(),
+                )
+        }
+        .with_context(|| format!("failed to create secured control pipe {}", IPC_ENDPOINT))?
+    };
 
     server
         .connect()
@@ -682,6 +823,49 @@ mod tests {
         roundtrip_serialize(&Data::Handshake {
             secret: "test-secret".to_string(),
         });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn control_pipe_dacl_is_limited_to_system_admins_and_selected_user() {
+        let sddl = pipe_sddl_for_user("S-1-5-21-1-2-3-1001");
+        assert_eq!(
+            sddl,
+            "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;S-1-5-21-1-2-3-1001)"
+        );
+        assert!(!sddl.contains(";;;WD)"));
+        assert!(!sddl.contains(";;;AU)"));
+        assert!(!sddl.contains(";;;IU)"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn selected_user_can_connect_to_secured_control_pipe() {
+        use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
+        let endpoint = format!(
+            r"\\.\pipe\p2premote-control-test-{}",
+            uuid::Uuid::new_v4()
+        );
+        let user_sid = current_process_user_sid().expect("current user SID");
+        let server = {
+            let descriptor = pipe_security_descriptor(&user_sid).expect("security descriptor");
+            let mut attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor.0,
+                bInheritHandle: 0,
+            };
+            unsafe {
+                ServerOptions::new().create_with_security_attributes_raw(
+                    &endpoint,
+                    (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
+                )
+            }
+            .expect("secured pipe")
+        };
+        let _client = ClientOptions::new().open(&endpoint).expect("pipe client");
+        server.connect().await.expect("pipe server connection");
     }
 
     #[test]

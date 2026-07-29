@@ -508,7 +508,10 @@ pub async fn run_service_foreground() -> Result<()> {
                             source_public_ip,
                             punch_token,
                         } => {
-                            info!("[ServiceRuntime] P2P start request: source_device_id={}, token={}", source_device_id, punch_token);
+                            info!(
+                                "[ServiceRuntime] P2P start request: source_device_id={}",
+                                source_device_id
+                            );
                             if let Err(err) = handle_p2p_start(
                                 &shared,
                                 &ws_client,

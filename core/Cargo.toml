@@ -41,4 +41,4 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 windows-service = "0.7"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_Threading"] }
