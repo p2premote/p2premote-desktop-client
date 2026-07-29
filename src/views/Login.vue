@@ -11,29 +11,7 @@
         </div>
       </template>
 
-      <el-alert
-        v-if="mode === 'forgot'"
-        :title="$t('login.forgot_title')"
-        type="info"
-        :closable="false"
-        show-icon
-      >
-        <template #default>
-          <p>{{ $t('login.forgot_desc') }}</p>
-          <p style="margin-top: 8px;">
-            <el-link type="primary" href="https://www.p2premote.top/login" target="_blank">
-              www.p2premote.top/login
-            </el-link>
-          </p>
-          <p style="margin-top: 8px; color: #909399; font-size: 13px;">
-            {{ $t('login.forgot_guide') }}
-          </p>
-          <el-button style="margin-top: 12px;" @click="switchMode('login')">{{ $t('login.back_to_login') }}</el-button>
-        </template>
-      </el-alert>
-
       <el-form
-        v-if="mode === 'login'"
         ref="loginFormRef"
         :model="loginForm"
         :rules="loginRules"
@@ -80,14 +58,9 @@
 
 
       <div class="footer">
-        <template v-if="mode === 'login'">
-          <router-link to="/register">{{ $t('login.no_account') }}</router-link>
-          <span class="separator">|</span>
-          <a href="https://www.p2premote.top/login" target="_blank">{{ $t('login.forgot_password') }}</a>
-        </template>
-        <template v-else-if="mode === 'forgot'">
-          <a href="#" @click.prevent="switchMode('login')">{{ $t('login.back_to_login') }}</a>
-        </template>
+        <router-link to="/register">{{ $t('login.no_account') }}</router-link>
+        <span class="separator">|</span>
+        <a href="https://www.p2premote.top/login" target="_blank">{{ $t('login.forgot_password') }}</a>
       </div>
     </el-card>
   </div>
@@ -103,8 +76,6 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { useAuthStore } from '../stores/auth'
 import AppLogo from '../components/AppLogo.vue'
 const { t } = useI18n()
-
-type LoginMode = 'login' | 'forgot'
 
 interface UpdateCheckResponse {
   mode: 'none' | 'optional' | 'force'
@@ -123,7 +94,6 @@ const authStore = useAuthStore()
 
 const loginFormRef = ref<FormInstance>()
 const loading = ref(false)
-const mode = ref<LoginMode>('login')
 const alive = ref(true)
 const hasSavedCredential = ref(false)
 const SAVED_PASSWORD_SENTINEL = '●'.repeat(12)
@@ -135,12 +105,7 @@ const loginForm = reactive({
   autoLogin: false
 })
 
-const modeTitle = computed(() => {
-  if (mode.value === 'forgot') {
-    return t('login.forgot_title')
-  }
-  return t('login.subtitle')
-})
+const modeTitle = computed(() => t('login.subtitle'))
 
 const isSavedPasswordSentinel = computed(() => loginForm.password === SAVED_PASSWORD_SENTINEL)
 
@@ -148,10 +113,6 @@ const loginRules = computed<FormRules>(() => ({
   identifier: [{ required: true, message: t('login.validation.username_required'), trigger: 'blur' }],
   password: [{ required: true, message: t('login.validation.password_required'), trigger: 'blur' }]
 }))
-
-function switchMode(nextMode: LoginMode) {
-  mode.value = nextMode
-}
 
 function clearSavedPasswordSentinel() {
   if (isSavedPasswordSentinel.value) {

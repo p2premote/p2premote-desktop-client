@@ -425,10 +425,6 @@ const en = {
   login: {
     title: 'P2P Remote',
     subtitle: 'Remote connection client',
-    forgot_title: 'Reset password',
-    forgot_desc: 'Reset your password on the website:',
-    forgot_guide: 'Select "Forgot password" on the sign-in page, enter your registered email address, and follow the link in the email.',
-    back_to_login: 'Back to sign in',
     username_placeholder: 'Email or username',
     password_placeholder: 'Password',
     remember_password: 'Remember password',

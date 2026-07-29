@@ -452,10 +452,6 @@ export default {
   login: {
     title: 'P2P Remote',
     subtitle: '远程桌面连接客户端',
-    forgot_title: '重置密码',
-    forgot_desc: '请前往官网重置密码：',
-    forgot_guide: '在登录页面点击"忘记密码"，输入注册邮箱后查收邮件，点击邮件中的链接即可重置密码。',
-    back_to_login: '返回登录',
     username_placeholder: '邮箱或用户名',
     password_placeholder: '密码',
     remember_password: '记住密码',

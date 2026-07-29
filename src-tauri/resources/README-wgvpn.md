@@ -26,11 +26,7 @@ resources/
 └── web/
 ```
 
-## 升级兼容
-
-从旧版本覆盖安装时，NSIS 会在替换文件前停止 `p2premote-service`，卸载旧的
-`WireGuardTunnel$wg0`，并删除旧 `wireguard.exe` / `wg.exe`。新版本运行时不会恢复
-旧会话；磁盘 session 仅用于识别和清理过期状态。
+service 重启后不会恢复进程内会话；磁盘 session 仅用于识别和清理过期状态。
 
 ## 许可
 

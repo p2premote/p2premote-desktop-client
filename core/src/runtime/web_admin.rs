@@ -714,22 +714,6 @@ async fn handle_web_command(
             let _ = dispatch_web_data(Data::SetAutoStartConfig { enabled }, state).await?;
             Ok(serde_json::Value::Null)
         }
-        "enable_background_service_autostart" => {
-            enable_service().map_err(|e| e.to_string())?;
-            Ok(web_status_value(state))
-        }
-        "disable_background_service_autostart" => {
-            disable_service().map_err(|e| e.to_string())?;
-            Ok(web_status_value(state))
-        }
-        "install_background_service"
-        | "uninstall_background_service"
-        | "start_background_service"
-        | "stop_background_service"
-        | "restart_background_service" => Err(
-            "浏览器管理界面不支持安装、启动、停止或重启系统服务，请通过安装包或系统服务管理器操作"
-                .to_string(),
-        ),
         "check_update" => check_update_for_web().await,
         "register_no_verify" => register_no_verify_for_web(args).await,
         "login" => {

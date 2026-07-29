@@ -9,14 +9,6 @@
     ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm stop' $0
     DetailPrint "p2premote-service stop exit code: $0"
 
-  ; One-time migration from releases that used WireGuardTunnel$wg0.
-  ; The new client embeds wireguard-go and no longer ships these programs.
-  IfFileExists "$INSTDIR\resources\wireguard.exe" 0 +5
-    ExecWait '"$INSTDIR\resources\wireguard.exe" /uninstalltunnelservice wg0' $0
-    nsExec::ExecToLog 'taskkill /F /IM wireguard.exe /T'
-    Delete /REBOOTOK "$INSTDIR\resources\wireguard.exe"
-    Delete /REBOOTOK "$INSTDIR\resources\wg.exe"
-
   ; Fallback cleanup. Missing processes are expected during first install.
   nsExec::ExecToLog 'taskkill /F /IM p2premote.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-service.exe /T'

@@ -184,11 +184,10 @@ async fn save_service_auto_start(enabled: bool) -> Result<(), String> {
 /// Tauri 命令：设置开机自启动。
 ///
 /// Windows 下完整职责（Linux 下仅服务部分）：
-/// 1. 清理旧版 Startup .bat 残留；
-/// 2. 写/删注册表 `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`（用户级自启）；
-/// 3. 装启/停后台 service（Windows 服务或 Linux systemd）；
-/// 4. IPC 写 machine config 持久化自启状态；
-/// 5. 任一步骤失败则回滚前面已改动的注册表与服务状态。
+/// 1. 写/删注册表 `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`（用户级自启）；
+/// 2. 装启/停后台 service（Windows 服务或 Linux systemd）；
+/// 3. IPC 写 machine config 持久化自启状态；
+/// 4. 任一步骤失败则回滚前面已改动的注册表与服务状态。
 #[tauri::command]
 pub async fn set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String> {
     debug!("Set auto start: {}", enabled);
@@ -197,17 +196,6 @@ pub async fn set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String>
     {
         use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
         use winreg::RegKey;
-
-        // 清理旧版本的 Startup .bat 文件
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            let old_bat = std::path::PathBuf::from(appdata)
-                .join(r"Microsoft\Windows\Start Menu\Programs\Startup")
-                .join("p2premote.bat");
-            if old_bat.exists() {
-                let _ = std::fs::remove_file(&old_bat);
-                info!("[config] 已清理旧版 Startup .bat 文件");
-            }
-        }
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let run_key = hkcu

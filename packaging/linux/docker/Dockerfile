@@ -15,13 +15,11 @@ FROM ubuntu:22.04
 #   iproute2  提供 `ip` 命令，service 在创建/删除 WireGuard 接口时依赖
 #   ca-certificates  service 访问 server API 时的 TLS 根证书
 #   tzdata  日志按本地时间滚动
-#   iptables  当前 wgvpn 模块未直接依赖，保留以兼容未来路由规则扩展
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         iproute2 \
         ca-certificates \
         tzdata \
-        iptables \
     && rm -rf /var/lib/apt/lists/*
 
 ENV TZ=Asia/Shanghai
