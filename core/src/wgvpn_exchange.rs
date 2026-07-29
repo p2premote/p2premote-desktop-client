@@ -5,7 +5,7 @@
 //! - 被动端：两次调用——先 WaitOnly 收主动端载荷，本地分配 IP，再 Reply 回传。
 //!
 //! 载荷为 JSON 序列化的 ExchangePayload，gonc 侧用 AES-GCM 加密传输。
-//! 全程不 spawn 任何 p2plink.exe 子进程，gonc 彻底库化。
+//! 全程使用进程内 gonc 动态库完成交换。
 
 use crate::gonc_ffi::{exchange_payload, ExchangeMode};
 use crate::wgvpn::validate_public_key;

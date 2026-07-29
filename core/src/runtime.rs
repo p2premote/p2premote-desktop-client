@@ -30,9 +30,8 @@ use crate::health::{spawn_health_server, HealthDisconnectHandler, HealthServerHa
 use crate::i18n::localized_message;
 use crate::p2p::wgvpn_flow;
 use crate::p2p::{
-    build_punch_token, cleanup_orphan_p2plink_processes, close_active_p2p_job, open_active_p2p_job,
-    wgvpn_health_monitor_loop, ActiveP2POpenResult, ActiveStartResult, PassivePeerInfo,
-    TunnelHealthEvent,
+    build_punch_token, close_active_p2p_job, open_active_p2p_job, wgvpn_health_monitor_loop,
+    ActiveP2POpenResult, ActiveStartResult, PassivePeerInfo, TunnelHealthEvent,
 };
 use crate::speed_test::TunnelSpeedTestCommand;
 use crate::subnet_router;
@@ -299,7 +298,6 @@ pub async fn run_service_foreground() -> Result<()> {
     // 必须在任何 Rustls 客户端初始化前设置进程级默认 provider。
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     info!("[ServiceRuntime] starting, pid={}", std::process::id());
-    cleanup_orphan_p2plink_processes();
     EXTERNAL_SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
     if let Err(err) = crate::config::clear_cached_public_network_info() {
         info!(

@@ -173,15 +173,14 @@ watch(() => loginForm.rememberMe, (rememberMe) => {
 
 async function loadSavedLogin() {
   try {
-    const saved = await invoke<[string, string, boolean] | null>('get_saved_login')
+    const saved = await invoke<{ identifier: string; auto_login: boolean } | null>('get_saved_login')
     if (!saved) {
       return
     }
 
-    const [identifier, , autoLogin] = saved
-    loginForm.identifier = identifier
+    loginForm.identifier = saved.identifier
     loginForm.rememberMe = true
-    loginForm.autoLogin = autoLogin
+    loginForm.autoLogin = saved.auto_login
     hasSavedCredential.value = true
     loginForm.password = SAVED_PASSWORD_SENTINEL
   } catch (error) {

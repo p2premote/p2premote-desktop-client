@@ -149,8 +149,6 @@ pub enum Data {
     },
     /// 读取保存的登录标识和自动登录偏好。
     GetSavedLogin,
-    /// 检查是否有保存的 refresh token。
-    HasSavedToken,
     /// 读取登录偏好（remember_me / auto_login，用于设置页展示）
     GetLoginPreferences,
     /// 保存开机自启偏好。

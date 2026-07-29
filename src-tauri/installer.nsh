@@ -21,7 +21,6 @@
   nsExec::ExecToLog 'taskkill /F /IM p2premote.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-service.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-notifier.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM p2plink.exe /T'
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
@@ -51,7 +50,6 @@
   nsExec::ExecToLog 'taskkill /F /IM p2premote-service.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-cli.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-notifier.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM p2plink.exe /T'
 
   ; Explicit cleanup for bundled helper binaries.
   Delete "$INSTDIR\p2premote.exe"
@@ -59,7 +57,6 @@
   Delete "$INSTDIR\resources\p2premote-service.exe"
   Delete "$INSTDIR\resources\p2premote-cli.exe"
   Delete "$INSTDIR\resources\p2premote-notifier.exe"
-  Delete "$INSTDIR\resources\p2plink.exe"
   Delete "$INSTDIR\resources\wintun.dll"
   RMDir "$INSTDIR\resources"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "p2premote-notifier"

@@ -14,7 +14,6 @@ use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -62,46 +61,6 @@ pub enum TunnelHealthEvent {
 
 pub type TunnelHealthEventHandler = Arc<dyn Fn(TunnelHealthEvent) + Send + Sync>;
 
-pub fn cleanup_orphan_p2plink_processes() {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-        let output = match crate::wgvpn::run_command_with_timeout(
-            Command::new("tasklist")
-                .args(["/FI", "IMAGENAME eq p2plink.exe", "/FO", "CSV"])
-                .creation_flags(CREATE_NO_WINDOW),
-            "tasklist p2plink",
-        ) {
-            Ok(output) => output,
-            Err(_) => return,
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if !line.contains("p2plink.exe") {
-                continue;
-            }
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let pid_str = parts[1].trim_matches('"');
-            if let Ok(pid) = pid_str.parse::<u32>() {
-                let _ = kill_process_by_id(pid);
-            }
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = crate::wgvpn::run_command_with_timeout(
-            Command::new("pkill").args(["-x", "p2plink"]),
-            "pkill p2plink",
-        );
-    }
-}
 #[derive(Serialize)]
 struct P2POpenRequest {
     client_job_id: String,
@@ -614,39 +573,6 @@ pub async fn close_active_p2p_job(
         error_message,
     )
     .await
-}
-
-pub fn kill_process_by_id(pid: u32) -> Result<()> {
-    #[cfg(not(windows))]
-    {
-        let output = crate::wgvpn::run_command_with_timeout(
-            Command::new("kill").args(["-TERM", &pid.to_string()]),
-            "kill p2plink",
-        )?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("kill failed for pid {}: {}", pid, stderr.trim()));
-        }
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let output = crate::wgvpn::run_command_with_timeout(
-            Command::new("taskkill")
-                .args(["/F", "/PID", &pid.to_string()])
-                .creation_flags(CREATE_NO_WINDOW),
-            "taskkill p2plink",
-        )?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("[ServiceP2P] taskkill failed for pid {}: {}", pid, stderr);
-            return Err(anyhow!("taskkill failed for pid {}: {}", pid, stderr));
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]

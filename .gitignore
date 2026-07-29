@@ -19,7 +19,6 @@ src-tauri/Cargo.lock
 test-results/
 
 # Generated native resources; build scripts recreate these from source.
-src-tauri/resources/p2plink
 src-tauri/resources/p2premote-cli
 src-tauri/resources/p2premote-cli.exe
 src-tauri/resources/p2premote-notifier

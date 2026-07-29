@@ -1250,33 +1250,18 @@ async function bootstrapApp() {
         router.push('/login')
       }
     } else {
-      const hasToken = await withTimeout(
-        invoke<boolean>('has_saved_token'),
-        10_000,
-        t('app.startup_errors.login_check_timeout')
-      )
-      if (hasToken) {
+      const serviceLoggedIn = await invoke<boolean>('is_logged_in').catch(() => {
+        return Boolean(backgroundServiceStatus.value?.runtime?.logged_in)
+      })
+      // GUI 关闭窗口或进程重开时允许接管仍在运行的 service 会话。
+      // 保存但未启用自动登录的 refresh token 只能在登录页由用户手动恢复。
+      if (serviceLoggedIn) {
         try {
-          await restoreServiceSession('__saved_token__', '保存的 token')
+          await restoreServiceSession('__service_session__', '后台 service 已登录状态')
         } catch (e) {
-          console.warn('[App] 保存的 token 已失效，跳转登录页:', e)
+          console.warn('[App] 后台 service 已登录，但恢复前端会话失败:', e)
           await authStore.logout()
           router.push('/login')
-        }
-      } else {
-        const serviceLoggedIn = await invoke<boolean>('is_logged_in').catch(() => {
-          return Boolean(backgroundServiceStatus.value?.runtime?.logged_in)
-        })
-        // GUI 关闭窗口或进程重开时允许接管仍在运行的 service 会话。
-        // “自动登录”只控制 service/系统重启后的持久化恢复。
-        if (serviceLoggedIn) {
-          try {
-            await restoreServiceSession('__service_session__', '后台 service 已登录状态')
-          } catch (e) {
-            console.warn('[App] 后台 service 已登录，但恢复前端会话失败:', e)
-            await authStore.logout()
-            router.push('/login')
-          }
         }
       }
     }

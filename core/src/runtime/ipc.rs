@@ -263,7 +263,6 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::GetInviteInfo => "GetInviteInfo",
         Data::SaveLoginSettings { .. } => "SaveLoginSettings",
         Data::GetSavedLogin => "GetSavedLogin",
-        Data::HasSavedToken => "HasSavedToken",
         Data::GetLoginPreferences => "GetLoginPreferences",
         Data::SetAutoStartConfig { .. } => "SetAutoStartConfig",
         Data::SetLocale { .. } => "SetLocale",
@@ -615,22 +614,10 @@ pub(super) async fn handle_data(
                 true,
                 "ok",
                 None,
-                // 保持旧 WebUI 的三项数组兼容性；第二项不再承载密码。
-                serde_json::json!([email, "", auto_login]),
-            ))
-        }
-        Data::HasSavedToken => {
-            let config = match load_config_or_err() {
-                Ok(c) => c,
-                Err(resp) => return Some(resp),
-            };
-            let has =
-                config.remember_me && config.auth_token.is_some() && config.refresh_token.is_some();
-            Some(cmd_response_with_data(
-                true,
-                "ok",
-                None,
-                serde_json::json!(has),
+                serde_json::json!({
+                    "identifier": email,
+                    "auto_login": auto_login,
+                }),
             ))
         }
         Data::GetLoginPreferences => {

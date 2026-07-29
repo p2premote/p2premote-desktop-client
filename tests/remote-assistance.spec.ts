@@ -85,8 +85,6 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
             return { mode: 'none', current: '1.0.10', latest: '1.0.10', min_supported: '1.0.0' }
           case 'try_auto_login':
             return 'mock-token'
-          case 'has_saved_token':
-            return true
           case 'get_user_info':
           case 'fetch_user_profile':
             return {

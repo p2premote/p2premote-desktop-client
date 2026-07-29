@@ -141,9 +141,8 @@ fn show_system_notification(title: String, body: String) -> Result<(), String> {
 // 导入所有命令
 use commands::{
     auth::{
-        fetch_user_profile, get_invite_info, get_saved_login, get_user_info, has_saved_token,
-        is_logged_in, login, logout, register_no_verify, reset_password, resume_saved_session,
-        save_login_settings, send_verification_code, try_auto_login,
+        fetch_user_profile, get_invite_info, get_saved_login, get_user_info, is_logged_in, login,
+        logout, register_no_verify, resume_saved_session, save_login_settings, try_auto_login,
     },
     config::{
         check_update, exit_application, get_settings, get_wgvpn_lan_access_config,
@@ -161,7 +160,6 @@ use commands::{
         stop_service_tunnel, sync_service_runtime_config, test_tunnel_speed,
     },
 };
-use p2premote_core::p2p::cleanup_orphan_p2plink_processes;
 
 /// 对齐 Go 格式的自定义文件 MakeWriter（每日轮转）
 mod go_logger {
@@ -341,9 +339,6 @@ pub fn run() {
     init_logging();
     init_config_dir();
 
-    // 清理启动时遗留的 p2plink 进程
-    cleanup_orphan_p2plink_processes();
-
     debug!("[p2premote] configuration is managed by background service");
 
     tauri::Builder::default()
@@ -355,10 +350,7 @@ pub fn run() {
             login,
             logout,
             register_no_verify,
-            send_verification_code,
-            reset_password,
             is_logged_in,
-            has_saved_token,
             get_user_info,
             fetch_user_profile,
             get_invite_info,

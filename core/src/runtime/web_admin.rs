@@ -783,10 +783,6 @@ async fn handle_web_command(
             let resp = dispatch_web_data(Data::GetInviteInfo, state).await?;
             command_data(resp)
         }
-        "has_saved_token" => {
-            let resp = dispatch_web_data(Data::HasSavedToken, state).await?;
-            command_data(resp)
-        }
         "get_saved_login" => {
             let resp = dispatch_web_data(Data::GetSavedLogin, state).await?;
             command_data(resp)

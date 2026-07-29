@@ -14,20 +14,6 @@ use p2premote_core::control::Data;
 use p2premote_core::http::ApiResponse;
 use p2premote_core::service_control::stop_service;
 
-/// 发送验证码请求
-#[derive(Debug, Serialize)]
-struct SendCodeRequest {
-    email: String,
-    code_type: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ResetPasswordRequest {
-    email: String,
-    verification_code: String,
-    new_password: String,
-}
-
 /// 用户信息（UI 展示用，与 core::auth::UserInfo 对齐）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserInfo {
@@ -131,62 +117,6 @@ pub async fn logout() -> Result<(), String> {
     auth.user_info = None;
 
     Ok(())
-}
-
-/// Tauri 命令：发送验证码
-#[tauri::command]
-pub async fn send_verification_code(email: String, code_type: String) -> Result<String, String> {
-    info!("Send verification code to: {}, type: {}", email, code_type);
-
-    let http = PublicHttpClient::new();
-    let request = SendCodeRequest {
-        email: email.clone(),
-        code_type,
-    };
-
-    let resp: ApiResponse<Option<serde_json::Value>> = http
-        .post_json("/api/v1/auth/verification-code", &request)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if resp.code == 0 {
-        Ok(crate::commands::localized("info.verify_code_sent", &[]))
-    } else {
-        let locale = p2premote_core::config::load_machine_config()
-            .ok()
-            .and_then(|config| config.locale);
-        Err(resp.localized_error_message(locale.as_deref()))
-    }
-}
-
-#[tauri::command]
-pub async fn reset_password(
-    email: String,
-    verification_code: String,
-    new_password: String,
-) -> Result<String, String> {
-    debug!("Reset password request for: {}", email);
-
-    let http = PublicHttpClient::new();
-    let request = ResetPasswordRequest {
-        email,
-        verification_code,
-        new_password,
-    };
-
-    let resp: ApiResponse<Option<serde_json::Value>> = http
-        .post_json("/api/v1/auth/reset-password", &request)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if resp.code == 0 {
-        Ok(resp.msg)
-    } else {
-        let locale = p2premote_core::config::load_machine_config()
-            .ok()
-            .and_then(|config| config.locale);
-        Err(resp.localized_error_message(locale.as_deref()))
-    }
 }
 
 /// Tauri 命令：注册（无需邮箱验证码，使用客户端本地图片验证码）
@@ -397,27 +327,9 @@ pub async fn get_invite_info() -> Result<Option<InviteInfo>, String> {
     }
 }
 
-/// Tauri 命令：检查是否有保存的凭证
-///
-/// machine config 受保护（仅 SYSTEM+Admins），UI 通过 IPC 委托 service 检查。
-#[tauri::command]
-pub async fn has_saved_token() -> Result<bool, String> {
-    let resp = send_command_responsive(Data::HasSavedToken).await?;
-    match resp {
-        Data::CommandResponse {
-            ok: true,
-            data: Some(d),
-            ..
-        } => Ok(d.as_bool().unwrap_or(false)),
-        _ => Ok(false),
-    }
-}
-
 /// Tauri 命令：获取保存的登录标识与自动登录偏好。
-///
-/// 密码不持久化，第二个元组字段仅保留旧 WebUI 的响应形状。
 #[tauri::command]
-pub async fn get_saved_login() -> Result<Option<(String, String, bool)>, String> {
+pub async fn get_saved_login() -> Result<Option<serde_json::Value>, String> {
     let resp = send_command_responsive(Data::GetSavedLogin).await?;
     match resp {
         Data::CommandResponse {
@@ -425,15 +337,10 @@ pub async fn get_saved_login() -> Result<Option<(String, String, bool)>, String>
             data: Some(d),
             ..
         } if !d.is_null() => {
-            let arr = d.as_array().ok_or("invalid saved login response")?;
-            if arr.len() != 3 {
-                return Ok(None);
+            if !d.is_object() {
+                return Err("invalid saved login response".to_string());
             }
-            Ok(Some((
-                arr[0].as_str().unwrap_or_default().to_string(),
-                String::new(),
-                arr[2].as_bool().unwrap_or(false),
-            )))
+            Ok(Some(d))
         }
         _ => Ok(None),
     }
