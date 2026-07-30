@@ -113,7 +113,7 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <div class="window-controls no-drag">
+            <div v-if="isTauriRuntime()" class="window-controls no-drag">
               <button class="window-control-btn minimize-btn" type="button" @click="handleMinimizeWindow" :aria-label="$t('app.window.minimize_aria')">
                 <span class="window-control-icon window-control-minimize"></span>
               </button>

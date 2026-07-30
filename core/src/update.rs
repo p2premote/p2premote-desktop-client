@@ -22,6 +22,33 @@ pub enum VersionPolicyError {
     Empty,
 }
 
+impl VersionPolicyError {
+    pub fn localized_message(&self, locale: Option<&str>) -> String {
+        match self {
+            Self::Status(status) => crate::i18n::localized_message(
+                locale,
+                "errors.server_status_code",
+                &[("status", status.as_str())],
+            ),
+            Self::Decode(_) => crate::i18n::localized_message(
+                locale,
+                "errors.parse_version_failed",
+                &[],
+            ),
+            Self::Empty => crate::i18n::localized_message(
+                locale,
+                "errors.version_policy_empty",
+                &[],
+            ),
+            Self::Request(_) => crate::i18n::localized_message(
+                locale,
+                "errors.cannot_connect_update_server",
+                &[],
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VersionEvaluation {
     pub mode: &'static str,
@@ -120,5 +147,18 @@ mod tests {
         assert_eq!(evaluate_version_policy("1.6.0", &policy).mode, "optional");
         policy.latest_version = "1.6.0".to_string();
         assert_eq!(evaluate_version_policy("1.6.0", &policy).mode, "none");
+    }
+
+    #[test]
+    fn localizes_version_policy_errors() {
+        let error = VersionPolicyError::Status(reqwest::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            error.localized_message(Some("en")),
+            "Server returned status code: 502"
+        );
+        assert_eq!(
+            VersionPolicyError::Empty.localized_message(Some("zh-CN")),
+            "版本策略数据为空"
+        );
     }
 }

@@ -13,6 +13,8 @@ const webListeners = new Map<string, Set<EventHandler<any>>>()
 let webSocket: WebSocket | null = null
 let webSocketConnecting = false
 let webSocketSuspended = false
+let titleResetTimer: ReturnType<typeof window.setTimeout> | null = null
+let titleBeforeFlash: string | null = null
 
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -22,6 +24,15 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
   if (isTauriRuntime()) {
     const tauri = await import('@tauri-apps/api/core')
     return tauri.invoke<T>(command, args)
+  }
+
+  if (command === 'show_system_notification') {
+    showWebNotification(String(args.title || ''), String(args.body || ''))
+    return undefined as T
+  }
+  if (command === 'flash_main_window') {
+    flashWebPageTitle()
+    return undefined as T
   }
 
   const response = await fetch(`/api/invoke/${encodeURIComponent(command)}`, {
@@ -40,6 +51,30 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     throw new Error(payload?.error || i18n.global.t('errors.bridge_call_failed', { command }))
   }
   return payload.value as T
+}
+
+function showWebNotification(title: string, body: string): void {
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    new Notification(title, { body })
+  }
+  if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+    flashWebPageTitle(title)
+  }
+}
+
+function flashWebPageTitle(message?: string): void {
+  if (titleBeforeFlash === null) {
+    titleBeforeFlash = document.title
+  }
+  document.title = message ? `● ${message}` : `● ${titleBeforeFlash}`
+  if (titleResetTimer !== null) {
+    window.clearTimeout(titleResetTimer)
+  }
+  titleResetTimer = window.setTimeout(() => {
+    document.title = titleBeforeFlash || document.title
+    titleBeforeFlash = null
+    titleResetTimer = null
+  }, 5000)
 }
 
 export async function getWebAuthStatus(): Promise<WebAuthStatus> {

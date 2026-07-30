@@ -887,9 +887,7 @@ async fn handle_web_command(
             let _ = dispatch_web_data(Data::AcknowledgeDeviceIdentityNotification, state).await?;
             Ok(serde_json::Value::Null)
         }
-        "show_system_notification" | "flash_main_window" | "exit_application" => {
-            Ok(serde_json::Value::Null)
-        }
+        "exit_application" => Ok(serde_json::Value::Null),
         other => Err(format!("unsupported browser command: {}", other)),
     }
 }
@@ -1008,14 +1006,7 @@ async fn check_update_for_web() -> Result<serde_json::Value, String> {
     let data = match crate::update::fetch_version_policy(&config.server_url).await {
         Ok(data) => data,
         Err(error) => {
-            use crate::update::VersionPolicyError;
-            let message = match error {
-                VersionPolicyError::Request(message) | VersionPolicyError::Decode(message) => {
-                    message
-                }
-                VersionPolicyError::Status(status) => format!("服务器返回状态码: {status}"),
-                VersionPolicyError::Empty => "版本策略数据为空".to_string(),
-            };
+            let message = error.localized_message(config.locale.as_deref());
             return Ok(update_response(
                 "none",
                 false,

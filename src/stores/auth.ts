@@ -105,6 +105,22 @@ export const useAuthStore = defineStore('auth', () => {
     throw new Error(response.msg || i18n.global.t('errors.login_failed'))
   }
 
+  async function resumeSavedSession(autoLogin: boolean) {
+    deviceStore.resetDevices()
+    await invoke('resume_saved_session', { autoLogin })
+    const info = await invoke<UserInfo | null>('fetch_user_profile')
+    if (!info) {
+      throw new Error(i18n.global.t('errors.login_failed'))
+    }
+    token.value = '__service_session__'
+    userInfo.value = info
+    const status = await syncServiceRuntimeConfig()
+    if (status?.runtime?.current_device) {
+      currentDevice.value = status.runtime.current_device
+    }
+    await deviceStore.fetchDevices({ force: true })
+  }
+
   async function logout() {
     try {
       if (currentDevice.value) {
@@ -139,6 +155,7 @@ export const useAuthStore = defineStore('auth', () => {
     currentDevice,
     isLoggedIn,
     login,
+    resumeSavedSession,
     logout,
     setToken,
     fetchUserInfo,

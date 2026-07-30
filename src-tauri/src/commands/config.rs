@@ -372,23 +372,8 @@ pub async fn check_update() -> Result<UpdateCheckResponse, String> {
             })
         }
         Err(error) => {
-            use p2premote_core::update::VersionPolicyError;
             warn!("[config] 检查更新失败: {:?}", error);
-            let message = match error {
-                VersionPolicyError::Status(status) => crate::commands::localized(
-                    "errors.server_status_code",
-                    &[("status", &status.to_string())],
-                ),
-                VersionPolicyError::Decode(_) => {
-                    crate::commands::localized("errors.parse_version_failed", &[])
-                }
-                VersionPolicyError::Empty => {
-                    crate::commands::localized("errors.version_policy_empty", &[])
-                }
-                VersionPolicyError::Request(_) => {
-                    crate::commands::localized("errors.cannot_connect_update_server", &[])
-                }
-            };
+            let message = error.localized_message(config.locale.as_deref());
             Ok(UpdateCheckResponse {
                 mode: "none".to_string(),
                 has_update: false,

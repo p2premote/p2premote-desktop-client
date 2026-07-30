@@ -174,7 +174,7 @@ async function handleLogin() {
   }
   try {
     if (useSavedSession) {
-      await invoke('resume_saved_session', { autoLogin: loginSettings.autoLogin })
+      await authStore.resumeSavedSession(loginSettings.autoLogin)
     } else {
       const success = await authStore.login(loginForm.identifier, loginForm.password)
       if (!success) {

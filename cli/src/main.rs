@@ -169,16 +169,22 @@ async fn main() -> Result<()> {
             println!("config: {}", machine_config_path().display());
             println!("server_url: {}", cfg.server_url);
             println!("device_uuid: {}", get_current_device_uuid(&cfg));
-            println!("service_status: {:?}", query_service_status()?);
-            let runtime = runtime_status().await?;
-            println!(
-                "logged_in: {}",
-                runtime
-                    .get("logged_in")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            );
-            println!("{}", serde_json::to_string_pretty(&runtime)?);
+            let service_status = query_service_status()?;
+            println!("service_status: {:?}", service_status);
+            if service_status.running {
+                let runtime = runtime_status().await?;
+                println!(
+                    "logged_in: {}",
+                    runtime
+                        .get("logged_in")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                );
+                println!("{}", serde_json::to_string_pretty(&runtime)?);
+            } else {
+                println!("logged_in: unavailable");
+                println!("runtime: unavailable (service is not running)");
+            }
         }
         Commands::Device {
             command: DeviceCommands::Register,
@@ -197,12 +203,12 @@ async fn main() -> Result<()> {
         Commands::Device {
             command: DeviceCommands::List,
         } => {
-            print_command_data(send_command(Data::GetDeviceList).await?)?;
+            print_command_data(send_service_command(Data::GetDeviceList).await?)?;
         }
         Commands::Invite {
             command: InviteCommands::Info,
         } => {
-            print_command_data(send_command(Data::GetInviteInfo).await?)?;
+            print_command_data(send_service_command(Data::GetInviteInfo).await?)?;
         }
         Commands::Tunnel {
             command: TunnelCommands::List,
@@ -220,11 +226,13 @@ async fn main() -> Result<()> {
         } => match (args.target_device_id, args.source_device_id) {
             (Some(target_device_id), None) => {
                 print_command_response(
-                    send_command(Data::StopActiveTunnel { target_device_id }).await?,
+                    send_service_command(Data::StopActiveTunnel { target_device_id }).await?,
                 )?;
             }
             (None, Some(source_device_id)) => {
-                print_command_response(send_command(Data::StopTunnel { source_device_id }).await?)?;
+                print_command_response(
+                    send_service_command(Data::StopTunnel { source_device_id }).await?,
+                )?;
             }
             _ => {
                 return Err(anyhow!(
@@ -236,7 +244,7 @@ async fn main() -> Result<()> {
             (Some(target_device_id), None) => {
                 let target_device_uuid = find_device_uuid(target_device_id).await?;
                 print_command_response(
-                    send_command(Data::StartActiveTunnelJob {
+                    send_service_command(Data::StartActiveTunnelJob {
                         target_device_id,
                         target_device_uuid,
                         connect_code: None,
@@ -249,7 +257,7 @@ async fn main() -> Result<()> {
             (None, Some(invite)) => {
                 let (connect_code, temporary_password) = parse_invite(&invite)?;
                 print_command_response(
-                    send_command(Data::StartAnonymousActiveTunnelJob {
+                    send_service_command(Data::StartAnonymousActiveTunnelJob {
                         connect_code,
                         temporary_password,
                     })
@@ -275,7 +283,7 @@ async fn main() -> Result<()> {
             command: JobCommands::Stop { target_device_id },
         } => {
             print_command_response(
-                send_command(Data::StopActiveTunnelJob { target_device_id }).await?,
+                send_service_command(Data::StopActiveTunnelJob { target_device_id }).await?,
             )?;
         }
         Commands::Service {
@@ -351,6 +359,11 @@ async fn main() -> Result<()> {
         } => {
             let mut cfg = load_machine_config()?;
             let restart_for_webui_change = key == "webui_enabled";
+            let service_was_running = if restart_for_webui_change {
+                false
+            } else {
+                query_service_status()?.running
+            };
             match key.as_str() {
                 "server_url" => cfg.server_url = value,
                 "log_level" => cfg.log_level = value,
@@ -370,9 +383,16 @@ async fn main() -> Result<()> {
             if restart_for_webui_change {
                 restart_service()?;
                 println!("config updated; service restarted");
+            } else if service_was_running {
+                let response = send_command(Data::ReloadConfig)
+                    .await
+                    .map_err(|err| anyhow!("config saved, but running service reload failed: {err}"))?;
+                command_data_value(response).map_err(|err| {
+                    anyhow!("config saved, but running service rejected reload: {err}")
+                })?;
+                println!("config updated; running service reloaded");
             } else {
-                command_data_value(send_command(Data::ReloadConfig).await?)?;
-                println!("config updated");
+                println!("config updated; reload deferred because service is not running");
             }
         }
         Commands::Logs => {
@@ -407,6 +427,11 @@ async fn ensure_service_running() -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+async fn send_service_command(data: Data) -> Result<Data> {
+    ensure_service_running().await?;
+    Ok(send_command(data).await?)
 }
 
 fn default_service_executable() -> Result<PathBuf> {
@@ -509,7 +534,7 @@ async fn refreshed_tunnel_status() -> Result<Value> {
 }
 
 async fn command_status(command: Data) -> Result<Value> {
-    match send_command(command).await? {
+    match send_service_command(command).await? {
         Data::CommandResponse {
             ok,
             message,
@@ -566,7 +591,7 @@ fn tunnel_list_from_status(status: &Value) -> Value {
 }
 
 async fn find_device_uuid(target_device_id: i64) -> Result<String> {
-    let devices = match send_command(Data::GetDeviceList).await? {
+    let devices = match send_service_command(Data::GetDeviceList).await? {
         Data::CommandResponse {
             ok, message, data, ..
         } => {
