@@ -2,7 +2,6 @@
 //! 对应原 Wails: client/internal/app/app.go
 
 mod commands;
-mod http;
 
 /// 应用版本号
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -4,39 +4,13 @@
 //! 执行，service 是令牌的唯一管理者（持有令牌、负责持久化与续期）。UI 仅维护内存
 //! 中的 AUTH_STATE 供前端展示。登录偏好也通过 IPC 委托 service 管理。
 
-use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
 use super::service::send_command_responsive;
-use crate::http::PublicHttpClient;
+use p2premote_core::auth::{InviteInfo, UserInfo};
 use p2premote_core::control::send_command;
 use p2premote_core::control::Data;
-use p2premote_core::http::ApiResponse;
 use p2premote_core::service_control::stop_service;
-
-/// 用户信息（UI 展示用，与 core::auth::UserInfo 对齐）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInfo {
-    pub user_id: i64,
-    pub username: String,
-    pub email: String,
-    #[serde(default)]
-    pub member_level: Option<String>, // free, pro
-    #[serde(default)]
-    pub member_expire_time: Option<String>, // RFC3339
-    #[serde(default)]
-    pub trial_start_time: Option<String>, // RFC3339
-    #[serde(default)]
-    pub trial_used: Option<bool>,
-    #[serde(default)]
-    pub trial_remaining_days: Option<i32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InviteInfo {
-    pub invite_code: String,
-    pub invite_link: String,
-}
 
 /// 全局认证状态
 static AUTH_STATE: once_cell::sync::Lazy<parking_lot::Mutex<AuthState>> =
@@ -129,46 +103,22 @@ pub async fn register_no_verify(
 ) -> Result<serde_json::Value, String> {
     debug!("RegisterNoVerify request for: {}", email);
 
-    #[derive(Serialize)]
-    struct RegisterNoVerifyRequest {
-        username: String,
-        email: String,
-        password: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        invite_code: Option<String>,
-    }
-
-    let http = PublicHttpClient::new();
-    debug!("[RegisterNoVerify] server base_url: {}", http.base_url());
-
-    let request = RegisterNoVerifyRequest {
-        username: username.clone(),
-        email: email.clone(),
-        password,
-        invite_code: invite_code
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-    };
-
-    // Debug: 打印发送的 JSON
-    let json_body = serde_json::to_string(&request).map_err(|e| e.to_string())?;
-    info!(
-        "[RegisterNoVerify] POST /api/v1/auth/register/email body: {}",
-        json_body
-    );
-
-    let response: ApiResponse<Option<serde_json::Value>> = http
-        .post_json("/api/v1/auth/register/email", &request)
+    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    debug!("[RegisterNoVerify] server base_url: {}", config.server_url);
+    let response = p2premote_core::auth::register_no_verify(
+        &config.server_url,
+        &username,
+        &email,
+        &password,
+        invite_code.as_deref(),
+    )
         .await
         .map_err(|e| e.to_string())?;
 
-    let locale = p2premote_core::config::load_machine_config()
-        .ok()
-        .and_then(|config| config.locale);
     let message = if response.code == 0 {
         response.msg.clone()
     } else {
-        response.localized_error_message(locale.as_deref())
+        response.localized_error_message(config.locale.as_deref())
     };
     Ok(serde_json::json!({
         "code": response.code,

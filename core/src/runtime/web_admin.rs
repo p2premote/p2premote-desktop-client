@@ -3,7 +3,6 @@
 use super::{handle_data, SharedRuntimeState};
 use crate::config::load_machine_config;
 use crate::control::{Data, RuntimeStatus};
-use crate::http::ApiResponse;
 use crate::service_control::{disable_service, enable_service, query_service_status};
 use anyhow::{Context, Result};
 use axum::{
@@ -986,24 +985,13 @@ async fn register_no_verify_for_web(args: serde_json::Value) -> Result<serde_jso
     let password = arg_string(&args, &["password"])?;
     let invite_code = arg_optional_string(&args, &["inviteCode", "invite_code"]);
     let config = load_machine_config().unwrap_or_default();
-    let url = format!(
-        "{}{}",
-        config.server_url.trim_end_matches('/'),
-        "/api/v1/auth/register/email"
-    );
-    let response = crate::http::shared_client()
-        .post(&url)
-        .json(&serde_json::json!({
-            "username": username,
-            "email": email,
-            "password": password,
-            "invite_code": invite_code,
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let response = response
-        .json::<ApiResponse<Option<serde_json::Value>>>()
+    let response = crate::auth::register_no_verify(
+        &config.server_url,
+        &username,
+        &email,
+        &password,
+        invite_code.as_deref(),
+    )
         .await
         .map_err(|e| e.to_string())?;
     let message = if response.code == 0 {

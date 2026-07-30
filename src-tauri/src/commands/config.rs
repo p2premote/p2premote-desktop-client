@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tracing::{debug, info, warn};
 
-use crate::{http::PublicHttpClient, APP_VERSION};
+use crate::APP_VERSION;
 use p2premote_core::control::Data;
 use p2premote_core::service_control::disable_service;
 
@@ -351,8 +351,8 @@ pub struct UpdateCheckResponse {
 #[tauri::command]
 pub async fn check_update() -> Result<UpdateCheckResponse, String> {
     info!("[config] 检查更新...");
-    let client = PublicHttpClient::new();
-    match p2premote_core::update::fetch_version_policy(client.base_url()).await {
+    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    match p2premote_core::update::fetch_version_policy(&config.server_url).await {
         Ok(data) => {
             let evaluation = p2premote_core::update::evaluate_version_policy(APP_VERSION, &data);
             info!(

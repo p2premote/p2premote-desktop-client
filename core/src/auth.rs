@@ -54,6 +54,43 @@ struct RefreshRequest<'a> {
     refresh_token: &'a str,
 }
 
+#[derive(Debug, Serialize)]
+struct RegisterRequest<'a> {
+    username: &'a str,
+    email: &'a str,
+    password: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invite_code: Option<&'a str>,
+}
+
+/// 注册用户（无需邮箱验证码）。
+///
+/// 桌面窗口与 Web 管理界面共用此请求实现，确保服务地址和邀请代码处理一致。
+pub async fn register_no_verify(
+    server_url: &str,
+    username: &str,
+    email: &str,
+    password: &str,
+    invite_code: Option<&str>,
+) -> Result<ApiResponse<Option<serde_json::Value>>> {
+    let invite_code = invite_code.map(str::trim).filter(|value| !value.is_empty());
+    let url = format!(
+        "{}/api/v1/auth/register/email",
+        server_url.trim_end_matches('/')
+    );
+    let response = shared_client()
+        .post(url)
+        .json(&RegisterRequest {
+            username,
+            email,
+            password,
+            invite_code,
+        })
+        .send()
+        .await?;
+    Ok(response.json().await?)
+}
+
 pub async fn login_and_persist(identifier: &str, password: &str) -> Result<AuthBundle> {
     let mut config = load_machine_config()?;
     let bundle = login(&config.server_url, identifier, password).await?;
