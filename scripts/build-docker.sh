@@ -74,7 +74,6 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
 DIST_DIR="$APP_DIR/build/linux/dist/headless"
 DOCKER_CTX="$APP_DIR/packaging/linux/docker"
 DOCKERFILE="$DOCKER_CTX/Dockerfile"

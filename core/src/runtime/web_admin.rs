@@ -106,20 +106,6 @@ struct WebServiceInfo {
     raw_state: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct VersionPolicyResponse {
-    data: Option<VersionPolicyData>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VersionPolicyData {
-    latest_version: String,
-    min_supported_version: String,
-    download_url: String,
-    #[serde(default)]
-    release_notes: String,
-}
-
 impl WebSecurityState {
     fn from_config() -> Result<Self> {
         let config = load_machine_config().context("failed to load machine config")?;
@@ -1034,60 +1020,36 @@ async fn register_no_verify_for_web(args: serde_json::Value) -> Result<serde_jso
 
 async fn check_update_for_web() -> Result<serde_json::Value, String> {
     let config = load_machine_config().unwrap_or_default();
-    let url = format!(
-        "{}{}",
-        config.server_url.trim_end_matches('/'),
-        "/api/v1/client/version-policy"
-    );
     let current = client_version();
-    let resp = crate::http::shared_client()
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Ok(update_response(
-            "none",
-            false,
-            false,
-            &current,
-            "",
-            "",
-            "",
-            "",
-            Some(&format!("服务器返回状态码: {}", resp.status())),
-        ));
-    }
-    let policy = resp
-        .json::<VersionPolicyResponse>()
-        .await
-        .map_err(|e| e.to_string())?;
-    let Some(data) = policy.data else {
-        return Ok(update_response(
-            "none",
-            false,
-            false,
-            &current,
-            "",
-            "",
-            "",
-            "",
-            Some("版本策略数据为空"),
-        ));
+    let data = match crate::update::fetch_version_policy(&config.server_url).await {
+        Ok(data) => data,
+        Err(error) => {
+            use crate::update::VersionPolicyError;
+            let message = match error {
+                VersionPolicyError::Request(message) | VersionPolicyError::Decode(message) => {
+                    message
+                }
+                VersionPolicyError::Status(status) => format!("服务器返回状态码: {status}"),
+                VersionPolicyError::Empty => "版本策略数据为空".to_string(),
+            };
+            return Ok(update_response(
+                "none",
+                false,
+                false,
+                &current,
+                "",
+                "",
+                "",
+                "",
+                Some(&message),
+            ));
+        }
     };
-    let force_update = is_version_less(&current, &data.min_supported_version);
-    let has_update = is_version_less(&current, &data.latest_version);
-    let mode = if force_update {
-        "force"
-    } else if has_update {
-        "optional"
-    } else {
-        "none"
-    };
+    let evaluation = crate::update::evaluate_version_policy(&current, &data);
     Ok(update_response(
-        mode,
-        has_update,
-        force_update,
+        evaluation.mode,
+        evaluation.has_update,
+        evaluation.force_update,
         &current,
         &data.latest_version,
         &data.min_supported_version,
@@ -1128,29 +1090,6 @@ fn update_response(
         "release_notes": release_notes,
         "error": error,
     })
-}
-
-fn is_version_less(current: &str, target: &str) -> bool {
-    let parse = |version: &str| {
-        version
-            .trim_start_matches('v')
-            .split('.')
-            .map(|part| part.parse::<u64>().unwrap_or(0))
-            .collect::<Vec<_>>()
-    };
-    let current_parts = parse(current);
-    let target_parts = parse(target);
-    for i in 0..current_parts.len().max(target_parts.len()) {
-        let c = *current_parts.get(i).unwrap_or(&0);
-        let t = *target_parts.get(i).unwrap_or(&0);
-        if c < t {
-            return true;
-        }
-        if c > t {
-            return false;
-        }
-    }
-    false
 }
 
 fn arg_value<'a>(args: &'a serde_json::Value, names: &[&str]) -> Option<&'a serde_json::Value> {

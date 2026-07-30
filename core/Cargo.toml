@@ -29,6 +29,8 @@ tower-http = { version = "0.6", features = ["cors", "fs"] }
 bytes = "1"
 tokio-tungstenite = { version = "0.26", features = ["connect", "rustls-tls-webpki-roots"], default-features = false }
 tracing = "0.1"
+tracing-subscriber = "0.3"
+time = { version = "0.3", features = ["local-offset"] }
 rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"

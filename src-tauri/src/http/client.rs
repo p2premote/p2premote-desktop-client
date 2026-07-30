@@ -27,10 +27,6 @@ impl PublicHttpClient {
         &self.base_url
     }
 
-    pub fn client(&self) -> &Client {
-        &self.client
-    }
-
     pub async fn post_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
         &self,
         path: &str,

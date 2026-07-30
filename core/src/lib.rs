@@ -15,6 +15,7 @@ pub mod service_control;
 pub mod speed_test; // 基于 riperf3 的隧道测速（主动端 server / 被动端 client）
 pub mod subnet_router;
 pub mod tunnel_control;
+pub mod update;
 pub mod ws;
 
 pub mod gonc_ffi;

@@ -9,7 +9,6 @@ p2premote-core = { path = "../core" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] }
-tracing-appender = "0.1"
 time = { version = "0.3", features = ["local-offset", "macros"] }
 
 [target.'cfg(windows)'.dependencies]

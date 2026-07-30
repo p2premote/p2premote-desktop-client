@@ -1,7 +1,7 @@
 use crate::auth::refresh_with_config;
 use crate::config::MachineConfig;
 use crate::health::HEALTH_PORT;
-use crate::http::{build_client, ApiResponse};
+use crate::http::{shared_client, ApiResponse};
 use crate::speed_test::{
     build_speed_test_client, extract_download_result, extract_upload_result,
     TunnelSpeedTestCommand, TunnelSpeedTestResult, SPEED_TEST_DURATION_SECS, SPEED_TEST_PORT,
@@ -159,7 +159,7 @@ pub async fn open_active_p2p_job(
         "{}/api/v1/p2p/open",
         config.server_url.trim_end_matches('/')
     );
-    let response = build_client()
+    let response = shared_client()
         .post(url)
         .header("Authorization", format!("Bearer {}", token))
         .json(&P2POpenRequest {
@@ -524,7 +524,7 @@ async fn notify_p2p_end(
         .clone()
         .ok_or_else(|| anyhow!("not logged in"))?;
     let url = format!("{}/api/v1/p2p/end", config.server_url.trim_end_matches('/'));
-    let client = build_client();
+    let client = shared_client();
     let response = client
         .post(url)
         .header("Authorization", format!("Bearer {}", token))

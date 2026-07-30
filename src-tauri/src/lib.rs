@@ -161,125 +161,6 @@ use commands::{
     },
 };
 
-/// 对齐 Go 格式的自定义文件 MakeWriter（每日轮转）
-mod go_logger {
-    use std::fs::{self, File, OpenOptions};
-    use std::io::{self, Write};
-    use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
-    use tracing_subscriber::fmt::MakeWriter;
-
-    const MAX_ROLLED_LOG_FILES: usize = 3;
-
-    struct LogFile {
-        file: File,
-        date: String,
-        stem: String,
-        parent: PathBuf,
-    }
-
-    impl LogFile {
-        fn new(log_dir: &PathBuf, name: &str) -> io::Result<Self> {
-            let date = today();
-            fs::create_dir_all(log_dir)?;
-            let stem = name.to_string();
-            let path = log_dir.join(format!("{}.log", name));
-            let file = OpenOptions::new().create(true).append(true).open(&path)?;
-            Ok(Self {
-                file,
-                date,
-                stem,
-                parent: log_dir.clone(),
-            })
-        }
-
-        fn write(&mut self, buf: &str) -> io::Result<usize> {
-            let current = today();
-            if current != self.date {
-                // 日期变了，重新打开文件（实现每日轮转）
-                self.date = current;
-                let path = self.parent.join(format!("{}-{}.log", self.stem, self.date));
-                self.file = OpenOptions::new().create(true).append(true).open(&path)?;
-                self.cleanup_rolled_logs();
-            }
-            self.file.write(buf.as_bytes())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.file.flush()
-        }
-
-        fn cleanup_rolled_logs(&self) {
-            let prefix = format!("{}-", self.stem);
-            let suffix = ".log";
-            let Ok(entries) = fs::read_dir(&self.parent) else {
-                return;
-            };
-
-            let mut logs = entries
-                .filter_map(Result::ok)
-                .filter_map(|entry| {
-                    let path = entry.path();
-                    let file_name = path.file_name()?.to_string_lossy().to_string();
-                    if file_name.starts_with(&prefix) && file_name.ends_with(suffix) {
-                        Some((file_name, path))
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            logs.sort_by(|a, b| b.0.cmp(&a.0));
-            for (_, path) in logs.into_iter().skip(MAX_ROLLED_LOG_FILES) {
-                let _ = fs::remove_file(path);
-            }
-        }
-    }
-
-    fn today() -> String {
-        chrono::Local::now().format("%Y-%m-%d").to_string()
-    }
-
-    /// 自定义 MakeWriter：对齐 Go 日志格式
-    pub struct GoLogWriter {
-        inner: Arc<Mutex<LogFile>>,
-    }
-
-    /// 实际写入器，持有 Arc 引用
-    pub struct GoLogLine {
-        inner: Arc<Mutex<LogFile>>,
-    }
-
-    impl GoLogWriter {
-        pub fn new(log_dir: PathBuf) -> io::Result<Self> {
-            Ok(Self {
-                inner: Arc::new(Mutex::new(LogFile::new(&log_dir, "p2premote")?)),
-            })
-        }
-    }
-
-    impl Write for GoLogLine {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            let s = String::from_utf8_lossy(buf);
-            self.inner.lock().unwrap().write(&s)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.inner.lock().unwrap().flush()
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for GoLogWriter {
-        type Writer = GoLogLine;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            GoLogLine {
-                inner: self.inner.clone(),
-            }
-        }
-    }
-}
-
 /// 初始化日志系统（对齐 Go: logs/p2premote-YYYY-MM-DD.log）
 fn init_logging() {
     use tracing_subscriber::fmt::time::ChronoLocal;
@@ -287,7 +168,7 @@ fn init_logging() {
 
     // 日志输出目录：由 core 统一按平台解析
     let log_dir = app_log_dir();
-    let file_writer = go_logger::GoLogWriter::new(log_dir.clone()).ok();
+    let file_writer = p2premote_core::logging::DailyLogWriter::new(log_dir, "p2premote").ok();
 
     let file_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new("p2premote_lib=debug,hyper=info,reqwest=info,tokio=info,info")

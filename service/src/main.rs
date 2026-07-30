@@ -1,5 +1,5 @@
 use p2premote_core::config::{ensure_machine_dirs, load_machine_config, machine_log_dir};
-use p2premote_core::logging::register_log_level_reloader;
+use p2premote_core::logging::{register_log_level_reloader, DailyLogWriter};
 #[cfg(windows)]
 use p2premote_core::runtime::request_shutdown;
 use p2premote_core::runtime::run_service_foreground;
@@ -7,13 +7,7 @@ use p2premote_core::runtime::run_service_foreground;
 use p2premote_core::service_control::SERVICE_NAME;
 #[cfg(windows)]
 use tracing::error;
-use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::{prelude::*, reload, EnvFilter};
-
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 #[cfg(windows)]
 use std::ffi::OsString;
@@ -26,119 +20,6 @@ const SERVICE_TYPE: windows_service::service::ServiceType =
 
 #[cfg(windows)]
 define_windows_service!(ffi_service_main, service_entry);
-
-const MAX_ROLLED_LOG_FILES: usize = 3;
-
-struct DailyLogFile {
-    file: File,
-    date: String,
-    stem: String,
-    parent: PathBuf,
-}
-
-impl DailyLogFile {
-    fn new(log_dir: &PathBuf, name: &str) -> io::Result<Self> {
-        let date = today();
-        fs::create_dir_all(log_dir)?;
-        let stem = name.to_string();
-        let path = log_dir.join(format!("{}.log", name));
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        Ok(Self {
-            file,
-            date,
-            stem,
-            parent: log_dir.clone(),
-        })
-    }
-
-    fn write(&mut self, buf: &str) -> io::Result<usize> {
-        let current = today();
-        if current != self.date {
-            self.date = current;
-            let path = self.parent.join(format!("{}-{}.log", self.stem, self.date));
-            self.file = OpenOptions::new().create(true).append(true).open(&path)?;
-            self.cleanup_rolled_logs();
-        }
-        self.file.write(buf.as_bytes())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-
-    fn cleanup_rolled_logs(&self) {
-        let prefix = format!("{}-", self.stem);
-        let suffix = ".log";
-        let Ok(entries) = fs::read_dir(&self.parent) else {
-            return;
-        };
-
-        let mut logs = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let path = entry.path();
-                let file_name = path.file_name()?.to_string_lossy().to_string();
-                if file_name.starts_with(&prefix) && file_name.ends_with(suffix) {
-                    Some((file_name, path))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        logs.sort_by(|a, b| b.0.cmp(&a.0));
-        for (_, path) in logs.into_iter().skip(MAX_ROLLED_LOG_FILES) {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
-#[derive(Clone)]
-struct DailyLogWriter {
-    inner: Arc<Mutex<DailyLogFile>>,
-}
-
-struct DailyLogLine {
-    inner: Arc<Mutex<DailyLogFile>>,
-}
-
-impl DailyLogWriter {
-    fn new(log_dir: PathBuf, name: &str) -> io::Result<Self> {
-        Ok(Self {
-            inner: Arc::new(Mutex::new(DailyLogFile::new(&log_dir, name)?)),
-        })
-    }
-}
-
-impl Write for DailyLogLine {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let s = String::from_utf8_lossy(buf);
-        self.inner.lock().unwrap().write(&s)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.lock().unwrap().flush()
-    }
-}
-
-impl<'a> MakeWriter<'a> for DailyLogWriter {
-    type Writer = DailyLogLine;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        DailyLogLine {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-fn today() -> String {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    let Ok(date_format) = time::format_description::parse("[year]-[month]-[day]") else {
-        return "unknown-date".to_string();
-    };
-    now.format(&date_format)
-        .unwrap_or_else(|_| "unknown-date".to_string())
-}
 
 fn init_logging() {
     let _ = ensure_machine_dirs();

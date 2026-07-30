@@ -347,127 +347,48 @@ pub struct UpdateCheckResponse {
     pub error: Option<String>,
 }
 
-/// 服务器版本策略响应
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct VersionPolicyResponse {
-    pub code: i32,
-    pub msg: String,
-    pub data: Option<VersionPolicyData>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct VersionPolicyData {
-    pub latest_version: String,
-    pub min_supported_version: String,
-    pub download_url: String,
-    #[serde(default)]
-    pub release_notes: String,
-}
-
 /// Tauri 命令：检查更新
 #[tauri::command]
 pub async fn check_update() -> Result<UpdateCheckResponse, String> {
     info!("[config] 检查更新...");
-
     let client = PublicHttpClient::new();
-    let url = format!("{}{}", client.base_url(), "/api/v1/client/version-policy");
-
-    let resp = client.client().get(&url).send().await;
-
-    match resp {
-        Ok(response) => {
-            if response.status().is_success() {
-                match response.json::<VersionPolicyResponse>().await {
-                    Ok(policy_resp) => {
-                        let data = match policy_resp.data {
-                            Some(data) => data,
-                            None => {
-                                return Ok(UpdateCheckResponse {
-                                    mode: "none".to_string(),
-                                    has_update: false,
-                                    force_update: false,
-                                    current: APP_VERSION.to_string(),
-                                    latest: String::new(),
-                                    min_supported: String::new(),
-                                    download_url: String::new(),
-                                    release_notes: String::new(),
-                                    error: Some(crate::commands::localized(
-                                        "errors.version_policy_empty",
-                                        &[],
-                                    )),
-                                });
-                            }
-                        };
-                        let force_update =
-                            is_version_less(APP_VERSION, &data.min_supported_version);
-                        let has_update = is_version_less(APP_VERSION, &data.latest_version);
-                        let mode = if force_update {
-                            "force"
-                        } else if has_update {
-                            "optional"
-                        } else {
-                            "none"
-                        };
-
-                        info!(
-                            "[config] 版本检查完成: current={}, latest={}, min_supported={}, mode={}",
-                            APP_VERSION,
-                            data.latest_version,
-                            data.min_supported_version,
-                            mode
-                        );
-
-                        Ok(UpdateCheckResponse {
-                            mode: mode.to_string(),
-                            has_update,
-                            force_update,
-                            current: APP_VERSION.to_string(),
-                            latest: data.latest_version,
-                            min_supported: data.min_supported_version,
-                            download_url: data.download_url,
-                            release_notes: data.release_notes,
-                            error: None,
-                        })
-                    }
-                    Err(e) => {
-                        warn!("[config] 解析版本信息失败: {}", e);
-                        Ok(UpdateCheckResponse {
-                            mode: "none".to_string(),
-                            has_update: false,
-                            force_update: false,
-                            current: APP_VERSION.to_string(),
-                            latest: String::new(),
-                            min_supported: String::new(),
-                            download_url: String::new(),
-                            release_notes: String::new(),
-                            error: Some(crate::commands::localized(
-                                "errors.parse_version_failed",
-                                &[],
-                            )),
-                        })
-                    }
-                }
-            } else {
-                let status = response.status();
-                warn!("[config] 服务器返回状态码: {}", status);
-                Ok(UpdateCheckResponse {
-                    mode: "none".to_string(),
-                    has_update: false,
-                    force_update: false,
-                    current: APP_VERSION.to_string(),
-                    latest: String::new(),
-                    min_supported: String::new(),
-                    download_url: String::new(),
-                    release_notes: String::new(),
-                    error: Some(crate::commands::localized(
-                        "errors.server_status_code",
-                        &[("status", &status.to_string())],
-                    )),
-                })
-            }
+    match p2premote_core::update::fetch_version_policy(client.base_url()).await {
+        Ok(data) => {
+            let evaluation = p2premote_core::update::evaluate_version_policy(APP_VERSION, &data);
+            info!(
+                "[config] 版本检查完成: current={}, latest={}, min_supported={}, mode={}",
+                APP_VERSION, data.latest_version, data.min_supported_version, evaluation.mode
+            );
+            Ok(UpdateCheckResponse {
+                mode: evaluation.mode.to_string(),
+                has_update: evaluation.has_update,
+                force_update: evaluation.force_update,
+                current: APP_VERSION.to_string(),
+                latest: data.latest_version,
+                min_supported: data.min_supported_version,
+                download_url: data.download_url,
+                release_notes: data.release_notes,
+                error: None,
+            })
         }
-        Err(e) => {
-            warn!("[config] 检查更新失败: {}", e);
+        Err(error) => {
+            use p2premote_core::update::VersionPolicyError;
+            warn!("[config] 检查更新失败: {:?}", error);
+            let message = match error {
+                VersionPolicyError::Status(status) => crate::commands::localized(
+                    "errors.server_status_code",
+                    &[("status", &status.to_string())],
+                ),
+                VersionPolicyError::Decode(_) => {
+                    crate::commands::localized("errors.parse_version_failed", &[])
+                }
+                VersionPolicyError::Empty => {
+                    crate::commands::localized("errors.version_policy_empty", &[])
+                }
+                VersionPolicyError::Request(_) => {
+                    crate::commands::localized("errors.cannot_connect_update_server", &[])
+                }
+            };
             Ok(UpdateCheckResponse {
                 mode: "none".to_string(),
                 has_update: false,
@@ -477,37 +398,8 @@ pub async fn check_update() -> Result<UpdateCheckResponse, String> {
                 min_supported: String::new(),
                 download_url: String::new(),
                 release_notes: String::new(),
-                error: Some(crate::commands::localized(
-                    "errors.cannot_connect_update_server",
-                    &[],
-                )),
+                error: Some(message),
             })
         }
     }
-}
-
-fn is_version_less(current: &str, target: &str) -> bool {
-    let current_parts = parse_version_parts(current);
-    let target_parts = parse_version_parts(target);
-    let max_len = current_parts.len().max(target_parts.len());
-
-    for index in 0..max_len {
-        let current_part = *current_parts.get(index).unwrap_or(&0);
-        let target_part = *target_parts.get(index).unwrap_or(&0);
-        if current_part < target_part {
-            return true;
-        }
-        if current_part > target_part {
-            return false;
-        }
-    }
-
-    false
-}
-
-fn parse_version_parts(version: &str) -> Vec<u32> {
-    version
-        .split('.')
-        .map(|part| part.trim().parse::<u32>().unwrap_or(0))
-        .collect()
 }
