@@ -63,12 +63,6 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function releaseUiRealtimeOwnership() {
-    // WebSocket 主链路已完全由后台 service 负责。UI 不再持有 WS 连接，
-    // 此处为语义占位——实际"释放实时权"由 service 接管 WS 完成。
-    // App.vue 的 releaseUiRealtimeOwnership 仍负责 clearWsReconnectTimer。
-  }
-
   async function login(identifier: string, password: string) {
     console.log('[AuthStore] 开始登录:', identifier)
     deviceStore.resetDevices()
@@ -119,7 +113,6 @@ export const useAuthStore = defineStore('auth', () => {
     } catch (e) {
       console.error('[Auth] mark current device offline failed:', e)
     }
-    await releaseUiRealtimeOwnership()
     await invoke('logout')
     token.value = ''
     userInfo.value = null
@@ -129,32 +122,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   function setToken(newToken: string) {
     token.value = newToken
-  }
-
-  function setUserInfo(info: UserInfo) {
-    userInfo.value = info
-  }
-
-  function setCurrentDevice(device: DeviceInfo) {
-    currentDevice.value = device
-  }
-
-  function clearAuth() {
-    token.value = ''
-    userInfo.value = null
-    currentDevice.value = null
-    deviceStore.resetDevices()
-  }
-
-  async function checkLoggedIn() {
-    const loggedIn = await invoke<boolean>('is_logged_in')
-    if (loggedIn) {
-      const info = await invoke<UserInfo | null>('get_user_info')
-      if (info) {
-        userInfo.value = info
-      }
-    }
-    return loggedIn
   }
 
   async function fetchUserInfo() {
@@ -174,11 +141,6 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     logout,
     setToken,
-    setUserInfo,
-    setCurrentDevice,
-    clearAuth,
-    checkLoggedIn,
     fetchUserInfo,
-    releaseUiRealtimeOwnership,
   }
 })

@@ -652,9 +652,8 @@ function clearWsReconnectTimer() {
   }
 }
 
-async function releaseUiRealtimeOwnership() {
+function releaseUiRealtimeOwnership() {
   clearWsReconnectTimer()
-  await authStore.releaseUiRealtimeOwnership()
 }
 
 async function ensureServiceRealtimeOwnership() {
@@ -667,7 +666,7 @@ async function ensureServiceRealtimeOwnership() {
   } catch (_e) {
     // service 可能还没准备好，忽略
   }
-  await releaseUiRealtimeOwnership()
+  releaseUiRealtimeOwnership()
 }
 
 /// 收到 service-status-changed 推送时，直接更新本地状态，避免再调 get_service_status
@@ -1233,7 +1232,7 @@ async function bootstrapApp() {
       console.log('[App] service IPC reconnect stopped (logged out or app exiting)')
     })
 
-    await releaseUiRealtimeOwnership()
+    releaseUiRealtimeOwnership()
 
     await setStartupStep(t('app.startup_status.checking_login'), 96)
     const token = await withTimeout(
@@ -1316,7 +1315,7 @@ watch(
       pendingActiveTunnelJobNotifications.value = []
       return
     }
-    await releaseUiRealtimeOwnership()
+    releaseUiRealtimeOwnership()
   }
 )
 </script>

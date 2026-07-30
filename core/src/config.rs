@@ -21,15 +21,6 @@ pub struct MachineConfig {
     pub device_fingerprint_platform: Option<String>,
     #[serde(default)]
     pub device_fingerprint_version: u32,
-    /// WireGuard CLI 调试覆盖路径。Windows 用户态 WG 忽略该字段；Linux 默认
-    /// 固定使用安装包内的静态 wg，仅保留自定义绝对路径用于诊断。
-    #[serde(default)]
-    pub wg_path: String,
-    /// 旧版 WireGuard Tunnel Service 路径。Windows 正常运行已忽略，仅用于覆盖升级时
-    /// 清理仍存在于旧安装目录的 wg0；Linux 用户态回退也忽略该旧字段，固定使用包内
-    /// wireguard-go。
-    #[serde(default)]
-    pub wireguard_path: String,
     /// p2premote-punch 动态库路径（gonc wgvpn FFI）。
     #[serde(default)]
     pub p2p_punch_path: String,
@@ -85,12 +76,6 @@ impl Default for MachineConfig {
             device_fingerprint: None,
             device_fingerprint_platform: None,
             device_fingerprint_version: 0,
-            wg_path: if cfg!(windows) {
-                String::new()
-            } else {
-                default_wg_path().to_string_lossy().to_string()
-            },
-            wireguard_path: String::new(),
             p2p_punch_path: default_p2p_punch_path().to_string_lossy().to_string(),
             log_level: default_log_level(),
             auto_start: false,
@@ -239,7 +224,7 @@ pub fn default_wg_binary_name() -> &'static str {
 }
 
 /// WireGuard CLI 默认路径。Linux 固定使用安装包内的静态二进制，不依赖系统
-/// wireguard-tools 或 glibc；Windows 路径仅用于识别和清理旧版本遗留资源。
+/// wireguard-tools 或 glibc。
 pub fn default_wg_path() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
@@ -256,24 +241,6 @@ pub fn default_wg_path() -> PathBuf {
     #[cfg(all(not(target_os = "linux"), not(windows)))]
     {
         PathBuf::from(default_wg_binary_name())
-    }
-}
-
-/// 解析 WireGuard CLI 路径。Linux 将旧版本保存的 PATH 命令 `wg` 迁移到随包
-/// 静态二进制；显式自定义路径仍保留，便于诊断和开发环境覆盖。
-pub fn effective_wg_path(configured: &str) -> PathBuf {
-    let configured = configured.trim();
-    #[cfg(target_os = "linux")]
-    {
-        if configured.is_empty() || PathBuf::from(configured) == PathBuf::from("wg") {
-            return default_wg_path();
-        }
-    }
-
-    if configured.is_empty() {
-        default_wg_path()
-    } else {
-        PathBuf::from(configured)
     }
 }
 
@@ -607,15 +574,9 @@ mod wgvpn_tests {
     use super::*;
 
     #[test]
-    fn default_config_has_platform_wireguard_paths() {
+    fn default_config_has_bundled_punch_path() {
         let cfg = MachineConfig::default();
         assert!(cfg.webui_enabled);
-        if cfg!(windows) {
-            assert!(cfg.wg_path.is_empty());
-            assert!(cfg.wireguard_path.is_empty());
-        } else {
-            assert!(!cfg.wg_path.is_empty(), "Linux wg_path 不能为空");
-        }
         assert!(!cfg.p2p_punch_path.is_empty(), "p2p_punch_path 不能为空");
     }
 
@@ -645,19 +606,6 @@ mod wgvpn_tests {
         assert!(path.to_string_lossy().ends_with("wg.exe"));
         #[cfg(not(windows))]
         assert!(path.to_string_lossy().ends_with("wg"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn effective_wg_path_migrates_legacy_path_default() {
-        assert_eq!(
-            effective_wg_path("wg"),
-            linux_resources_dir().join(default_wg_binary_name())
-        );
-        assert_eq!(
-            effective_wg_path("/usr/local/bin/wg"),
-            PathBuf::from("/usr/local/bin/wg")
-        );
     }
 
     #[test]

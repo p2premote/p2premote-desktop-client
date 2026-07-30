@@ -223,7 +223,7 @@ pub async fn start_active_wgvpn(
         "{}.{}.{}.254",
         WGVPN_OCTET0, WGVPN_OCTET1, WGVPN_OCTET2
     ))?;
-    let wg_cli = resolve_wg_cli(config);
+    let wg_cli = resolve_wg_cli();
     let mut local_payload =
         wgvpn_exchange::ExchangePayload::for_active(&pub_key, my_device_id, ip_start, ip_end);
     local_payload.my_ip = choose_passive_ip_for_peer(&wg_cli, target_device_id, ip_start, ip_end)?;
@@ -341,7 +341,7 @@ pub async fn start_active_wgvpn(
         if let Err(err) = conf.write_to(&conf_path) {
             Err(err)
         } else {
-            start_tunnel_and_wait(config, &conf_path)
+            start_tunnel_and_wait(&conf_path)
         }
     } else {
         if let Err(err) = wgvpn::add_peer(&wg_cli, WG_TUNNEL_NAME, &peer) {
@@ -399,7 +399,7 @@ pub async fn start_active_wgvpn(
             let _ = wgvpn::remove_peer(&wg_cli, &handle.tunnel_name, &peer_pubkey);
         }
         if !tunnel_existed && !handle.tunnel_name.is_empty() {
-            let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(config), &handle.tunnel_name);
+            let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(), &handle.tunnel_name);
         }
         let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
         return Err(err);
@@ -447,7 +447,7 @@ pub async fn start_passive_wgvpn(
     let pubkey_path = wg_dir.join("pubkey.passive");
     std::fs::write(&pubkey_path, &pub_key).context("failed to write pubkey.passive")?;
 
-    let wg_cli = resolve_wg_cli(config);
+    let wg_cli = resolve_wg_cli();
     let mut reserved_peer_ip: Option<u32> = None;
     let local_payload_template = wgvpn_exchange::ExchangePayload {
         pubkey: pub_key.clone(),
@@ -588,7 +588,7 @@ pub async fn start_passive_wgvpn(
         if let Err(err) = conf.write_to(&conf_path) {
             Err(err)
         } else {
-            start_tunnel_and_wait(config, &conf_path)
+            start_tunnel_and_wait(&conf_path)
         }
     } else {
         if let Err(err) = wgvpn::add_peer(&wg_cli, WG_TUNNEL_NAME, &peer) {
@@ -650,7 +650,7 @@ pub async fn start_passive_wgvpn(
                     let _ = wgvpn::remove_peer(&wg_cli, &handle.tunnel_name, &peer_pubkey);
                 }
                 if !tunnel_existed && !handle.tunnel_name.is_empty() {
-                    let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(config), &handle.tunnel_name);
+                    let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(), &handle.tunnel_name);
                 }
                 release_reserved_ip(reserved_peer_ip);
                 let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
@@ -741,7 +741,7 @@ pub async fn start_passive_wgvpn(
             let _ = wgvpn::remove_peer(&wg_cli, &handle.tunnel_name, &peer_pubkey);
         }
         if !tunnel_existed && !handle.tunnel_name.is_empty() {
-            let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(config), &handle.tunnel_name);
+            let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(), &handle.tunnel_name);
         }
         let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
         let _ =
@@ -785,8 +785,8 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
         }
     }
 
-    let wg_cli = resolve_wg_cli(config);
-    let wireguard_exe = resolve_wireguard_exe(config);
+    let wg_cli = resolve_wg_cli();
+    let wireguard_exe = resolve_wireguard_exe();
     let punch_lib = resolve_p2p_punch_lib(config);
 
     // 1. 精确删除当前 Peer，不影响同引擎的其他主动/被动会话。
@@ -906,10 +906,11 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
     if !wg_dir.exists() {
         return Ok(());
     }
-    let wg_cli = resolve_wg_cli(config);
-    let wireguard_exe = resolve_wireguard_exe(config);
-    let legacy_tools_available = Path::new(&wg_cli).exists() && Path::new(&wireguard_exe).exists();
-    let tunnel_alive = legacy_tools_available && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
+    let wg_cli = resolve_wg_cli();
+    let wireguard_exe = resolve_wireguard_exe();
+    let tools_available =
+        !cfg!(windows) && Path::new(&wg_cli).exists() && Path::new(&wireguard_exe).exists();
+    let tunnel_alive = tools_available && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
     let mut cleaned = 0usize;
 
     let entries = std::fs::read_dir(&wg_dir).context("failed to read wgvpn dir")?;
@@ -938,7 +939,7 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
                     "[wgvpn] session {} stale after service restart (tunnel_alive={}), cleaning up",
                     device_id, tunnel_alive
                 );
-                if !session.userspace_wg && legacy_tools_available {
+                if !session.userspace_wg && tools_available {
                     let _ = wgvpn::remove_peer(&wg_cli, &session.tunnel_name, &session.peer_pubkey);
                 }
                 let _ = std::fs::remove_file(&path);
@@ -956,34 +957,22 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
             }
         }
     }
-    if legacy_tools_available && wgvpn::peer_count(&wg_cli, WG_TUNNEL_NAME) == 0 {
+    if tools_available && wgvpn::peer_count(&wg_cli, WG_TUNNEL_NAME) == 0 {
         let _ = wgvpn::stop_tunnel(&wireguard_exe, WG_TUNNEL_NAME);
         let _ = std::fs::remove_file(wgvpn_dir().join(WG_CONF_NAME));
     }
     info!("[wgvpn] cleaned {} stale session file(s)", cleaned);
     Ok(())
 }
-fn resolve_wireguard_exe(config: &MachineConfig) -> String {
-    #[cfg(target_os = "linux")]
-    if wgvpn::initialize_linux_wireguard_backend() == wgvpn::LinuxWireGuardBackend::Userspace {
-        // 旧 Linux 配置可能把 wireguard_path 保存成 wg CLI。用户态后端
-        // 必须固定使用随包分发的 wireguard-go，不能继承这个旧字段。
-        return crate::config::default_wireguard_path()
-            .to_string_lossy()
-            .to_string();
-    }
-    if config.wireguard_path.is_empty() {
-        crate::config::default_wireguard_path()
-            .to_string_lossy()
-            .to_string()
-    } else {
-        config.wireguard_path.clone()
-    }
+fn resolve_wireguard_exe() -> String {
+    crate::config::default_wireguard_path()
+        .to_string_lossy()
+        .to_string()
 }
 
 /// 解析 Linux 内核后端使用的 WireGuard CLI 路径。
-fn resolve_wg_cli(config: &MachineConfig) -> String {
-    crate::config::effective_wg_path(&config.wg_path)
+fn resolve_wg_cli() -> String {
+    crate::config::default_wg_path()
         .to_string_lossy()
         .to_string()
 }
@@ -1191,7 +1180,7 @@ fn ensure_keypair(config: &MachineConfig, wg_dir: &Path) -> Result<(String, Stri
         let pair = gonc_ffi::generate_wg_keypair(Path::new(&punch_lib))?;
         (pair.private_key, pair.public_key)
     } else {
-        let wg_cli = resolve_wg_cli(config);
+        let wg_cli = resolve_wg_cli();
         wgvpn::generate_keypair(&wg_cli)?
     };
     wgvpn::write_private_key(&priv_path, &priv_key)?;
@@ -1199,9 +1188,9 @@ fn ensure_keypair(config: &MachineConfig, wg_dir: &Path) -> Result<(String, Stri
     Ok((priv_key, pub_key))
 }
 
-fn start_tunnel_and_wait(config: &MachineConfig, conf_path: &Path) -> Result<wgvpn::TunnelHandle> {
-    let wireguard_exe = resolve_wireguard_exe(config);
-    let wg_cli = resolve_wg_cli(config);
+fn start_tunnel_and_wait(conf_path: &Path) -> Result<wgvpn::TunnelHandle> {
+    let wireguard_exe = resolve_wireguard_exe();
+    let wg_cli = resolve_wg_cli();
     let min_handshake_epoch = current_epoch_secs();
     let handle = wgvpn::start_tunnel(&wireguard_exe, &wg_cli, conf_path)?;
     if let Err(err) = wait_for_handshake(

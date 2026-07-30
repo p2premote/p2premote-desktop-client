@@ -831,10 +831,7 @@ pub(super) fn refresh_wgvpn_sessions_with_options(
         }
     }
     if include_transfer {
-        let Some(config) = config.as_ref() else {
-            return update_wgvpn_session_snapshot(shared, sessions, broadcast);
-        };
-        let wg_cli = crate::config::effective_wg_path(&config.wg_path)
+        let wg_cli = crate::config::default_wg_path()
             .to_string_lossy()
             .to_string();
         for session in sessions.iter_mut() {

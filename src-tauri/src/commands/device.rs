@@ -56,38 +56,6 @@ pub async fn get_device_list() -> serde_json::Value {
     }
 }
 
-/// Tauri 命令：自动注册当前设备（由 service 自动采集 hostname/lan_ip/rdp 等信息）。
-#[tauri::command]
-pub async fn register_current_device_auto() -> Result<serde_json::Value, String> {
-    register_via_service().await
-}
-
-/// 统一的注册实现：转发到 service 的 Data::RegisterDevice。
-async fn register_via_service() -> Result<serde_json::Value, String> {
-    info!("[Register] 通过 service 注册当前设备");
-    let resp = send_command_responsive(Data::RegisterDevice).await?;
-
-    let device_json = match resp {
-        Data::CommandResponse {
-            ok: true,
-            data: Some(d),
-            ..
-        } => d,
-        Data::CommandResponse {
-            ok: false, message, ..
-        } => {
-            error!("[Register] service 注册失败: {}", message);
-            return Err(message);
-        }
-        other => return Err(format!("unexpected service response: {:?}", other)),
-    };
-
-    if let Some(device_id) = device_json.get("device_id").and_then(|v| v.as_i64()) {
-        info!("[Register] 设备注册成功: id={}", device_id);
-    }
-    Ok(device_json)
-}
-
 /// Tauri 命令：更新设备别名
 #[tauri::command]
 pub async fn update_device_alias(device_id: i64, alias: String) -> Result<(), String> {

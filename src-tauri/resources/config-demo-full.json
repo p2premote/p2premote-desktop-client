@@ -21,8 +21,6 @@
   "device_fingerprint_version": 0,
 
   // Bundled component paths. Leave empty/default unless diagnosing an install.
-  "wg_path": "",
-  "wireguard_path": "",
   "p2p_punch_path": "",
   "log_level": "info",
 

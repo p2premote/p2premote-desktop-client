@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { invoke, listen, type UnlistenFn } from '../runtime/bridge'
+import { invoke, listen } from '../runtime/bridge'
 
 export interface DeviceInfo {
   device_id: number
@@ -46,13 +46,10 @@ interface DeviceOfflinePayload {
 export const useDeviceStore = defineStore('device', () => {
   const FETCH_THROTTLE_MS = 10_000
   const devices = ref<DeviceInfo[]>([])
-  const currentDevice = ref<DeviceInfo | null>(null)
   const loading = ref(false)
   const hasFetched = ref(false)
 
   // WS 事件监听器
-  let unlistenDeviceOnline: UnlistenFn | null = null
-  let unlistenDeviceOffline: UnlistenFn | null = null
   let fetchDevicesPromise: Promise<void> | null = null
   let lastFetchDevicesAt = 0
 
@@ -96,35 +93,13 @@ export const useDeviceStore = defineStore('device', () => {
     return fetchDevicesPromise
   }
 
-  async function autoRegisterDevice() {
-    const device = await invoke<DeviceInfo>('register_current_device_auto')
-    return device
-  }
-
-  async function updateAlias(deviceId: number, alias: string) {
-    await invoke('update_device_alias', { deviceId, alias })
-  }
-
-  async function deleteDevice(deviceId: number) {
-    await invoke('delete_device', { deviceId })
-  }
-
   function setDevices(newDevices: DeviceInfo[]) {
     devices.value = newDevices.sort((a, b) => a.device_id - b.device_id)
     hasFetched.value = true
   }
 
-  function setCurrentDevice(device: DeviceInfo) {
-    currentDevice.value = device
-  }
-
-  function setLoading(state: boolean) {
-    loading.value = state
-  }
-
   function resetDevices() {
     devices.value = []
-    currentDevice.value = null
     loading.value = false
     hasFetched.value = false
     fetchDevicesPromise = null
@@ -143,7 +118,7 @@ export const useDeviceStore = defineStore('device', () => {
         void fetchDevices({ force: true })
       }
       callback(data.device_id, data.device_name)
-    }).then(fn => { unlistenDeviceOnline = fn })
+    })
   }
 
   /// 监听设备离线事件
@@ -155,32 +130,17 @@ export const useDeviceStore = defineStore('device', () => {
         device.status = 'offline'
       }
       callback(data.device_id)
-    }).then(fn => { unlistenDeviceOffline = fn })
-  }
-
-  /// 清理监听器
-  function cleanupListeners() {
-    unlistenDeviceOnline?.()
-    unlistenDeviceOffline?.()
-    unlistenDeviceOnline = null
-    unlistenDeviceOffline = null
+    })
   }
 
   return {
     devices,
-    currentDevice,
     loading,
     hasFetched,
     fetchDevices,
-    autoRegisterDevice,
-    updateAlias,
-    deleteDevice,
     setDevices,
-    setCurrentDevice,
-    setLoading,
     resetDevices,
     onDeviceOnline,
-    onDeviceOffline,
-    cleanupListeners
+    onDeviceOffline
   }
 })

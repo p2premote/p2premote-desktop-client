@@ -113,8 +113,6 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
             return null
           case 'refresh_tunnel_status':
             return { runtime: state.tunnelRuntime }
-          case 'get_device_uuid':
-            return 'local-uuid'
           case 'get_device_list':
             return {
               code: 0,
@@ -140,7 +138,6 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
             return '已取消'
           case 'show_system_notification':
           case 'flash_main_window':
-          case 'disconnect_websocket':
           case 'sync_service_runtime_config':
             return null
           case 'get_settings':

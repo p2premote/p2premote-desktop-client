@@ -5,3 +5,15 @@ This template should help get you started developing with Vue 3 and TypeScript i
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+
+## Linux headless build from Windows
+
+Build the Linux headless package through the WSL Debian distribution:
+
+```powershell
+.\scripts\build-linux-wsl.ps1 -Version 1.6.4
+```
+
+The default target is the portable static musl package. Use `-Target gnu` for
+the native Debian GNU target, or `-Distribution <name>` when the WSL
+distribution is not named `Debian`.

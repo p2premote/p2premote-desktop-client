@@ -150,7 +150,7 @@ use commands::{
     },
     device::{
         delete_device, generate_connect_code, get_device_list, mark_current_device_offline,
-        register_current_device_auto, set_device_password, update_device_alias,
+        set_device_password, update_device_alias,
     },
     service::{
         acknowledge_device_identity_notification, check_required_client_files,
@@ -359,7 +359,6 @@ pub fn run() {
             try_auto_login,
             resume_saved_session,
             get_device_list,
-            register_current_device_auto,
             update_device_alias,
             delete_device,
             set_device_password,

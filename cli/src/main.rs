@@ -356,8 +356,6 @@ async fn main() -> Result<()> {
                 "server_url" => println!("{}", cfg.server_url),
                 "device_uuid" => println!("{:?}", cfg.device_uuid),
                 "device_id" => println!("{:?}", cfg.device_id),
-                "wg_path" => println!("{}", cfg.wg_path),
-                "wireguard_path" => println!("{}", cfg.wireguard_path),
                 "p2p_punch_path" => println!("{}", cfg.p2p_punch_path),
                 "log_level" => println!("{}", cfg.log_level),
                 "web_admin_allowed_ip" => println!("{:?}", cfg.web_admin_allowed_ip),
@@ -374,17 +372,15 @@ async fn main() -> Result<()> {
             match key.as_str() {
                 "server_url" => cfg.server_url = value,
                 "log_level" => cfg.log_level = value,
-                "wg_path" => cfg.wg_path = value,
-                "wireguard_path" => cfg.wireguard_path = value,
                 "p2p_punch_path" => cfg.p2p_punch_path = value,
                 "web_admin_allowed_ip" => cfg.web_admin_allowed_ip = non_empty_config_value(value),
                 "web_admin_security_code" => {
                     cfg.web_admin_security_code = non_empty_config_value(value)
                 }
                 "webui_enabled" => {
-                    cfg.webui_enabled = value.parse::<bool>().map_err(|_| {
-                        anyhow!("webui_enabled must be true or false")
-                    })?
+                    cfg.webui_enabled = value
+                        .parse::<bool>()
+                        .map_err(|_| anyhow!("webui_enabled must be true or false"))?
                 }
                 other => return Err(anyhow!("unsupported config key: {}", other)),
             }
