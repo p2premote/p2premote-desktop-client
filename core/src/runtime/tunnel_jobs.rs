@@ -482,21 +482,6 @@ pub(super) async fn cancel_all_wgvpn_jobs(shared: &Arc<Mutex<SharedRuntimeState>
     refresh_wgvpn_sessions(shared);
 }
 
-/// 查询 wgvpn 状态（job + sessions）。
-pub(super) fn list_wgvpn(shared: &Arc<Mutex<SharedRuntimeState>>) -> Data {
-    refresh_wgvpn_sessions(shared);
-    let state = shared.lock();
-    cmd_response_with_data(
-        true,
-        "ok",
-        Some(state.status.clone()),
-        serde_json::json!({
-            "jobs": state.status.wgvpn_jobs,
-            "sessions": state.status.wgvpn_sessions,
-        }),
-    )
-}
-
 pub(super) fn publish_wgvpn_job_cancelled(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,

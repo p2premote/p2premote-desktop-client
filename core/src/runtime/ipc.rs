@@ -271,9 +271,6 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::SaveWgvpnLanAccessConfig { .. } => "SaveWgvpnLanAccessConfig",
         Data::CommandResponse { .. } => "CommandResponse",
         Data::StatusChanged(_) => "StatusChanged",
-        Data::WgvpnStart { .. } => "WgvpnStart",
-        Data::WgvpnStop { .. } => "WgvpnStop",
-        Data::WgvpnList => "WgvpnList",
     }
 }
 pub(super) async fn handle_data(
@@ -878,14 +875,6 @@ pub(super) async fn handle_data(
                 Some(shared.lock().status.clone()),
             ))
         }
-        Data::WgvpnStart {
-            peer_device_id,
-            token,
-            is_active,
-            lan_cidrs,
-        } => start_wgvpn_job(shared, peer_device_id, token, is_active, lan_cidrs),
-        Data::WgvpnStop { peer_device_id } => stop_wgvpn_job(shared, peer_device_id).await,
-        Data::WgvpnList => Some(list_wgvpn(shared)),
         // 客户端不应发送这些，忽略
         Data::Handshake { .. } | Data::CommandResponse { .. } | Data::StatusChanged(_) => None,
     }

@@ -3,7 +3,7 @@
 use super::{handle_data, SharedRuntimeState};
 use crate::config::load_machine_config;
 use crate::control::{Data, RuntimeStatus};
-use crate::service_control::{disable_service, enable_service, query_service_status};
+use crate::service_control::query_service_status;
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
@@ -689,16 +689,6 @@ async fn handle_web_command(
             let _ = dispatch_web_data(Data::SetLocale { locale }, state).await?;
             Ok(serde_json::Value::Null)
         }
-        "set_auto_start" => {
-            let enabled = arg_bool(&args, &["enabled"]).unwrap_or(false);
-            if enabled {
-                enable_service().map_err(|e| e.to_string())?;
-            } else {
-                disable_service().map_err(|e| e.to_string())?;
-            }
-            let _ = dispatch_web_data(Data::SetAutoStartConfig { enabled }, state).await?;
-            Ok(serde_json::Value::Null)
-        }
         "check_update" => check_update_for_web().await,
         "register_no_verify" => register_no_verify_for_web(args).await,
         "login" => {
@@ -739,6 +729,12 @@ async fn handle_web_command(
             } else {
                 ""
             }))
+        }
+        "resume_saved_session" => {
+            let auto_login = arg_bool(&args, &["autoLogin", "auto_login"]).unwrap_or(false);
+            let resp = dispatch_web_data(Data::ResumeSavedSession { auto_login }, state).await?;
+            let _ = command_data(resp)?;
+            Ok(serde_json::Value::Null)
         }
         "is_logged_in" => Ok(serde_json::json!(state.shared.lock().status.logged_in)),
         "get_user_info" | "fetch_user_profile" => {

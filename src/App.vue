@@ -57,7 +57,7 @@
               <div class="settings-panel">
                 <section class="settings-group">
                   <div class="settings-group-title">{{ $t('app.settings.group_preferences') }}</div>
-                  <div class="settings-item">
+                  <div v-if="isTauriRuntime()" class="settings-item">
                     <span>{{ $t('app.settings.auto_start') }}</span>
                     <el-switch v-model="autoStart" @change="handleAutoStartChange" />
                   </div>

@@ -82,23 +82,6 @@ pub enum Data {
     },
     ShutdownGracefully,
 
-    // --- 客户端 → 服务端：wgvpn 隧道管理（fire-and-forget job，仿 StartActiveTunnelJob） ---
-    /// 启动 wgvpn 隧道（主动端 is_active=true，被动端 is_active=false）。
-    /// peer_device_id：主动端填目标设备 id，被动端填源设备 id。
-    WgvpnStart {
-        peer_device_id: i64,
-        token: String,
-        is_active: bool,
-        #[serde(default)]
-        lan_cidrs: Vec<String>,
-    },
-    /// 停止指定 wgvpn 会话。
-    WgvpnStop {
-        peer_device_id: i64,
-    },
-    /// 查询所有 wgvpn 会话状态。
-    WgvpnList,
-
     // --- 客户端 → 服务端：设备管理命令（统一由 service 持有 token 调服务器） ---
     GetDeviceList,
     UpdateDeviceAlias {

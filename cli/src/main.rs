@@ -1,12 +1,11 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
-use p2premote_core::auth::login_and_persist;
 use p2premote_core::config::{
-    clear_machine_credentials, default_service_binary_name, default_service_path,
-    load_machine_config, machine_config_path, machine_log_dir, save_machine_config,
+    default_service_binary_name, default_service_path, load_machine_config, machine_config_path,
+    machine_log_dir, save_machine_config,
 };
 use p2premote_core::control::{send_command, Data};
-use p2premote_core::device::{get_current_device_uuid, register_current_device_auto};
+use p2premote_core::device::get_current_device_uuid;
 use p2premote_core::service_control::{
     disable_service, enable_service, install_service, query_service_status, restart_service,
     start_service, stop_service, uninstall_service,
@@ -14,6 +13,7 @@ use p2premote_core::service_control::{
 use rpassword::prompt_password;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "p2premote-cli")]
@@ -53,10 +53,6 @@ enum Commands {
         command: ConfigCommands,
     },
     Logs,
-    Wgvpn {
-        #[command(subcommand)]
-        command: WgvpnCommands,
-    },
 }
 
 #[derive(Args)]
@@ -124,34 +120,6 @@ enum ConfigCommands {
     Get { key: String },
     Set { key: String, value: String },
 }
-#[derive(Subcommand)]
-enum WgvpnCommands {
-    /// 主动端：连接目标设备建立 wgvpn 隧道
-    Active {
-        /// 目标设备 ID
-        target_device_id: i64,
-        /// 打洞口令（punch_token）
-        token: String,
-    },
-    /// 被动端：等待被连接
-    Passive {
-        /// 发起方设备 ID
-        source_device_id: i64,
-        /// 打洞口令（punch_token）
-        token: String,
-        /// 显式开放给主动端访问的被动端 LAN 网段，可重复传入
-        #[arg(long = "expose-lan-cidr")]
-        expose_lan_cidrs: Vec<String>,
-    },
-    /// 停止指定会话
-    Stop {
-        /// 目标设备 ID
-        target_device_id: i64,
-    },
-    /// 列出所有 wgvpn 会话与 job 状态
-    List,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -162,29 +130,38 @@ async fn main() -> Result<()> {
                 Some(password) => password,
                 None => prompt_password("password: ")?,
             };
-            let bundle = login_and_persist(&args.identifier, &password).await?;
-            let mut cfg = load_machine_config()?;
-            let device = register_current_device_auto(&mut cfg).await?;
-            let _ = install_service(&default_service_executable()?);
-            let _ = start_service();
-            let _ = send_command(Data::UpdateAuth).await;
-            let _ = send_command(Data::ReloadConfig).await;
+            ensure_service_running().await?;
+            let user = command_data_value(
+                send_command(Data::Login {
+                    identifier: args.identifier,
+                    password,
+                })
+                .await?,
+            )?;
+            let device = command_data_value(send_command(Data::RegisterDevice).await?)?;
             println!(
                 "logged in as {} ({})",
-                bundle.user.username, bundle.user.email
+                user.get("username").and_then(Value::as_str).unwrap_or(""),
+                user.get("email").and_then(Value::as_str).unwrap_or("")
             );
             println!(
                 "device registered: {} ({})",
-                device.device_name, device.device_id
+                device
+                    .get("device_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                device.get("device_id").and_then(Value::as_i64).unwrap_or(0)
             );
         }
         Commands::Logout => {
-            let _ = send_command(Data::Logout).await;
-            let mut cfg = load_machine_config()?;
-            // 登出彻底清除凭据（token + 记住会话标志），
-            // 与 service 端 Data::Logout 行为一致。
-            clear_machine_credentials(&mut cfg);
-            save_machine_config(&cfg)?;
+            ensure_service_running().await?;
+            if let Err(err) =
+                command_data_value(send_command(Data::MarkCurrentDeviceOffline).await?)
+            {
+                eprintln!("warning: failed to mark current device offline: {err}");
+            }
+            command_data_value(send_command(Data::Logout).await?)?;
+            stop_service()?;
             println!("logged out");
         }
         Commands::Status => {
@@ -192,17 +169,22 @@ async fn main() -> Result<()> {
             println!("config: {}", machine_config_path().display());
             println!("server_url: {}", cfg.server_url);
             println!("device_uuid: {}", get_current_device_uuid(&cfg));
-            println!("logged_in: {}", cfg.auth_token.is_some());
             println!("service_status: {:?}", query_service_status()?);
-            if let Ok(resp) = send_command(Data::Status).await {
-                println!("{}", serde_json::to_string_pretty(&resp)?);
-            }
+            let runtime = runtime_status().await?;
+            println!(
+                "logged_in: {}",
+                runtime
+                    .get("logged_in")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            );
+            println!("{}", serde_json::to_string_pretty(&runtime)?);
         }
         Commands::Device {
             command: DeviceCommands::Register,
         } => {
-            let mut cfg = load_machine_config()?;
-            let info = register_current_device_auto(&mut cfg).await?;
+            ensure_service_running().await?;
+            let info = command_data_value(send_command(Data::RegisterDevice).await?)?;
             println!("{}", serde_json::to_string_pretty(&info)?);
         }
         Commands::Device {
@@ -389,14 +371,13 @@ async fn main() -> Result<()> {
                 restart_service()?;
                 println!("config updated; service restarted");
             } else {
-                let _ = send_command(Data::ReloadConfig).await;
+                command_data_value(send_command(Data::ReloadConfig).await?)?;
                 println!("config updated");
             }
         }
         Commands::Logs => {
             println!("{}", machine_log_dir().display());
         }
-        Commands::Wgvpn { command } => handle_wgvpn(command).await?,
     }
 
     Ok(())
@@ -407,50 +388,25 @@ fn non_empty_config_value(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-async fn handle_wgvpn(command: WgvpnCommands) -> Result<()> {
-    match command {
-        WgvpnCommands::Active {
-            target_device_id,
-            token,
-        } => {
-            print_command_response(
-                send_command(Data::WgvpnStart {
-                    peer_device_id: target_device_id,
-                    token,
-                    is_active: true,
-                    lan_cidrs: Vec::new(),
-                })
-                .await?,
-            )?;
-        }
-        WgvpnCommands::Passive {
-            source_device_id,
-            token,
-            expose_lan_cidrs,
-        } => {
-            print_command_response(
-                send_command(Data::WgvpnStart {
-                    peer_device_id: source_device_id,
-                    token,
-                    is_active: false,
-                    lan_cidrs: expose_lan_cidrs,
-                })
-                .await?,
-            )?;
-        }
-        WgvpnCommands::Stop { target_device_id } => {
-            print_command_response(
-                send_command(Data::WgvpnStop {
-                    peer_device_id: target_device_id,
-                })
-                .await?,
-            )?;
-        }
-        WgvpnCommands::List => {
-            print_command_data(send_command(Data::WgvpnList).await?)?;
-        }
+async fn ensure_service_running() -> Result<()> {
+    let status = query_service_status()?;
+    if !status.installed {
+        install_service(&default_service_executable()?)?;
     }
-    Ok(())
+    if !status.running {
+        start_service()?;
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if send_command(Data::Ping).await.is_ok() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(anyhow!("service IPC did not become ready within 10 seconds"));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 fn default_service_executable() -> Result<PathBuf> {
@@ -523,6 +479,24 @@ fn print_command_data(resp: Data) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&other_to_json(other)?)?);
             Ok(())
         }
+    }
+}
+
+fn command_data_value(resp: Data) -> Result<Value> {
+    match resp {
+        Data::CommandResponse {
+            ok, message, data, ..
+        } => {
+            if ok {
+                Ok(data.unwrap_or(Value::Null))
+            } else {
+                Err(anyhow!(message))
+            }
+        }
+        other => Err(anyhow!(
+            "unexpected service response: {:?}",
+            other_to_json(other)?
+        )),
     }
 }
 
