@@ -32,7 +32,7 @@
         </p>
         <div class="force-update-actions">
           <el-button type="primary" size="large" @click="openUpdatePage">{{ $t('app.force_update.update_now') }}</el-button>
-          <el-button size="large" @click="handleExitApp">{{ $t('app.force_update.exit') }}</el-button>
+          <el-button v-if="isTauriRuntime()" size="large" @click="handleExitApp">{{ $t('app.force_update.exit') }}</el-button>
         </div>
       </div>
     </div>

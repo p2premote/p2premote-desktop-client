@@ -782,6 +782,11 @@ async fn handle_web_command(
             let resp = dispatch_web_data(Data::GetDeviceList, state).await?;
             command_data(resp)
         }
+        "parse_invite_info" => {
+            let input = arg_string(&args, &["input"])?;
+            Ok(serde_json::to_value(crate::invite::parse_invite_info(&input))
+                .unwrap_or(serde_json::Value::Null))
+        }
         "register_current_device_auto" => {
             let resp = dispatch_web_data(Data::RegisterDevice, state).await?;
             command_data(resp)
@@ -887,7 +892,6 @@ async fn handle_web_command(
             let _ = dispatch_web_data(Data::AcknowledgeDeviceIdentityNotification, state).await?;
             Ok(serde_json::Value::Null)
         }
-        "exit_application" => Ok(serde_json::Value::Null),
         other => Err(format!("unsupported browser command: {}", other)),
     }
 }

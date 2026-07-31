@@ -4,12 +4,14 @@ use p2premote_core::config::{
     default_service_binary_name, default_service_path, load_machine_config, machine_config_path,
     machine_log_dir, save_machine_config,
 };
-use p2premote_core::control::{send_command, Data};
+use p2premote_core::control::{send_command, Data, RuntimeStatus};
 use p2premote_core::device::get_current_device_uuid;
+use p2premote_core::invite::parse_invite_info;
 use p2premote_core::service_control::{
     disable_service, enable_service, install_service, query_service_status, restart_service,
     start_service, stop_service, uninstall_service,
 };
+use p2premote_core::tunnel_view::tunnel_status_view;
 use rpassword::prompt_password;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -68,6 +70,14 @@ enum DeviceCommands {
     Register,
     Info,
     List,
+    UpdateAlias { device_id: i64, alias: String },
+    Delete { device_id: i64 },
+    SetPassword {
+        device_id: i64,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    GenerateConnectCode { device_id: i64 },
 }
 
 #[derive(Subcommand)]
@@ -205,6 +215,45 @@ async fn main() -> Result<()> {
         } => {
             print_command_data(send_service_command(Data::GetDeviceList).await?)?;
         }
+        Commands::Device {
+            command: DeviceCommands::UpdateAlias { device_id, alias },
+        } => {
+            print_command_response(
+                send_service_command(Data::UpdateDeviceAlias { device_id, alias }).await?,
+            )?;
+        }
+        Commands::Device {
+            command: DeviceCommands::Delete { device_id },
+        } => {
+            print_command_response(
+                send_service_command(Data::DeleteDevice { device_id }).await?,
+            )?;
+        }
+        Commands::Device {
+            command: DeviceCommands::SetPassword {
+                device_id,
+                password,
+            },
+        } => {
+            let password = match password {
+                Some(password) => password,
+                None => prompt_password("password: ")?,
+            };
+            print_command_response(
+                send_service_command(Data::SetDevicePassword {
+                    device_id,
+                    password,
+                })
+                .await?,
+            )?;
+        }
+        Commands::Device {
+            command: DeviceCommands::GenerateConnectCode { device_id },
+        } => {
+            print_command_data(
+                send_service_command(Data::GenerateConnectCode { device_id }).await?,
+            )?;
+        }
         Commands::Invite {
             command: InviteCommands::Info,
         } => {
@@ -213,13 +262,10 @@ async fn main() -> Result<()> {
         Commands::Tunnel {
             command: TunnelCommands::List,
         } => {
-            // 隧道实现已迁移到 WGVPN。RefreshTunnelStatus 会刷新生命周期和
-            // 按需流量快照，再映射成 CLI 的 active_tunnels/passive_tunnels 输出分组。
             let status = refreshed_tunnel_status().await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&tunnel_list_from_status(&status))?
-            );
+            let mut view = tunnel_status_view(&status);
+            sanitize_cli_value(&mut view);
+            println!("{}", serde_json::to_string_pretty(&view)?);
         }
         Commands::Tunnel {
             command: TunnelCommands::Stop(args),
@@ -255,11 +301,12 @@ async fn main() -> Result<()> {
                 )?;
             }
             (None, Some(invite)) => {
-                let (connect_code, temporary_password) = parse_invite(&invite)?;
+                let parsed = parse_invite_info(&invite)
+                    .ok_or_else(|| anyhow!("invalid invite text"))?;
                 print_command_response(
                     send_service_command(Data::StartAnonymousActiveTunnelJob {
-                        connect_code,
-                        temporary_password,
+                        connect_code: parsed.device_code,
+                        temporary_password: parsed.temporary_password,
                     })
                     .await?,
                 )?;
@@ -461,22 +508,21 @@ fn print_command_response(resp: Data) -> Result<()> {
     match resp {
         Data::CommandResponse {
             ok,
-            message,
             data,
             status,
             ..
         } => {
-            let output = serde_json::json!({
+            let mut output = serde_json::json!({
                 "ok": ok,
-                "message": message,
                 "data": data,
                 "status": status,
             });
+            sanitize_cli_value(&mut output);
             println!("{}", serde_json::to_string_pretty(&output)?);
             if ok {
                 Ok(())
             } else {
-                Err(anyhow!(message))
+                Err(anyhow!("service command failed"))
             }
         }
         other => {
@@ -489,14 +535,16 @@ fn print_command_response(resp: Data) -> Result<()> {
 fn print_command_data(resp: Data) -> Result<()> {
     match resp {
         Data::CommandResponse {
-            ok, message, data, ..
+            ok, data, ..
         } => {
             if !ok {
-                return Err(anyhow!(message));
+                return Err(anyhow!("service command failed"));
             }
+            let mut data = data.unwrap_or(Value::Null);
+            sanitize_cli_value(&mut data);
             println!(
                 "{}",
-                serde_json::to_string_pretty(&data.unwrap_or(Value::Null))?
+                serde_json::to_string_pretty(&data)?
             );
             Ok(())
         }
@@ -510,12 +558,12 @@ fn print_command_data(resp: Data) -> Result<()> {
 fn command_data_value(resp: Data) -> Result<Value> {
     match resp {
         Data::CommandResponse {
-            ok, message, data, ..
+            ok, data, ..
         } => {
             if ok {
                 Ok(data.unwrap_or(Value::Null))
             } else {
-                Err(anyhow!(message))
+                Err(anyhow!("service command failed"))
             }
         }
         other => Err(anyhow!(
@@ -526,25 +574,27 @@ fn command_data_value(resp: Data) -> Result<Value> {
 }
 
 async fn runtime_status() -> Result<Value> {
-    command_status(Data::Status).await
+    let status = command_runtime_status(Data::Status).await?;
+    let mut value = serde_json::to_value(status).context("failed to serialize runtime status")?;
+    sanitize_cli_value(&mut value);
+    Ok(value)
 }
 
-async fn refreshed_tunnel_status() -> Result<Value> {
-    command_status(Data::RefreshTunnelStatus).await
+async fn refreshed_tunnel_status() -> Result<RuntimeStatus> {
+    command_runtime_status(Data::RefreshTunnelStatus).await
 }
 
-async fn command_status(command: Data) -> Result<Value> {
+async fn command_runtime_status(command: Data) -> Result<RuntimeStatus> {
     match send_service_command(command).await? {
         Data::CommandResponse {
             ok,
-            message,
             status,
             ..
         } => {
             if !ok {
-                return Err(anyhow!(message));
+                return Err(anyhow!("service command failed"));
             }
-            serde_json::to_value(status).context("failed to serialize runtime status")
+            status.ok_or_else(|| anyhow!("service response missing runtime status"))
         }
         other => Err(anyhow!(
             "unexpected service response: {:?}",
@@ -553,50 +603,13 @@ async fn command_status(command: Data) -> Result<Value> {
     }
 }
 
-fn tunnel_list_from_status(status: &Value) -> Value {
-    let sessions = status
-        .get("wgvpn_sessions")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-
-    let mut active_tunnels = Vec::new();
-    let mut passive_tunnels = Vec::new();
-    for mut session in sessions {
-        let is_active = session
-            .get("is_active")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if let Some(object) = session.as_object_mut() {
-            if let Some(peer_device_id) = object.get("peer_device_id").cloned() {
-                let directional_key = if is_active {
-                    "target_device_id"
-                } else {
-                    "source_device_id"
-                };
-                object.insert(directional_key.to_string(), peer_device_id);
-            }
-        }
-        if is_active {
-            active_tunnels.push(session);
-        } else {
-            passive_tunnels.push(session);
-        }
-    }
-
-    serde_json::json!({
-        "active_tunnels": active_tunnels,
-        "passive_tunnels": passive_tunnels,
-    })
-}
-
 async fn find_device_uuid(target_device_id: i64) -> Result<String> {
     let devices = match send_service_command(Data::GetDeviceList).await? {
         Data::CommandResponse {
-            ok, message, data, ..
+            ok, data, ..
         } => {
             if !ok {
-                return Err(anyhow!(message));
+                return Err(anyhow!("service command failed"));
             }
             data.ok_or_else(|| anyhow!("device list response missing data"))?
         }
@@ -624,92 +637,25 @@ async fn find_device_uuid(target_device_id: i64) -> Result<String> {
     Err(anyhow!("target device not found: {}", target_device_id))
 }
 
-fn parse_invite(invite: &str) -> Result<(String, String)> {
-    let mut connect_code = String::new();
-    let mut temporary_password = String::new();
-
-    for line in invite.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some((key, value)) = trimmed.split_once('：').or_else(|| trimmed.split_once(':')) {
-            let normalized = key.trim();
-            if normalized.contains("设备代码") || normalized.eq_ignore_ascii_case("code") {
-                connect_code = value.trim().to_string();
-                continue;
-            }
-            if normalized.contains("临时密码") || normalized.eq_ignore_ascii_case("password") {
-                temporary_password = value.trim().to_string();
-                continue;
-            }
-        }
-    }
-
-    if connect_code.is_empty() || temporary_password.is_empty() {
-        let parts: Vec<&str> = invite.split_whitespace().collect();
-        if parts.len() >= 2 {
-            connect_code = parts[0].to_string();
-            temporary_password = parts[1].to_string();
-        }
-    }
-
-    if connect_code.is_empty() || temporary_password.is_empty() {
-        return Err(anyhow!("invalid invite text"));
-    }
-    Ok((connect_code, temporary_password))
-}
-
 fn other_to_json(data: Data) -> Result<Value> {
     serde_json::to_value(data).context("failed to serialize service response")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::tunnel_list_from_status;
-    use serde_json::json;
-
-    #[test]
-    fn tunnel_list_uses_wgvpn_sessions_and_preserves_transfer_stats() {
-        let output = tunnel_list_from_status(&json!({
-            "active_tunnels": [{"legacy": true}],
-            "passive_tunnels": [{"legacy": true}],
-            "wgvpn_sessions": [
-                {
-                    "peer_device_id": 28,
-                    "is_active": true,
-                    "virtual_ip": "100.99.71.2",
-                    "peer_virtual_ip": "100.99.71.41",
-                    "received_bytes": 1024,
-                    "transmitted_bytes": 2048
-                },
-                {
-                    "peer_device_id": 29,
-                    "is_active": false,
-                    "virtual_ip": "100.99.71.41",
-                    "peer_virtual_ip": "100.99.71.2",
-                    "received_bytes": 4096,
-                    "transmitted_bytes": 8192
-                }
-            ]
-        }));
-
-        let active = output["active_tunnels"].as_array().unwrap();
-        let passive = output["passive_tunnels"].as_array().unwrap();
-        assert_eq!(active.len(), 1);
-        assert_eq!(passive.len(), 1);
-        assert_eq!(active[0]["target_device_id"], 28);
-        assert_eq!(active[0]["received_bytes"], 1024);
-        assert_eq!(active[0]["transmitted_bytes"], 2048);
-        assert_eq!(passive[0]["source_device_id"], 29);
-        assert_eq!(passive[0]["received_bytes"], 4096);
-        assert_eq!(passive[0]["transmitted_bytes"], 8192);
-        assert!(active[0].get("legacy").is_none());
-    }
-
-    #[test]
-    fn tunnel_list_defaults_to_empty_when_wgvpn_status_is_missing() {
-        let output = tunnel_list_from_status(&json!({}));
-        assert_eq!(output, json!({"active_tunnels": [], "passive_tunnels": []}));
+fn sanitize_cli_value(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for key in ["message", "last_error", "device_identity_message", "locale"] {
+                object.remove(key);
+            }
+            for child in object.values_mut() {
+                sanitize_cli_value(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                sanitize_cli_value(item);
+            }
+        }
+        _ => {}
     }
 }

@@ -10,6 +10,11 @@ use tracing::{debug, error, info};
 use crate::commands::service::send_command_responsive;
 use p2premote_core::control::Data;
 
+#[tauri::command]
+pub fn parse_invite_info(input: String) -> Option<p2premote_core::invite::ParsedInviteInfo> {
+    p2premote_core::invite::parse_invite_info(&input)
+}
+
 /// 将 service 响应转为 Result：ok=true → Ok(())；ok=false → Err(message)；
 /// 非 CommandResponse（意外响应）→ Err 并记录日志（与 get_device_list/register 等一致，
 /// 避免格式错误的响应被静默当成功）。

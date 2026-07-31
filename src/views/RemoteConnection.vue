@@ -136,7 +136,6 @@ import { invoke, listen, type UnlistenFn } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
-import { parseInviteInfo } from '../utils/inviteInfo'
 const { t } = useI18n()
 
 interface AnonymousConnectResponse {
@@ -225,19 +224,19 @@ const inviteInfoPlaceholder = computed(() =>
   `${t('remote.connect.invite_info_placeholder')}\n${t('remote.connect.invite_info_example')}`
 )
 
+async function validateInviteInfo(_rule: unknown, value: unknown, callback: (error?: Error) => void) {
+  try {
+    const parsed = await invoke('parse_invite_info', { input: String(value || '') })
+    callback(parsed ? undefined : new Error(t('remote.message.invite_invalid')))
+  } catch {
+    callback(new Error(t('remote.message.invite_invalid')))
+  }
+}
+
 const rules = computed<FormRules>(() => ({
   inviteInfo: [
     { required: true, message: t('remote.connect.invite_info_placeholder'), trigger: 'blur' },
-    {
-      validator: (_rule, value, callback) => {
-        if (!parseInviteInfo(String(value || ''))) {
-          callback(new Error(t('remote.message.invite_invalid')))
-          return
-        }
-        callback()
-      },
-      trigger: 'blur',
-    },
+    { validator: validateInviteInfo, trigger: 'blur' },
   ],
 }))
 
@@ -390,7 +389,10 @@ async function handleConnect() {
     return
   }
 
-  const parsed = parseInviteInfo(form.inviteInfo)
+  const parsed = await invoke<{ deviceCode: string; temporaryPassword: string } | null>(
+    'parse_invite_info',
+    { input: form.inviteInfo },
+  )
   if (!parsed) {
     ElMessage.error(t('remote.message.invite_invalid'))
     return
