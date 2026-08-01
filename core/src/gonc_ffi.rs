@@ -62,12 +62,43 @@ pub struct UdpTunnelResult {
     #[serde(default)]
     pub remote_nat_type: String,
     #[serde(default)]
+    pub network: String,
+    #[serde(default)]
+    pub local_lan_addr: String,
+    #[serde(default)]
+    pub local_nat_addr: String,
+    #[serde(default)]
+    pub remote_lan_addr: String,
+    #[serde(default)]
+    pub remote_nat_addr: String,
+    #[serde(default)]
     pub is_client: bool,
     #[serde(default)]
     pub attempts: u32,
     #[serde(default)]
     pub error: String,
 }
+
+#[derive(Debug)]
+pub struct UdpTunnelFailure {
+    pub result: UdpTunnelResult,
+}
+
+impl std::fmt::Display for UdpTunnelFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "udp tunnel failed: {}",
+            if self.result.error.is_empty() {
+                "unknown error"
+            } else {
+                self.result.error.as_str()
+            }
+        )
+    }
+}
+
+impl std::error::Error for UdpTunnelFailure {}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StopUdpTunnelRequest {
@@ -490,14 +521,7 @@ pub fn parse_udp_tunnel_result(raw: &str) -> Result<UdpTunnelResult> {
     let result: UdpTunnelResult = serde_json::from_str(raw)
         .with_context(|| format!("invalid udp tunnel result json: {}", raw))?;
     if !result.ok {
-        return Err(anyhow!(
-            "udp tunnel failed: {}",
-            if result.error.is_empty() {
-                "unknown error"
-            } else {
-                result.error.as_str()
-            }
-        ));
+        return Err(anyhow::Error::new(UdpTunnelFailure { result }));
     }
     if result.handle_id.is_empty() {
         return Err(anyhow!("udp tunnel result missing handle_id"));
@@ -625,6 +649,11 @@ mod tests {
             "peer_endpoint": "203.0.113.10:40000",
             "local_nat_type": "easy",
             "remote_nat_type": "hard",
+            "network": "udp4",
+            "local_lan_addr": "192.168.1.10:32001",
+            "local_nat_addr": "198.51.100.20:41000",
+            "remote_lan_addr": "192.168.2.10:32002",
+            "remote_nat_addr": "203.0.113.10:40000",
             "is_client": true
         }"#;
         let parsed = parse_udp_tunnel_result(raw).unwrap();
@@ -634,8 +663,25 @@ mod tests {
 
     #[test]
     fn rejects_failure_result() {
-        let err = parse_udp_tunnel_result(r#"{"ok":false,"error":"timeout"}"#).unwrap_err();
+        let err = parse_udp_tunnel_result(
+            r#"{
+                "ok": false,
+                "attempts": 5,
+                "network": "udp4",
+                "local_nat_type": "hard",
+                "remote_nat_type": "symm",
+                "local_nat_addr": "198.51.100.20:41000",
+                "remote_nat_addr": "203.0.113.10:40000",
+                "error": "timeout"
+            }"#,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("timeout"));
+        let failure = err.downcast_ref::<UdpTunnelFailure>().unwrap();
+        assert_eq!(failure.result.attempts, 5);
+        assert_eq!(failure.result.local_nat_type, "hard");
+        assert_eq!(failure.result.remote_nat_type, "symm");
+        assert_eq!(failure.result.local_nat_addr, "198.51.100.20:41000");
     }
 
     #[test]

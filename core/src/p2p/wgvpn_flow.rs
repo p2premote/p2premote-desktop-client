@@ -83,6 +83,70 @@ pub struct WgVpnSession {
     pub subnet_last_error: String,
 }
 
+fn diagnostic_value(value: &str) -> &str {
+    if value.is_empty() {
+        "unknown"
+    } else {
+        value
+    }
+}
+
+fn log_gonc_udp_punch_established(
+    role: &str,
+    peer_device_id: i64,
+    elapsed: Duration,
+    tunnel: &gonc_ffi::UdpTunnelResult,
+) {
+    tracing::info!(
+        "[wgvpn] gonc UDP punch established: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}",
+        role,
+        peer_device_id,
+        tunnel.attempts,
+        elapsed.as_millis(),
+        diagnostic_value(&tunnel.network),
+        if tunnel.is_client { "client" } else { "server" },
+        tunnel.local_forward_addr,
+        tunnel.local_forward_port,
+        tunnel.peer_endpoint,
+        tunnel.local_nat_type,
+        tunnel.remote_nat_type,
+        diagnostic_value(&tunnel.local_lan_addr),
+        diagnostic_value(&tunnel.local_nat_addr),
+        diagnostic_value(&tunnel.remote_lan_addr),
+        diagnostic_value(&tunnel.remote_nat_addr),
+    );
+}
+
+fn log_gonc_udp_punch_failed(
+    role: &str,
+    peer_device_id: i64,
+    elapsed: Duration,
+    err: &anyhow::Error,
+) {
+    let failure = err
+        .downcast_ref::<gonc_ffi::UdpTunnelFailure>()
+        .map(|failure| &failure.result);
+    tracing::warn!(
+        "[wgvpn] gonc UDP punch failed: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}, error={:#}",
+        role,
+        peer_device_id,
+        failure.map_or(0, |result| result.attempts),
+        elapsed.as_millis(),
+        failure.map_or("unknown", |result| diagnostic_value(&result.network)),
+        failure.map_or("unknown", |result| if result.network.is_empty() { "unknown" } else if result.is_client { "client" } else { "server" }),
+        failure.map_or("", |result| result.local_forward_addr.as_str()),
+        failure.map_or(0, |result| result.local_forward_port),
+        failure.map_or("", |result| result.peer_endpoint.as_str()),
+        failure.map_or("unknown", |result| diagnostic_value(&result.local_nat_type)),
+        failure.map_or("unknown", |result| diagnostic_value(&result.remote_nat_type)),
+        failure.map_or("unknown", |result| diagnostic_value(&result.local_lan_addr)),
+        failure.map_or("unknown", |result| diagnostic_value(&result.local_nat_addr)),
+        failure.map_or("unknown", |result| diagnostic_value(&result.remote_lan_addr)),
+        failure.map_or("unknown", |result| diagnostic_value(&result.remote_nat_addr)),
+        err,
+    );
+}
+
 /// 被动端为主动端分配虚拟 IP（被动端是 IP 分配的决策点）。
 ///
 /// 分配策略（按优先级）：
@@ -256,26 +320,21 @@ pub async fn start_active_wgvpn(
     let udp_punch_started_at = Instant::now();
     let udp_tunnel = match gonc_ffi::start_udp_tunnel(Path::new(&punch_lib), &udp_tunnel_request) {
         Ok(tunnel) => {
-            tracing::info!(
-                    "[wgvpn] gonc UDP punch established: role=active, peer_device_id={}, attempts={}, elapsed_ms={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}",
-                    target_device_id,
-                    tunnel.attempts,
-                    udp_punch_started_at.elapsed().as_millis(),
-                    tunnel.local_forward_addr,
-                    tunnel.local_forward_port,
-                    tunnel.peer_endpoint,
-                    tunnel.local_nat_type,
-                    tunnel.remote_nat_type,
-                );
+            log_gonc_udp_punch_established(
+                "active",
+                target_device_id,
+                udp_punch_started_at.elapsed(),
+                &tunnel,
+            );
             tunnel
         }
         Err(err) => {
-            tracing::warn!(
-                    "[wgvpn] gonc UDP punch failed: role=active, peer_device_id={}, elapsed_ms={}, error={:#}",
-                    target_device_id,
-                    udp_punch_started_at.elapsed().as_millis(),
-                    err,
-                );
+            log_gonc_udp_punch_failed(
+                "active",
+                target_device_id,
+                udp_punch_started_at.elapsed(),
+                &err,
+            );
             return Err(err);
         }
     };
@@ -502,26 +561,21 @@ pub async fn start_passive_wgvpn(
     let udp_punch_started_at = Instant::now();
     let udp_tunnel = match gonc_ffi::start_udp_tunnel(Path::new(&punch_lib), &udp_tunnel_request) {
         Ok(tunnel) => {
-            tracing::info!(
-                    "[wgvpn] gonc UDP punch established: role=passive, peer_device_id={}, attempts={}, elapsed_ms={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}",
-                    source_device_id,
-                    tunnel.attempts,
-                    udp_punch_started_at.elapsed().as_millis(),
-                    tunnel.local_forward_addr,
-                    tunnel.local_forward_port,
-                    tunnel.peer_endpoint,
-                    tunnel.local_nat_type,
-                    tunnel.remote_nat_type,
-                );
+            log_gonc_udp_punch_established(
+                "passive",
+                source_device_id,
+                udp_punch_started_at.elapsed(),
+                &tunnel,
+            );
             tunnel
         }
         Err(err) => {
-            tracing::warn!(
-                    "[wgvpn] gonc UDP punch failed: role=passive, peer_device_id={}, elapsed_ms={}, error={:#}",
-                    source_device_id,
-                    udp_punch_started_at.elapsed().as_millis(),
-                    err,
-                );
+            log_gonc_udp_punch_failed(
+                "passive",
+                source_device_id,
+                udp_punch_started_at.elapsed(),
+                &err,
+            );
             release_reserved_ip(reserved_peer_ip);
             return Err(err);
         }

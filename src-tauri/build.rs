@@ -72,8 +72,7 @@ fn client_version() -> String {
 }
 
 fn build_punch_library_into_resources() {
-    let manifest_dir =
-        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let source_dir = env::var_os("P2PREMOTE_PUNCH_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join("../../p2premote-punch"));
@@ -172,12 +171,7 @@ fn copy_service_into_resources() {
     let target_dir = manifest_dir.join("target").join("service-build");
     let (target_os, _) = parse_target();
     let binary_name = main_binary_name("p2premote-service", &target_os);
-    let source = resolve_built_service_path(
-        &target_dir,
-        target_triple.as_deref(),
-        &profile,
-        &binary_name,
-    );
+    let source = resolve_built_service_path(&target_dir, target_triple.as_deref(), &profile, &binary_name);
     let target = resources_dir.join(&binary_name);
 
     let mut command = Command::new(cargo);
@@ -286,14 +280,20 @@ fn copy_cli_into_resources() {
 }
 
 fn copy_notifier_into_resources() {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let resources_dir = manifest_dir.join("resources");
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let target_triple = env::var("TARGET").ok();
     let target_dir = manifest_dir.join("target").join("notifier-build");
     let (target_os, _) = parse_target();
     let binary_name = main_binary_name("p2premote-notifier", &target_os);
-    let source = resolve_built_service_path(&target_dir, target_triple.as_deref(), &profile, &binary_name);
+    let source = resolve_built_service_path(
+        &target_dir,
+        target_triple.as_deref(),
+        &profile,
+        &binary_name,
+    );
     let mut command = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()));
     command.args(["build", "--manifest-path"])
         .arg(manifest_dir.join("../notifier/Cargo.toml"))
