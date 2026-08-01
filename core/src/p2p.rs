@@ -54,7 +54,7 @@ pub struct ActiveP2POpenResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelHealthEvent {
-    HeartbeatSucceeded,
+    HeartbeatSucceeded { latency_ms: Option<u32> },
     HeartbeatFailed,
     ConnectionClosed,
 }
@@ -221,7 +221,7 @@ pub async fn wgvpn_health_monitor_loop(
     let session_last_success = last_success.clone();
     let session_event_handler = event_handler.clone();
     let session_handler: TunnelHealthEventHandler = Arc::new(move |event| {
-        if event == TunnelHealthEvent::HeartbeatSucceeded {
+        if matches!(event, TunnelHealthEvent::HeartbeatSucceeded { .. }) {
             *session_last_success.lock().expect("health timestamp lock") =
                 std::time::Instant::now();
         }
@@ -323,6 +323,7 @@ async fn active_health_session(
         }
     };
 
+    let mut reported_rtt_ms = None;
     loop {
         tokio::select! {
             _ = stop_rx.changed() => {
@@ -351,12 +352,17 @@ async fn active_health_session(
                     let result = run_speed_test_as_client(&mut conn, peer_virtual_ip).await.map_err(|e| e.to_string());
                     busy_flag.store(false, std::sync::atomic::Ordering::SeqCst);
                     let _ = request.response.send(result);
-                    if let Some(handler) = event_handler { handler(TunnelHealthEvent::HeartbeatSucceeded); }
+                    if let Some(handler) = event_handler {
+                        handler(TunnelHealthEvent::HeartbeatSucceeded { latency_ms: None });
+                    }
                 }
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
                 let ts = now_millis();
-                conn.send(&TunnelControlMessage::Ping { ts }).await.context("failed to send health ping")?;
+                let started = std::time::Instant::now();
+                conn.send(&TunnelControlMessage::Ping { ts, reported_rtt_ms })
+                    .await
+                    .context("failed to send health ping")?;
                 let response = tokio::time::timeout(std::time::Duration::from_secs(5), conn.next())
                 .await
                 .context("health pong timeout")?
@@ -372,8 +378,15 @@ async fn active_health_session(
                         return Err(anyhow!("remote health closed"));
                     }
                 }
+                let raw_rtt_ms = (started.elapsed().as_secs_f64() * 1000.0)
+                    .round()
+                    .clamp(0.0, u32::MAX as f64) as u32;
+                let latency_ms = raw_rtt_ms;
+                reported_rtt_ms = Some(latency_ms);
                 if let Some(handler) = event_handler {
-                    handler(TunnelHealthEvent::HeartbeatSucceeded);
+                    handler(TunnelHealthEvent::HeartbeatSucceeded {
+                        latency_ms: Some(latency_ms),
+                    });
                 }
             }
         }
@@ -605,7 +618,10 @@ mod tests {
             .expect("send hello ack");
             let ping = conn.next().await.expect("read ping");
             let ts = match ping {
-                Some(TunnelControlMessage::Ping { ts }) => ts,
+                Some(TunnelControlMessage::Ping {
+                    ts,
+                    reported_rtt_ms: None,
+                }) => ts,
                 other => panic!("expected ping, got {:?}", other),
             };
             conn.send(&TunnelControlMessage::Pong { ts })
@@ -662,6 +678,7 @@ mod tests {
             .expect("notify remote stop");
         server.await.expect("server task");
     }
+
 }
 
 // ============ wgvpn 模块 ============

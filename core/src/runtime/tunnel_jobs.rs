@@ -907,6 +907,7 @@ pub(super) fn refresh_wgvpn_sessions_locked(state: &mut SharedRuntimeState) {
                 health_state: health.state,
                 consecutive_failures: health.consecutive_failures,
                 health_grace_deadline: health.grace_deadline,
+                latency_ms: health.latency_ms,
                 received_bytes,
                 transmitted_bytes,
                 local_forward_port: s.local_forward_port,

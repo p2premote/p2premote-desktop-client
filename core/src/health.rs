@@ -16,7 +16,14 @@ pub const HEALTH_PORT: u16 = 48082;
 
 static NEXT_HEALTH_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-pub type HealthDisconnectHandler = Arc<dyn Fn(i64, u64, &'static str) + Send + Sync>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassiveHealthEvent {
+    Connected,
+    HeartbeatSucceeded { latency_ms: Option<u32> },
+    Disconnected { reason: &'static str },
+}
+
+pub type HealthDisconnectHandler = Arc<dyn Fn(i64, u64, PassiveHealthEvent) + Send + Sync>;
 
 /// peer_device_id → 该连接的停止信号发送器。
 ///
@@ -185,7 +192,11 @@ async fn health_server_connection_loop(
     }
 
     // 健康连接恢复时通知上层取消被动会话的断线宽限清理。
-    on_disconnect(source_device_id, connection_generation, "connected");
+    on_disconnect(
+        source_device_id,
+        connection_generation,
+        PassiveHealthEvent::Connected,
+    );
 
     // 注册 per-peer 停止信号：被动端主动断开隧道时，stop_wgvpn_job 通过
     // HealthServerHandle.close_peer_connection 发送 true，本 loop 收到后 break，
@@ -249,7 +260,11 @@ async fn health_server_connection_loop(
                             "[Health] peer disconnected, source_device_id={}",
                             source_device_id
                         );
-                        on_disconnect(source_device_id, connection_generation, "peer_disconnected");
+                        on_disconnect(
+                            source_device_id,
+                            connection_generation,
+                            PassiveHealthEvent::Disconnected { reason: "peer_disconnected" },
+                        );
                         break;
                     }
                     Ok(Err(err)) => {
@@ -257,7 +272,11 @@ async fn health_server_connection_loop(
                             "[Health] read heartbeat failed, source_device_id={}, error={}",
                             source_device_id, err
                         );
-                        on_disconnect(source_device_id, connection_generation, "read_failed");
+                        on_disconnect(
+                            source_device_id,
+                            connection_generation,
+                            PassiveHealthEvent::Disconnected { reason: "read_failed" },
+                        );
                         break;
                     }
                     Err(_) => {
@@ -265,24 +284,34 @@ async fn health_server_connection_loop(
                             "[Health] heartbeat timeout, source_device_id={}",
                             source_device_id
                         );
-                        on_disconnect(source_device_id, connection_generation, "heartbeat_timeout");
+                        on_disconnect(
+                            source_device_id,
+                            connection_generation,
+                            PassiveHealthEvent::Disconnected { reason: "heartbeat_timeout" },
+                        );
                         break;
                     }
                 };
 
                 match message {
-                    TunnelControlMessage::Ping { ts } => {
+                    TunnelControlMessage::Ping { ts, reported_rtt_ms } => {
                         on_disconnect(
                             source_device_id,
                             connection_generation,
-                            "heartbeat_succeeded",
+                            PassiveHealthEvent::HeartbeatSucceeded {
+                                latency_ms: reported_rtt_ms,
+                            },
                         );
                         if conn.send(&TunnelControlMessage::Pong { ts }).await.is_err() {
                             warn!(
                                 "[Health] write pong failed, source_device_id={}",
                                 source_device_id
                             );
-                            on_disconnect(source_device_id, connection_generation, "write_failed");
+                            on_disconnect(
+                                source_device_id,
+                                connection_generation,
+                                PassiveHealthEvent::Disconnected { reason: "write_failed" },
+                            );
                             break;
                         }
                     }
@@ -350,7 +379,11 @@ async fn health_server_connection_loop(
                             "[Health] remote requested tunnel stop, source_device_id={}, reason={}",
                             source_device_id, reason
                         );
-                        on_disconnect(source_device_id, connection_generation, "remote_stop");
+                        on_disconnect(
+                            source_device_id,
+                            connection_generation,
+                            PassiveHealthEvent::Disconnected { reason: "remote_stop" },
+                        );
                         break;
                     }
                     other => {
@@ -375,7 +408,7 @@ mod tests {
 
     async fn spawn_test_health_connection() -> (
         std::net::SocketAddr,
-        mpsc::UnboundedReceiver<(i64, &'static str)>,
+        mpsc::UnboundedReceiver<(i64, PassiveHealthEvent)>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -385,8 +418,8 @@ mod tests {
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept test stream");
             health_server_connection_loop(
-                Arc::new(move |source_device_id, _generation, reason| {
-                    let _ = tx.send((source_device_id, reason));
+                Arc::new(move |source_device_id, _generation, event| {
+                    let _ = tx.send((source_device_id, event));
                 }),
                 Arc::new(StdMutex::new(HashMap::new())),
                 stream,
@@ -398,7 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_connection_replies_hello_ok_and_pong() {
-        let (addr, _rx) = spawn_test_health_connection().await;
+        let (addr, mut rx) = spawn_test_health_connection().await;
         let stream = TcpStream::connect(addr)
             .await
             .expect("connect health server");
@@ -418,13 +451,26 @@ mod tests {
                 message: "ok".to_string(),
             })
         );
+        assert_eq!(rx.recv().await, Some((123, PassiveHealthEvent::Connected)));
 
-        conn.send(&TunnelControlMessage::Ping { ts: 100 })
-            .await
-            .expect("write ping");
+        conn.send(&TunnelControlMessage::Ping {
+            ts: 100,
+            reported_rtt_ms: Some(37),
+        })
+        .await
+        .expect("write ping");
         assert_eq!(
             conn.next().await.expect("read pong"),
             Some(TunnelControlMessage::Pong { ts: 100 })
+        );
+        assert_eq!(
+            rx.recv().await,
+            Some((
+                123,
+                PassiveHealthEvent::HeartbeatSucceeded {
+                    latency_ms: Some(37)
+                }
+            ))
         );
     }
 
@@ -447,17 +493,22 @@ mod tests {
             Some(TunnelControlMessage::HelloAck { ok: true, .. })
         ));
 
-        assert_eq!(rx.recv().await, Some((456, "connected")));
+        assert_eq!(rx.recv().await, Some((456, PassiveHealthEvent::Connected)));
 
         drop(conn);
 
-        let (source_device_id, reason) =
+        let (source_device_id, event) =
             tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
                 .await
                 .expect("wait disconnect event")
                 .expect("disconnect payload");
         assert_eq!(source_device_id, 456);
-        assert_eq!(reason, "peer_disconnected");
+        assert_eq!(
+            event,
+            PassiveHealthEvent::Disconnected {
+                reason: "peer_disconnected"
+            }
+        );
     }
 
     #[tokio::test]
@@ -479,7 +530,7 @@ mod tests {
             Some(TunnelControlMessage::HelloAck { ok: true, .. })
         ));
 
-        assert_eq!(rx.recv().await, Some((789, "connected")));
+        assert_eq!(rx.recv().await, Some((789, PassiveHealthEvent::Connected)));
 
         conn.send(&TunnelControlMessage::Stop {
             reason: "user_closed".to_string(),
@@ -487,13 +538,18 @@ mod tests {
         .await
         .expect("write stop");
 
-        let (source_device_id, reason) =
+        let (source_device_id, event) =
             tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
                 .await
                 .expect("wait stop event")
                 .expect("stop payload");
         assert_eq!(source_device_id, 789);
-        assert_eq!(reason, "remote_stop");
+        assert_eq!(
+            event,
+            PassiveHealthEvent::Disconnected {
+                reason: "remote_stop"
+            }
+        );
     }
 
     #[tokio::test]
@@ -540,8 +596,8 @@ mod tests {
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept test stream");
             health_server_connection_loop(
-                Arc::new(move |source_device_id, _generation, reason| {
-                    let _ = tx.send((source_device_id, reason));
+                Arc::new(move |source_device_id, _generation, event| {
+                    let _ = tx.send((source_device_id, event));
                 }),
                 peer_stops_for_task,
                 stream,
@@ -566,7 +622,7 @@ mod tests {
         ));
 
         // 等待 connected 回调（确认 per-peer sender 已注册）
-        assert_eq!(rx.recv().await, Some((222, "connected")));
+        assert_eq!(rx.recv().await, Some((222, PassiveHealthEvent::Connected)));
 
         // 模拟 stop_wgvpn_job 调用 close_peer_connection：
         // 取出 sender 并发送 stop 信号。
@@ -649,7 +705,10 @@ mod tests {
         // 旧连接 cleanup 不能删除新一代 sender；新连接仍应正常响应。
         assert!(peer_stops.lock().expect("lock registry").contains_key(&333));
         second
-            .send(&TunnelControlMessage::Ping { ts: 333 })
+            .send(&TunnelControlMessage::Ping {
+                ts: 333,
+                reported_rtt_ms: None,
+            })
             .await
             .expect("write ping on replacement connection");
         assert_eq!(

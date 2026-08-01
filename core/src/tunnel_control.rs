@@ -25,6 +25,10 @@ pub enum TunnelControlMessage {
     },
     Ping {
         ts: i64,
+        /// 主动端上一次测得并用于展示的隧道 RTT。首个样本前为空；
+        /// 被动端只消费该值，不使用两端系统时间推算延迟。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reported_rtt_ms: Option<u32>,
     },
     Pong {
         ts: i64,
@@ -126,7 +130,10 @@ mod tests {
         let mut client_conn = TunnelControlConnection::new(client);
         let mut server_conn = TunnelControlConnection::new(server);
 
-        let message = TunnelControlMessage::Ping { ts: 123 };
+        let message = TunnelControlMessage::Ping {
+            ts: 123,
+            reported_rtt_ms: Some(42),
+        };
         client_conn.send(&message).await.expect("send message");
         let decoded = server_conn
             .next()
@@ -134,5 +141,18 @@ mod tests {
             .expect("read message")
             .expect("message exists");
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn legacy_ping_without_reported_rtt_is_accepted() {
+        let decoded: TunnelControlMessage =
+            serde_json::from_str(r#"{"t":"Ping","c":{"ts":123}}"#).expect("decode legacy ping");
+        assert_eq!(
+            decoded,
+            TunnelControlMessage::Ping {
+                ts: 123,
+                reported_rtt_ms: None,
+            }
+        );
     }
 }

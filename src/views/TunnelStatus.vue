@@ -34,6 +34,7 @@
                     <div class="tunnel-overview">
                       <span v-if="tunnel.role === 'passive'">{{ $t('tunnel.info.from_user', { user: userLabel(tunnel) }) }}</span>
                       <span>{{ connectedDuration(tunnel) }}</span>
+                      <span>{{ latencyLabel(tunnel) }}</span>
                       <span class="traffic" :aria-label="$t('tunnel.info.traffic_summary', {
                         download: formatBytes(tunnel.received_bytes),
                         upload: formatBytes(tunnel.transmitted_bytes),
@@ -135,6 +136,7 @@ interface TunnelItem {
   health_state?: 'connected' | 'degraded'
   consecutive_failures?: number
   health_grace_deadline?: number | null
+  latency_ms?: number | null
   received_bytes: number
   transmitted_bytes: number
   lifecycle_state: 'not_established' | 'connecting' | 'connected' | 'recovering'
@@ -152,6 +154,7 @@ interface WgvpnSessionStatus {
   health_state: 'connected' | 'degraded'
   consecutive_failures: number
   health_grace_deadline?: number | null
+  latency_ms?: number | null
   received_bytes?: number
   transmitted_bytes?: number
 }
@@ -213,6 +216,7 @@ const tunnels = computed(() => {
       health_state: session.health_state,
       consecutive_failures: session.consecutive_failures,
       health_grace_deadline: session.health_grace_deadline,
+      latency_ms: session.latency_ms,
       received_bytes: session.received_bytes || 0,
       transmitted_bytes: session.transmitted_bytes || 0,
       lifecycle_state: session.health_state === 'degraded' ? 'recovering' : 'connected',
@@ -395,6 +399,12 @@ function toggleDetails(tunnel: TunnelItem) {
 
 function shouldShowLifecycleMessage(tunnel: TunnelItem): boolean {
   return tunnel.lifecycle_state !== 'connected'
+}
+
+function latencyLabel(tunnel: TunnelItem): string {
+  if (tunnel.health_state === 'degraded') return t('tunnel.info.latency_timeout')
+  if (typeof tunnel.latency_ms !== 'number') return t('tunnel.info.latency_unavailable')
+  return t('tunnel.info.latency', { latency: tunnel.latency_ms })
 }
 
 function connectedDuration(tunnel: TunnelItem): string {

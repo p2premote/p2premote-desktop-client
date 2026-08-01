@@ -26,7 +26,10 @@ use crate::device_identity::{
     detect_clone, ensure_device_uuid, rebuild_device_identity, CloneDetectionResult,
 };
 use crate::gonc_ffi;
-use crate::health::{spawn_health_server, HealthDisconnectHandler, HealthServerHandle, HEALTH_PORT};
+use crate::health::{
+    spawn_health_server, HealthDisconnectHandler, HealthServerHandle, PassiveHealthEvent,
+    HEALTH_PORT,
+};
 use crate::i18n::localized_message;
 use crate::p2p::wgvpn_flow;
 use crate::p2p::{
@@ -120,6 +123,7 @@ struct WgvpnHealthRuntime {
     state: WgvpnHealthState,
     consecutive_failures: u8,
     grace_deadline: Option<i64>,
+    latency_ms: Option<u32>,
 }
 
 impl Default for WgvpnHealthRuntime {
@@ -128,6 +132,7 @@ impl Default for WgvpnHealthRuntime {
             state: WgvpnHealthState::Connected,
             consecutive_failures: 0,
             grace_deadline: None,
+            latency_ms: None,
         }
     }
 }
@@ -350,12 +355,12 @@ pub async fn run_service_foreground() -> Result<()> {
 
     let health_shared = shared.clone();
     let health_handler: HealthDisconnectHandler = Arc::new(
-        move |peer_device_id, generation, reason| {
+        move |peer_device_id, generation, event| {
             info!(
-                "[ServiceRuntime] tunnel health event: peer_device_id={}, reason={}",
-                peer_device_id, reason
+                "[ServiceRuntime] tunnel health event: peer_device_id={}, event={:?}",
+                peer_device_id, event
             );
-            if reason == "connected" {
+            if event == PassiveHealthEvent::Connected {
                 {
                     let mut state = health_shared.lock();
                     state
@@ -365,7 +370,7 @@ pub async fn run_service_foreground() -> Result<()> {
                         .passive_health_watchdog_generations
                         .remove(&peer_device_id);
                 }
-                record_wgvpn_health_success(&health_shared, peer_device_id, None);
+                record_wgvpn_health_success(&health_shared, peer_device_id, None, None);
                 return;
             }
             let is_current = health_shared
@@ -376,16 +381,19 @@ pub async fn run_service_foreground() -> Result<()> {
                 == Some(generation);
             if !is_current {
                 info!(
-                "[ServiceRuntime] ignored stale health connection event: peer_device_id={}, generation={}, reason={}",
-                peer_device_id, generation, reason
+                "[ServiceRuntime] ignored stale health connection event: peer_device_id={}, generation={}, event={:?}",
+                peer_device_id, generation, event
             );
                 return;
             }
-            match reason {
-                "heartbeat_succeeded" => {
-                    record_wgvpn_health_success(&health_shared, peer_device_id, None)
+            match event {
+                PassiveHealthEvent::Connected => {}
+                PassiveHealthEvent::HeartbeatSucceeded { latency_ms } => {
+                    record_wgvpn_health_success(&health_shared, peer_device_id, None, latency_ms)
                 }
-                "remote_stop" | "peer_disconnected" => {
+                PassiveHealthEvent::Disconnected {
+                    reason: reason @ ("remote_stop" | "peer_disconnected"),
+                } => {
                     cancel_passive_health_grace(&health_shared, peer_device_id);
                     cleanup_wgvpn_session_async(
                         health_shared.clone(),
@@ -394,7 +402,9 @@ pub async fn run_service_foreground() -> Result<()> {
                         CleanupGuard::None,
                     );
                 }
-                _ => mark_wgvpn_health_degraded(health_shared.clone(), peer_device_id, reason),
+                PassiveHealthEvent::Disconnected { reason } => {
+                    mark_wgvpn_health_degraded(health_shared.clone(), peer_device_id, reason)
+                }
             }
         },
     );
@@ -1153,6 +1163,8 @@ mod tests {
     #[tokio::test]
     async fn health_enters_degraded_after_twelve_failures() {
         let shared = Arc::new(Mutex::new(SharedRuntimeState::default()));
+        record_wgvpn_health_success(&shared, 29, None, Some(42));
+        assert_eq!(shared.lock().wgvpn_health_runtime[&29].latency_ms, Some(42));
 
         for _ in 0..(WGVPN_HEALTH_FAILURE_THRESHOLD - 1) {
             record_wgvpn_health_failure(shared.clone(), 29, None);
@@ -1167,6 +1179,7 @@ mod tests {
         let health = &state.wgvpn_health_runtime[&29];
         assert_eq!(health.state, WgvpnHealthState::Degraded);
         assert_eq!(health.consecutive_failures, WGVPN_HEALTH_FAILURE_THRESHOLD);
+        assert_eq!(health.latency_ms, None);
         assert!(health.grace_deadline.is_some());
     }
 

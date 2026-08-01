@@ -104,8 +104,8 @@ pub(super) fn spawn_wgvpn_health_monitor(
 
     let event_shared = shared.clone();
     let event_handler = Arc::new(move |event| match event {
-        TunnelHealthEvent::HeartbeatSucceeded => {
-            record_wgvpn_health_success(&event_shared, peer_device_id, Some(generation))
+        TunnelHealthEvent::HeartbeatSucceeded { latency_ms } => {
+            record_wgvpn_health_success(&event_shared, peer_device_id, Some(generation), latency_ms)
         }
         TunnelHealthEvent::HeartbeatFailed => {
             record_wgvpn_health_failure(event_shared.clone(), peer_device_id, Some(generation))
@@ -197,6 +197,7 @@ pub(super) fn publish_wgvpn_health_status_locked(
         session.health_state = health.state;
         session.consecutive_failures = health.consecutive_failures;
         session.health_grace_deadline = health.grace_deadline;
+        session.latency_ms = health.latency_ms;
         Some(session.clone())
     } else {
         None
@@ -252,6 +253,7 @@ pub(super) fn record_wgvpn_health_success(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
     expected_generation: Option<u64>,
+    latency_ms: Option<u32>,
 ) {
     let changed = {
         let mut state = shared.lock();
@@ -264,10 +266,14 @@ pub(super) fn record_wgvpn_health_success(
             .or_default();
         let changed = health.state != WgvpnHealthState::Connected
             || health.consecutive_failures != 0
-            || health.grace_deadline.is_some();
+            || health.grace_deadline.is_some()
+            || latency_ms.is_some_and(|value| health.latency_ms != Some(value));
         health.state = WgvpnHealthState::Connected;
         health.consecutive_failures = 0;
         health.grace_deadline = None;
+        if let Some(latency_ms) = latency_ms {
+            health.latency_ms = Some(latency_ms);
+        }
         if changed {
             publish_wgvpn_health_status_locked(&mut state, peer_device_id);
         }
@@ -302,6 +308,7 @@ pub(super) fn record_wgvpn_health_failure(
         {
             health.state = WgvpnHealthState::Degraded;
             health.grace_deadline = Some(now_ts() + WGVPN_HEALTH_GRACE_SECS as i64);
+            health.latency_ms = None;
             publish_wgvpn_health_status_locked(&mut state, peer_device_id);
             true
         } else {
@@ -330,6 +337,7 @@ pub(super) fn mark_wgvpn_health_degraded(
             health.state = WgvpnHealthState::Degraded;
             health.consecutive_failures = WGVPN_HEALTH_FAILURE_THRESHOLD;
             health.grace_deadline = Some(now_ts() + WGVPN_HEALTH_GRACE_SECS as i64);
+            health.latency_ms = None;
             publish_wgvpn_health_status_locked(&mut state, peer_device_id);
             true
         }

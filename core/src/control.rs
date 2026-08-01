@@ -324,6 +324,9 @@ pub struct WgvpnSessionStatus {
     pub consecutive_failures: u8,
     #[serde(default)]
     pub health_grace_deadline: Option<i64>,
+    /// 健康控制连接最近一次测得的往返延迟（毫秒）。首个样本前为空。
+    #[serde(default)]
+    pub latency_ms: Option<u32>,
     /// WireGuard peer 累计接收/发送字节数。接口重建后从零开始。
     #[serde(default)]
     pub received_bytes: u64,
