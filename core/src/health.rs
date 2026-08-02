@@ -134,16 +134,26 @@ async fn health_server_connection_loop(
     debug!("[Health] connection loop started, peer={:?}", peer);
     let mut conn = TunnelControlConnection::new(stream);
 
-    let source_device_id =
+    let (source_device_id, speed_only) =
         match tokio::time::timeout(std::time::Duration::from_secs(5), conn.next()).await {
             Ok(Ok(Some(TunnelControlMessage::Hello {
                 source_device_id,
                 protocol_version,
-            }))) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => source_device_id,
-            Ok(Ok(Some(TunnelControlMessage::Hello {
-                source_device_id: _,
+            }))) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => {
+                (source_device_id, false)
+            }
+            Ok(Ok(Some(TunnelControlMessage::SpeedHello {
+                source_device_id,
                 protocol_version,
-            }))) => {
+            }))) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => (source_device_id, true),
+            Ok(Ok(Some(
+                TunnelControlMessage::Hello {
+                    protocol_version, ..
+                }
+                | TunnelControlMessage::SpeedHello {
+                    protocol_version, ..
+                },
+            ))) => {
                 warn!(
                     "[Health] unsupported protocol version from {:?}: {}",
                     peer, protocol_version
@@ -191,6 +201,20 @@ async fn health_server_connection_loop(
         return;
     }
 
+    if speed_only {
+        debug!(
+            "[SpeedTest] one-shot control connected, source_device_id={}, peer={:?}",
+            source_device_id, peer
+        );
+        if let Err(err) = speed_control_server_loop(&mut conn, source_device_id).await {
+            warn!(
+                "[SpeedTest] one-shot control failed, source_device_id={}, error={:#}",
+                source_device_id, err
+            );
+        }
+        return;
+    }
+
     // 健康连接恢复时通知上层取消被动会话的断线宽限清理。
     on_disconnect(
         source_device_id,
@@ -226,6 +250,7 @@ async fn health_server_connection_loop(
         }
     };
 
+    let mut speed_server_task = None;
     loop {
         tokio::select! {
             // 被动端主动断开：直接 break，drop TcpStream 触发 TCP FIN。
@@ -315,63 +340,25 @@ async fn health_server_connection_loop(
                             break;
                         }
                     }
-                    TunnelControlMessage::SpeedPing { nonce } => {
-                        if conn
-                            .send(&TunnelControlMessage::SpeedPong { nonce })
-                            .await
-                            .is_err()
+                    message @ (TunnelControlMessage::SpeedPing { .. } | TunnelControlMessage::SpeedStart) => {
+                        match handle_speed_control_message(
+                            &mut conn,
+                            message,
+                            source_device_id,
+                        )
+                        .await
                         {
-                            break;
-                        }
-                    }
-                    TunnelControlMessage::SpeedStart => {
-                        // 被动端作为 riperf3 server（被主动端 client 连）。
-                        // 架构依据：wgvpn userspace 后端只有"主动端→被动端"方向可达，
-                        // 所以被动端做 server、主动端做 client。
-                        //
-                        // 必须在独立 task 里跑 run_once：每个方向测速持续约 8 秒（6s 数据 + 握手），
-                        // 若同步等待会占用 health loop，期间无法应答 Ping。
-                        // 测试时长由两端各自的 SPEED_TEST_DURATION_SECS 常量决定。
-                        let server = match crate::speed_test::build_speed_test_server() {
-                            Ok(s) => s,
+                            Ok(Some(task)) => {
+                                replace_speed_server_task(&mut speed_server_task, task).await;
+                            }
+                            Ok(None) => {}
                             Err(err) => {
                                 warn!(
-                                    "[SpeedTest] passive server build failed: {:#}, source_device_id={}",
-                                    err, source_device_id
+                                    "[SpeedTest] health control request failed, source_device_id={}, error={:#}",
+                                    source_device_id, err
                                 );
                                 break;
                             }
-                        };
-                        // 先 spawn run_once 让 server 开始 listen，再回 SpeedReady。
-                        // 时序关键：riperf3 client 连接失败不重试，必须等 listen 就绪。
-                        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
-                        tokio::spawn(async move {
-                            // riperf3 0.8.0 的 run_once 内部自己 tcp_listen，无法在 run 前
-                            // 拿到 listen 就绪信号。给一个短暂 yield 让 listen 启动，然后
-                            // 通知主动端。run_once 会阻塞到服务完一个 client。
-                            tokio::task::yield_now().await;
-                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                            let _ = ready_tx.send(());
-                            if let Err(err) = server.run_once().await {
-                                warn!("[SpeedTest] passive server run_once failed: {:#}", err);
-                            }
-                        });
-                        // 等 ready 信号（理论上立即就绪，加超时兜底）。
-                        match tokio::time::timeout(std::time::Duration::from_secs(3), ready_rx).await {
-                            Ok(Ok(())) => {}
-                            _ => {
-                                warn!(
-                                    "[SpeedTest] passive server ready signal timeout, source_device_id={}",
-                                    source_device_id
-                                );
-                            }
-                        }
-                        info!(
-                            "[SpeedTest] passive server listening on 0.0.0.0:{}",
-                            crate::speed_test::SPEED_TEST_PORT
-                        );
-                        if conn.send(&TunnelControlMessage::SpeedReady).await.is_err() {
-                            break;
                         }
                     }
                     TunnelControlMessage::Stop { reason } => {
@@ -397,7 +384,111 @@ async fn health_server_connection_loop(
         }
     }
 
+    stop_speed_server_task(&mut speed_server_task).await;
     cleanup_registry();
+}
+
+async fn speed_control_server_loop(
+    conn: &mut TunnelControlConnection<TcpStream>,
+    source_device_id: i64,
+) -> Result<()> {
+    let mut speed_server_task = None;
+    let result = async {
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(60), conn.next())
+                .await
+                .context("speed control message timeout")??;
+            let Some(message) = message else {
+                return Ok(());
+            };
+            if let Some(task) =
+                handle_speed_control_message(conn, message, source_device_id).await?
+            {
+                replace_speed_server_task(&mut speed_server_task, task).await;
+            }
+        }
+    }
+    .await;
+    stop_speed_server_task(&mut speed_server_task).await;
+    result
+}
+
+async fn handle_speed_control_message(
+    conn: &mut TunnelControlConnection<TcpStream>,
+    message: TunnelControlMessage,
+    source_device_id: i64,
+) -> Result<Option<tokio::task::JoinHandle<()>>> {
+    match message {
+        TunnelControlMessage::SpeedPing { nonce } => {
+            conn.send(&TunnelControlMessage::SpeedPong { nonce }).await?;
+            Ok(None)
+        }
+        TunnelControlMessage::SpeedStart => {
+            // 本次测速的接收端临时作为 riperf3 server；发起端通过对端虚拟 IP
+            // 连接该 server。使用独立控制连接后，主动端和被动端都可承担此角色。
+            let server_lease = crate::speed_test::acquire_speed_test_server_lease().await?;
+            let server = crate::speed_test::build_speed_test_server()
+                .context("failed to build speed test server")?;
+            let server_task = tokio::spawn(async move {
+                let _server_lease = server_lease;
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(
+                        crate::speed_test::SPEED_TEST_RUN_TIMEOUT_SECS,
+                    ),
+                    server.run_once(),
+                )
+                .await
+                {
+                    Ok(Ok(_report)) => {}
+                    Ok(Err(err)) => warn!("[SpeedTest] server run_once failed: {:#}", err),
+                    Err(_) => warn!(
+                        "[SpeedTest] server timed out after {}s",
+                        crate::speed_test::SPEED_TEST_RUN_TIMEOUT_SECS
+                    ),
+                }
+            });
+            // riperf3 没有暴露 bind-ready 回调；先让 run_once 在独立任务中实际
+            // 进入 listen，再给控制端 Ready。若任务已提前退出则明确报错。
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if server_task.is_finished() {
+                let _ = server_task.await;
+                return Err(anyhow::anyhow!("speed test server exited before ready"));
+            }
+            info!(
+                "[SpeedTest] server listening on 0.0.0.0:{}, requested_by={}",
+                crate::speed_test::SPEED_TEST_PORT,
+                source_device_id
+            );
+            if let Err(err) = conn.send(&TunnelControlMessage::SpeedReady).await {
+                server_task.abort();
+                let _ = server_task.await;
+                return Err(err.context("failed to send speed ready"));
+            }
+            Ok(Some(server_task))
+        }
+        other => Err(anyhow::anyhow!(
+            "unexpected speed control message: {:?}",
+            other
+        )),
+    }
+}
+
+async fn replace_speed_server_task(
+    current: &mut Option<tokio::task::JoinHandle<()>>,
+    next: tokio::task::JoinHandle<()>,
+) {
+    stop_speed_server_task(current).await;
+    *current = Some(next);
+}
+
+async fn stop_speed_server_task(current: &mut Option<tokio::task::JoinHandle<()>>) {
+    if let Some(task) = current.take() {
+        if !task.is_finished() {
+            task.abort();
+        }
+        let _ = task.await;
+    }
 }
 
 #[cfg(test)]
@@ -472,6 +563,64 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn speed_connection_is_one_shot_and_does_not_publish_health_events() {
+        let (addr, mut rx) = spawn_test_health_connection().await;
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("connect speed control server");
+        let mut conn = TunnelControlConnection::new(stream);
+
+        conn.send(&TunnelControlMessage::SpeedHello {
+            source_device_id: 321,
+            protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+        })
+        .await
+        .expect("write speed hello");
+        assert!(matches!(
+            conn.next().await.expect("read speed hello ack"),
+            Some(TunnelControlMessage::HelloAck { ok: true, .. })
+        ));
+
+        conn.send(&TunnelControlMessage::SpeedPing { nonce: 99 })
+            .await
+            .expect("write speed ping");
+        assert_eq!(
+            conn.next().await.expect("read speed pong"),
+            Some(TunnelControlMessage::SpeedPong { nonce: 99 })
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "one-shot speed control must not mutate passive health lifecycle"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_control_connection_task_releases_speed_server_lease() {
+        let lease = crate::speed_test::acquire_speed_test_server_lease()
+            .await
+            .expect("acquire first lease");
+        let task = tokio::spawn(async move {
+            let _lease = lease;
+            std::future::pending::<()>().await;
+        });
+        let mut current = Some(task);
+
+        stop_speed_server_task(&mut current).await;
+        assert!(current.is_none());
+
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            crate::speed_test::acquire_speed_test_server_lease(),
+        )
+        .await
+        .expect("lease should be released after control cleanup")
+        .expect("acquire second lease");
+        drop(second);
     }
 
     #[tokio::test]

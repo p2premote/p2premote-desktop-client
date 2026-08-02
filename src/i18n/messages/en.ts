@@ -171,7 +171,8 @@ const en = {
       title: 'My devices',
       count: '({online}/{total})',
       empty: 'No devices',
-      tunnel_active: 'Tunnel active',
+      active_tunnel_connected: 'Active tunnel connected',
+      passive_tunnel_connected: 'Passive tunnel connected',
     },
     detail: {
       online: 'Online',
@@ -189,6 +190,7 @@ const en = {
         tunnel_action: 'Establish tunnel',
         retry: 'Try reconnecting',
         disconnect: 'Disconnect tunnel',
+        disconnect_passive: 'Disconnect passive tunnel',
         preparing: 'Preparing...',
         cancel_waiting: 'Cancel (waiting {attempt}/{max})',
         cancel_running: 'Cancel ({attempt}/{max})',
@@ -221,7 +223,6 @@ const en = {
     lifecycle: {
       not_established: 'Not established',
       connecting: 'Establishing tunnel',
-      connected: 'Connected',
       recovering: 'Network issue, reconnecting',
       desc_connecting: 'Attempt {attempt}/{max}{suffix}',
       desc_connected_with_ip: 'Virtual IP: {ip}',

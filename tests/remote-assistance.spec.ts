@@ -106,6 +106,7 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
                     invite_temporary_password: null,
                     active_tunnel_jobs: [],
                     current_device: localDevice,
+                    ...((state.tunnelRuntime as Record<string, unknown> | null) || {}),
                   }
                 : null,
             }
@@ -136,6 +137,26 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
             return { success: false, message: '设备代码或临时密码错误' }
           case 'stop_active_tunnel_job':
             return '已取消'
+          case 'stop_service_tunnel':
+          case 'stop_service_active_tunnel':
+            return {
+              service: { installed: true, running: true, enabled: true, raw_state: 'running' },
+              runtime: {
+                logged_in: true,
+                ws_connected: true,
+                active_tunnel_jobs: [],
+                wgvpn_sessions: [],
+                tunnel_lifecycles: [],
+                current_device: localDevice,
+              },
+            }
+          case 'test_tunnel_speed':
+            return {
+              latency_ms: 12.5,
+              download_mbps: 88.25,
+              upload_mbps: 42.75,
+              retransmits: 0,
+            }
           case 'show_system_notification':
           case 'flash_main_window':
           case 'sync_service_runtime_config':
@@ -314,6 +335,77 @@ test.describe('远程协助', () => {
       'aria-label',
       /建立隧道.*创建可用的 P2P 通道/,
     )
+  })
+
+  test('被动隧道在设备列表明确标识并开放可用操作', async ({ page }) => {
+    await installTauriMock(page, 'zh-CN', true)
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => {
+      ;(window as any).__p2premoteMockState.tunnelRuntime = {
+        wgvpn_sessions: [
+          {
+            peer_device_id: 22,
+            is_active: false,
+            virtual_ip: '100.99.71.2',
+            peer_virtual_ip: '100.99.71.43',
+            health_state: 'connected',
+            local_forward_port: 0,
+            exposed_lan_cidrs: [],
+          },
+        ],
+        tunnel_lifecycles: [
+          {
+            peer_device_id: 22,
+            role: 'passive',
+            state: 'connected',
+            attempt: 1,
+            max_attempts: 30,
+            last_result: 'none',
+            virtual_ip: '100.99.71.2',
+            peer_virtual_ip: '100.99.71.43',
+          },
+        ],
+      }
+    })
+
+    await page.getByRole('button', { name: '刷新' }).click()
+    const remoteDevice = page.locator('.device-list-item').filter({ hasText: '对方电脑' })
+    await expect(remoteDevice).toHaveClass(/tunnel-connected/)
+    await expect(remoteDevice.getByText('被动隧道已连接')).toBeVisible()
+
+    await remoteDevice.click()
+    await expect(page.locator('.tunnel-lifecycle-strip strong')).toHaveText('被动隧道已连接')
+    await expect(page.locator('.action-tile.primary')).toContainText('断开被动隧道')
+    await expect(page.getByRole('button', { name: '复制虚拟 IP' })).toContainText('100.99.71.43')
+    await expect(page.getByRole('button', { name: '隧道测速' })).toBeVisible()
+
+    await page.getByRole('button', { name: '隧道测速' }).click()
+    await expect.poll(async () => {
+      const calls = await mockCalls(page)
+      return calls.some(call => call.cmd === 'test_tunnel_speed' && call.args?.peerDeviceId === 22)
+    }).toBe(true)
+    await page.getByRole('button', { name: '确定' }).click()
+
+    await page.evaluate(() => {
+      const runtime = (window as any).__p2premoteMockState.tunnelRuntime
+      runtime.wgvpn_sessions[0].health_state = 'degraded'
+      runtime.tunnel_lifecycles[0].state = 'recovering'
+      runtime.tunnel_lifecycles[0].message = '等待主动端恢复'
+    })
+    await page.getByRole('button', { name: '刷新' }).click()
+    await expect(page.locator('.action-tile.primary')).toContainText('断开被动隧道')
+    await expect(page.locator('.action-tile.primary')).toHaveAttribute(
+      'aria-label',
+      /断开被动隧道.*关闭当前 P2P 通道/,
+    )
+
+    await page.locator('.action-tile.primary').click()
+    await expect.poll(async () => {
+      const calls = await mockCalls(page)
+      return calls.some(call => call.cmd === 'stop_service_tunnel' && call.args?.sourceDeviceId === 22)
+    }).toBe(true)
+    const calls = await page.evaluate(() => (window as any).__p2premoteMockCalls as MockCall[])
+    expect(calls.some(call => call.cmd === 'start_service_active_tunnel')).toBe(false)
   })
 
   test('隧道状态按角色分组并将诊断字段收进网络详情', async ({ page }) => {

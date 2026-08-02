@@ -1,21 +1,55 @@
-//! 基于 riperf3 的隧道测速（主动端 client / 被动端 server）。
+//! 基于 riperf3 的双向隧道测速（发起端 client / 对端 server）。
 //!
-//! 架构选择依据真机验证：wgvpn userspace 后端下，被动端没有 TUN 接口，
-//! 无法主动连主动端；但**主动端→被动端方向可达**（与 health TCP 同路）。
-//! 因此：
-//! - **被动端**扮演 riperf3 server，绑 `0.0.0.0:SPEED_TEST_PORT`；
-//! - **主动端**（点击测速的设备）扮演 client，连 `peer_virtual_ip:port`；
+//! - 点击测速的一端扮演 riperf3 client，连接 `peer_virtual_ip:port`；
+//! - 对端临时扮演 server，绑定 `0.0.0.0:SPEED_TEST_PORT`；
 //! - 上传与下载分别跑一次 TCP 测试，每个方向持续 6 秒。
 //!
-//! 控制面（协商 + 延迟探测）走 `tunnel_control` 上的健康 TCP 长连接。
+//! 主动隧道复用健康控制长连接；被动隧道使用独立的 `SpeedHello` 一次性连接。
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::sync::oneshot;
 
+static SPEED_TEST_SERVER_BUSY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub struct SpeedTestServerLease;
+
+impl Drop for SpeedTestServerLease {
+    fn drop(&mut self) {
+        SPEED_TEST_SERVER_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// 全进程只有一个固定测速端口。等待上一方向或另一 peer 的 one-off server
+/// 释放端口，避免多个控制连接同时 bind 48084。
+pub async fn acquire_speed_test_server_lease() -> Result<SpeedTestServerLease> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if SPEED_TEST_SERVER_BUSY
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+        {
+            return Ok(SpeedTestServerLease);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(anyhow!("speed test server is busy"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// 单次测速时长（秒）。iperf3 官方推荐区间，统计样本足够稳定。
 pub const SPEED_TEST_DURATION_SECS: u32 = 6;
+/// 单方向测速执行超时。client/server 共用同一边界，覆盖数据传输和握手，
+/// 同时保证失败客户端不会永久占用固定测速端口。
+pub const SPEED_TEST_RUN_TIMEOUT_SECS: u64 = SPEED_TEST_DURATION_SECS as u64 + 15;
 
 /// riperf3 server / client 约定的测速端口。
 /// 与 `HEALTH_PORT`(48082 TCP 健康面)、WebUI(48083) 错开。
@@ -168,6 +202,7 @@ mod tests {
     #[test]
     fn each_speed_test_direction_lasts_six_seconds() {
         assert_eq!(SPEED_TEST_DURATION_SECS, 6);
+        assert!(SPEED_TEST_RUN_TIMEOUT_SECS > SPEED_TEST_DURATION_SECS as u64);
     }
 
     #[test]
@@ -175,6 +210,7 @@ mod tests {
         assert_ne!(SPEED_TEST_PORT, 48082, "must not collide with HEALTH_PORT");
         assert_ne!(SPEED_TEST_PORT, 48083, "must not collide with WebUI port");
     }
+
 
     #[test]
     fn parse_server_stats_reads_forward_receiver_metrics() {

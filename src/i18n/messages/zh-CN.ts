@@ -187,7 +187,8 @@ export default {
       title: '我的设备',
       count: '({online}/{total})',
       empty: '暂无设备',
-      tunnel_active: '隧道已连接',
+      active_tunnel_connected: '主动隧道已连接',
+      passive_tunnel_connected: '被动隧道已连接',
     },
     detail: {
       online: '在线',
@@ -205,6 +206,7 @@ export default {
         tunnel_action: '建立隧道',
         retry: '尝试重连',
         disconnect: '断开隧道',
+        disconnect_passive: '断开被动隧道',
         preparing: '正在准备…',
         cancel_waiting: '取消建立（等待 {attempt}/{max}）',
         cancel_running: '取消建立（{attempt}/{max}）',
@@ -241,7 +243,6 @@ export default {
     lifecycle: {
       not_established: '未建立',
       connecting: '建立隧道中',
-      connected: '已连接',
       recovering: '网络异常重连中',
       desc_connecting: '第 {attempt}/{max} 次尝试{suffix}',
       desc_connected_with_ip: '虚拟 IP：{ip}',

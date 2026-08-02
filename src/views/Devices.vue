@@ -35,7 +35,7 @@
                 <span class="device-list-title" :title="device.device_alias || device.device_name">{{ device.device_alias || device.device_name }}</span>
                 <span v-if="isTunnelConnected(device)" class="device-tunnel-badge">
                   <el-icon aria-hidden="true"><Link /></el-icon>
-                  <span>{{ $t('devices.list.tunnel_active') }}</span>
+                  <span>{{ tunnelConnectedLabel(device) }}</span>
                 </span>
                 <el-tag v-if="isCurrentDevice(device.device_uuid)" size="small" type="primary">{{ $t('common.current_device') }}</el-tag>
               </div>
@@ -73,7 +73,7 @@
                     </el-tag>
                     <el-tag v-if="isTunnelConnected(selectedDevice)" size="small" class="device-tunnel-tag">
                       <el-icon aria-hidden="true"><Link /></el-icon>
-                      <span>{{ $t('devices.list.tunnel_active') }}</span>
+                      <span>{{ tunnelConnectedLabel(selectedDevice) }}</span>
                     </el-tag>
                     <el-tag v-if="isWindowsDevice(selectedDevice) && !selectedDevice.rdp_enabled" type="danger" size="small">{{ $t('devices.detail.rdp_not_enabled') }}</el-tag>
                   </div>
@@ -358,6 +358,7 @@ interface TunnelInfo {
   virtual_ip?: string
   exposed_lan_cidrs?: string[]
   health_state?: 'connected' | 'degraded'
+  role?: 'active' | 'passive'
 }
 
 interface ActiveTunnelJobStatus {
@@ -599,8 +600,16 @@ function activeTunnelJob(device: DeviceInfo | null): ActiveTunnelJobStatus | nul
 function activeTunnelActionText(device: DeviceInfo | null): string {
   if (!device) return t('devices.detail.connection.tunnel_action')
   const lifecycle = deviceTunnelLifecycle(device)
-  if (lifecycle.state === 'recovering') return t('devices.detail.connection.retry')
-  if (lifecycle.state === 'connected') return t('devices.detail.connection.disconnect')
+  if (lifecycle.state === 'recovering') {
+    return lifecycle.role === 'passive'
+      ? t('devices.detail.connection.disconnect_passive')
+      : t('devices.detail.connection.retry')
+  }
+  if (lifecycle.state === 'connected') {
+    return lifecycle.role === 'passive'
+      ? t('devices.detail.connection.disconnect_passive')
+      : t('devices.detail.connection.disconnect')
+  }
   if (preparingTunnelIds.value.has(device.device_id)) return t('devices.detail.connection.preparing')
   const job = activeTunnelJob(device)
   if (!job) return t('devices.detail.connection.tunnel_action')
@@ -620,7 +629,7 @@ function deviceTunnelLifecycle(device: DeviceInfo | null): TunnelLifecycleStatus
   if (tunnel) {
     return {
       peer_device_id: device?.device_id || 0,
-      role: 'active',
+      role: tunnel.role || 'active',
       state: tunnel.health_state === 'degraded' ? 'recovering' : 'connected',
       attempt: 0,
       max_attempts: 30,
@@ -658,8 +667,18 @@ function isTunnelConnected(device: DeviceInfo | null): boolean {
   return deviceConnectionState(device) === 'connected'
 }
 
+function tunnelConnectedLabel(device: DeviceInfo | null): string {
+  return deviceTunnelLifecycle(device).role === 'passive'
+    ? t('devices.list.passive_tunnel_connected')
+    : t('devices.list.active_tunnel_connected')
+}
+
 function tunnelLifecycleTitle(device: DeviceInfo | null): string {
-  const state = deviceTunnelLifecycle(device).state
+  const lifecycle = deviceTunnelLifecycle(device)
+  if (lifecycle.state === 'connected') {
+    return tunnelConnectedLabel(device)
+  }
+  const state = lifecycle.state
   return t(`devices.lifecycle.${state}`)
 }
 
@@ -680,7 +699,8 @@ function tunnelLifecycleDescription(device: DeviceInfo | null): string {
 }
 
 function tunnelActionTooltip(device: DeviceInfo | null): string {
-  if (isTunnelDegraded(device)) return t('devices.lifecycle.tooltip_retry')
+  const lifecycle = deviceTunnelLifecycle(device)
+  if (isTunnelDegraded(device) && lifecycle.role !== 'passive') return t('devices.lifecycle.tooltip_retry')
   return hasTunnel(device) ? t('devices.lifecycle.tooltip_disconnect') : t('devices.lifecycle.tooltip_connect')
 }
 
@@ -852,6 +872,7 @@ function applyTunnelRuntimeStatus(runtime: any) {
           newMap[job.target_device_id] = {
             local_port: job.result.local_port || 0,
             rdp_address: job.result.rdp_address || '',
+            role: 'active',
           }
         }
       }
@@ -872,17 +893,12 @@ function applyTunnelRuntimeStatus(runtime: any) {
       }
     }
     activeTunnelJobMap.value = newJobMap
-    const newLifecycleMap: Record<number, TunnelLifecycleStatus> = {}
-    if (Array.isArray(runtime?.tunnel_lifecycles)) {
-      for (const lifecycle of runtime.tunnel_lifecycles as TunnelLifecycleStatus[]) {
-        if (lifecycle.role === 'active') newLifecycleMap[lifecycle.peer_device_id] = lifecycle
-      }
-    }
-    tunnelLifecycleMap.value = newLifecycleMap
     const wgvpnSessions = runtime?.wgvpn_sessions
+    const liveRoleMap = new Map<number, 'active' | 'passive'>()
     if (Array.isArray(wgvpnSessions)) {
       for (const session of wgvpnSessions) {
-        if (!session.is_active) continue
+        const role: 'active' | 'passive' = session.is_active ? 'active' : 'passive'
+        liveRoleMap.set(session.peer_device_id, role)
         const existing = newMap[session.peer_device_id]
         newMap[session.peer_device_id] = {
           local_port: existing?.local_port || session.local_forward_port || 0,
@@ -890,9 +906,24 @@ function applyTunnelRuntimeStatus(runtime: any) {
           virtual_ip: session.peer_virtual_ip || '',
           exposed_lan_cidrs: Array.isArray(session.exposed_lan_cidrs) ? session.exposed_lan_cidrs : [],
           health_state: session.health_state || 'connected',
+          role,
         }
       }
     }
+    const newLifecycleMap: Record<number, TunnelLifecycleStatus> = {}
+    if (Array.isArray(runtime?.tunnel_lifecycles)) {
+      for (const lifecycle of runtime.tunnel_lifecycles as TunnelLifecycleStatus[]) {
+        const liveRole = liveRoleMap.get(lifecycle.peer_device_id)
+        if (liveRole && lifecycle.role !== liveRole) continue
+        const existing = newLifecycleMap[lifecycle.peer_device_id]
+        const priority = lifecycle.state === 'connected' ? 3 : lifecycle.state === 'recovering' ? 2 : lifecycle.state === 'connecting' ? 1 : 0
+        const existingPriority = existing?.state === 'connected' ? 3 : existing?.state === 'recovering' ? 2 : existing?.state === 'connecting' ? 1 : 0
+        if (!existing || priority > existingPriority || lifecycle.role === liveRole) {
+          newLifecycleMap[lifecycle.peer_device_id] = lifecycle
+        }
+      }
+    }
+    tunnelLifecycleMap.value = newLifecycleMap
     tunnelStatusMap.value = newMap
 }
 
@@ -915,7 +946,15 @@ function openTunnelAction(device: DeviceInfo) {
   const lifecycle = deviceTunnelLifecycle(device)
   // 宽限期耗尽后 lifecycle 已回到未建立，但 service 快照中可能短暂保留旧会话。
   // 这时必须一次点击完成旧会话清理和新建，不能先把用户操作误当成“断开”。
-  if (lifecycle.state === 'recovering' || lifecycle.last_result === 'health_grace_expired') {
+  if (lifecycle.state === 'recovering') {
+    if (lifecycle.role === 'passive') {
+      void handleDisconnectTunnel(device)
+    } else {
+      void handleRetryTunnel(device)
+    }
+    return
+  }
+  if (lifecycle.last_result === 'health_grace_expired') {
     void handleRetryTunnel(device)
     return
   }
@@ -998,9 +1037,10 @@ async function handleCancelActiveTunnelJob(device: DeviceInfo) {
 
 async function handleDisconnectTunnel(device: DeviceInfo) {
   try {
-    const serviceStatus = await invoke<any>('stop_service_active_tunnel', {
-      targetDeviceId: device.device_id,
-    })
+    const lifecycle = deviceTunnelLifecycle(device)
+    const serviceStatus = lifecycle.role === 'passive'
+      ? await invoke<any>('stop_service_tunnel', { sourceDeviceId: device.device_id })
+      : await invoke<any>('stop_service_active_tunnel', { targetDeviceId: device.device_id })
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
     ElMessage.success(t('devices.message.tunnel_disconnected'))
   } catch (error) {

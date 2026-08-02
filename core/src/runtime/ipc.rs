@@ -767,6 +767,42 @@ pub(super) async fn handle_data(
             stop_wgvpn_job(shared, target_device_id).await
         }
         Data::TestTunnelSpeed { peer_device_id } => {
+            let passive_speed_request = {
+                let mut state = shared.lock();
+                let Some(session) = state
+                    .status
+                    .wgvpn_sessions
+                    .iter()
+                    .find(|session| session.peer_device_id == peer_device_id)
+                    .cloned()
+                else {
+                    return Some(cmd_response(false, "tunnel is not connected", None));
+                };
+                if session.is_active {
+                    None
+                } else {
+                    let Some(source_device_id) = state.status.device_id else {
+                        return Some(cmd_response(false, "local device is not registered", None));
+                    };
+                    if !state.wgvpn_on_demand_speed_tests.insert(peer_device_id) {
+                        return Some(cmd_response(false, "speed test already in progress", None));
+                    }
+                    Some((source_device_id, session.peer_virtual_ip))
+                }
+            };
+
+            if let Some((source_device_id, peer_virtual_ip)) = passive_speed_request {
+                let result =
+                    run_on_demand_tunnel_speed_test(source_device_id, &peer_virtual_ip).await;
+                shared
+                    .lock()
+                    .wgvpn_on_demand_speed_tests
+                    .remove(&peer_device_id);
+                return Some(response_from_result(result, |value| {
+                    serde_json::to_value(value).unwrap_or_default()
+                }));
+            }
+
             let (speed_tx, busy_flag) = {
                 let state = shared.lock();
                 let Some(control) = state.wgvpn_health_controls.get(&peer_device_id) else {

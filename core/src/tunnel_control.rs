@@ -18,6 +18,11 @@ pub enum TunnelControlMessage {
         source_device_id: i64,
         protocol_version: u16,
     },
+    /// 一次性测速控制连接。与持久健康连接分离，允许隧道任一端作为测速发起者。
+    SpeedHello {
+        source_device_id: i64,
+        protocol_version: u16,
+    },
     HelloAck {
         ok: bool,
         protocol_version: u16,
@@ -111,6 +116,15 @@ mod tests {
 
     #[test]
     fn speed_control_message_json_roundtrip() {
+        let hello = TunnelControlMessage::SpeedHello {
+            source_device_id: 42,
+            protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+        };
+        let hello_json = serde_json::to_vec(&hello).expect("serialize speed hello");
+        let hello_decoded: TunnelControlMessage =
+            serde_json::from_slice(&hello_json).expect("decode speed hello");
+        assert_eq!(hello_decoded, hello);
+
         let message = TunnelControlMessage::SpeedStart;
         let json = serde_json::to_vec(&message).expect("serialize speed message");
         let decoded: TunnelControlMessage =

@@ -4,7 +4,7 @@ use crate::health::HEALTH_PORT;
 use crate::http::{shared_client, ApiResponse};
 use crate::speed_test::{
     build_speed_test_client, extract_download_result, extract_upload_result,
-    TunnelSpeedTestCommand, TunnelSpeedTestResult, SPEED_TEST_DURATION_SECS, SPEED_TEST_PORT,
+    TunnelSpeedTestCommand, TunnelSpeedTestResult, SPEED_TEST_PORT, SPEED_TEST_RUN_TIMEOUT_SECS,
 };
 use crate::tunnel_control::{
     now_millis, TunnelControlConnection, TunnelControlMessage, TUNNEL_CONTROL_PROTOCOL_VERSION,
@@ -393,16 +393,60 @@ async fn active_health_session(
     }
 }
 
-/// 主动端（点击测速的设备）的 client 流程：
-/// 1. 通过健康 TCP 发 `SpeedStart`，让被动端启动 riperf3 server；
-/// 2. 等 `SpeedReady` 回执（被动端 server 已 listen，避免 connect 撞空）；
+/// 通过独立的一次性控制连接发起测速。
+///
+/// 持久健康连接始终由隧道主动端持有；这里另建连接，使被动端也可以作为
+/// riperf3 client，并让对端 health server 临时承担 server 角色。
+pub async fn run_on_demand_tunnel_speed_test(
+    source_device_id: i64,
+    peer_virtual_ip: &str,
+) -> Result<TunnelSpeedTestResult> {
+    let health_addr = format!("{}:{}", peer_virtual_ip, HEALTH_PORT);
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        TcpStream::connect(&health_addr),
+    )
+    .await
+    .context("speed control connect timeout")?
+    .with_context(|| format!("failed to connect remote speed control: {health_addr}"))?;
+
+    let mut conn = TunnelControlConnection::new(stream);
+    conn.send(&TunnelControlMessage::SpeedHello {
+        source_device_id,
+        protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+    })
+    .await
+    .context("failed to send speed hello")?;
+
+    let ack = tokio::time::timeout(std::time::Duration::from_secs(5), conn.next())
+        .await
+        .context("speed hello ack timeout")?
+        .context("failed to read speed hello ack")?;
+    match ack {
+        Some(TunnelControlMessage::HelloAck {
+            ok: true,
+            protocol_version,
+            ..
+        }) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => {}
+        Some(TunnelControlMessage::HelloAck { message, .. }) => {
+            return Err(anyhow!("speed control rejected: {message}"));
+        }
+        Some(other) => return Err(anyhow!("unexpected speed hello ack: {:?}", other)),
+        None => return Err(anyhow!("remote speed control closed before hello ack")),
+    }
+
+    run_speed_test_as_client(&mut conn, peer_virtual_ip).await
+}
+
+/// 测速发起端的 client 流程：
+/// 1. 通过控制 TCP 发 `SpeedStart`，让对端启动 riperf3 server；
+/// 2. 等 `SpeedReady` 回执（对端 server 已 listen，避免 connect 撞空）；
 /// 3. 5 次 `SpeedPing`/`SpeedPong` 往返测延迟（riperf3 不提供独立延迟测量）；
 /// 4. 作为 riperf3 client 连 `peer_virtual_ip:SPEED_TEST_PORT`，依次跑上传和下载
 ///    两次独立 TCP 测试，每次 6 秒；
 /// 5. 从两份 client `Report` 提取各方向结果。
 ///
-/// 架构依据真机验证：wgvpn userspace 后端下只有"主动端→被动端"方向可达
-/// （被动端无 TUN 接口），所以主动端做 client、被动端做 server。
+/// 主动隧道沿用持久健康连接；被动隧道通过 `SpeedHello` 建立一次性控制连接。
 async fn run_speed_test_as_client(
     conn: &mut TunnelControlConnection<TcpStream>,
     peer_virtual_ip: &str,
@@ -431,12 +475,12 @@ async fn run_speed_test_direction(
     peer_addr: std::net::SocketAddr,
     reverse: bool,
 ) -> Result<riperf3::Report> {
-    // 通知被动端启动本方向的 one-off riperf3 server。
+    // 通知对端启动本方向的 one-off riperf3 server。
     conn.send(&TunnelControlMessage::SpeedStart)
         .await
         .context("failed to send SpeedStart")?;
 
-    // ② 等 SpeedReady（被动端 server 已 listen）。riperf3 client 连接失败不重试，
+    // ② 等 SpeedReady（对端 server 已 listen）。riperf3 client 连接失败不重试，
     //    必须等此回执后才能发起 client。
     match tokio::time::timeout(std::time::Duration::from_secs(10), conn.next())
         .await
@@ -447,9 +491,10 @@ async fn run_speed_test_direction(
         other => return Err(anyhow!("expected SpeedReady, got {:?}", other)),
     }
 
+    // 不自动重试：任何连接、协议或数据传输错误都保留第一次失败原因并直接返回。
     let client = build_speed_test_client(peer_addr, reverse)?;
     tokio::time::timeout(
-        std::time::Duration::from_secs(SPEED_TEST_DURATION_SECS as u64 + 15),
+        std::time::Duration::from_secs(SPEED_TEST_RUN_TIMEOUT_SECS),
         client.run(),
     )
     .await
