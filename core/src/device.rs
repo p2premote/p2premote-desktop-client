@@ -22,6 +22,26 @@ fn current_device_type() -> String {
     .to_string()
 }
 
+fn current_client_version() -> String {
+    resolve_client_version(
+        option_env!("P2PREMOTE_CLIENT_VERSION"),
+        std::env::var("P2PREMOTE_CLIENT_VERSION").ok(),
+    )
+}
+
+fn resolve_client_version(compiled: Option<&str>, runtime: Option<String>) -> String {
+    compiled
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            runtime
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 #[cfg(windows)]
 fn run_hidden_cmd(args: &[&str]) -> std::io::Result<std::process::Output> {
     use std::os::windows::process::CommandExt;
@@ -65,6 +85,8 @@ pub struct DeviceInfo {
     pub public_ip_location: Option<String>,
     pub system_version: String,
     #[serde(default)]
+    pub client_version: String,
+    #[serde(default)]
     pub service_port: i64,
     #[serde(default)]
     pub connect_code: Option<String>,
@@ -78,6 +100,7 @@ struct RegisterRequest {
     device_type: String,
     #[serde(rename = "system_version")]
     system_version: String,
+    client_version: String,
     #[serde(rename = "device_uuid")]
     device_uuid: String,
     #[serde(rename = "lan_ip")]
@@ -112,6 +135,7 @@ pub struct DeviceStatusReport {
     public_ip_location: String,
     service_port: i64,
     rdp_enabled: bool,
+    client_version: String,
 }
 
 #[derive(Serialize)]
@@ -130,6 +154,7 @@ struct UpdateDeviceInfoRequest {
     public_ip: String,
     public_ip_location: String,
     service_port: i64,
+    client_version: String,
 }
 
 #[derive(Serialize)]
@@ -195,6 +220,7 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
         device_name: hostname,
         device_type: current_device_type(),
         system_version,
+        client_version: current_client_version(),
         device_uuid: device_uuid.clone(),
         lan_ip,
         public_ip: public_network.ip,
@@ -251,6 +277,7 @@ pub async fn collect_device_status_report(
         public_ip_location: public_network.location,
         service_port,
         rdp_enabled,
+        client_version: current_client_version(),
     })
 }
 
@@ -414,6 +441,7 @@ pub async fn update_device_info(
         public_ip,
         public_ip_location: config.cached_public_ip_location.clone().unwrap_or_default(),
         service_port,
+        client_version: current_client_version(),
     };
     let client = shared_client();
     let resp = send_authed(config, |token| {
@@ -1086,6 +1114,7 @@ mod tests {
             "rdp_port": 3389,
             "public_ip": "1.2.3.4",
             "system_version": "Windows 11",
+            "client_version": "1.7.3-3becb9",
             "service_port": 8080,
             "connect_code": "ABC123"
         }"#;
@@ -1095,6 +1124,7 @@ mod tests {
         assert_eq!(device.device_name, "测试设备");
         assert_eq!(device.status, "online");
         assert_eq!(device.rdp_port, 3389);
+        assert_eq!(device.client_version, "1.7.3-3becb9");
     }
 
     #[test]
@@ -1114,5 +1144,35 @@ mod tests {
         assert!(device.lan_ip.is_none());
         assert_eq!(device.rdp_port, 0);
         assert!(!device.rdp_enabled);
+        assert!(device.client_version.is_empty());
+    }
+
+    #[test]
+    fn status_report_serializes_client_version() {
+        let report = DeviceStatusReport {
+            device_id: 123,
+            device_uuid: "abc-123".to_string(),
+            lan_ip: "192.168.1.100".to_string(),
+            public_ip: "1.2.3.4".to_string(),
+            public_ip_location: "test".to_string(),
+            service_port: 3389,
+            rdp_enabled: true,
+            client_version: "1.7.3-3becb9".to_string(),
+        };
+
+        let value = serde_json::to_value(report).unwrap();
+        assert_eq!(value["client_version"], "1.7.3-3becb9");
+    }
+
+    #[test]
+    fn compiled_client_version_wins_over_runtime_override() {
+        assert_eq!(
+            resolve_client_version(Some(" 1.7.3-3becb9 "), Some("9.9.9-stale".to_string())),
+            "1.7.3-3becb9"
+        );
+        assert_eq!(
+            resolve_client_version(None, Some(" ".to_string())),
+            "unknown"
+        );
     }
 }

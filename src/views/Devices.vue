@@ -250,6 +250,10 @@
                   <span class="info-value">{{ selectedDevice.system_version || '-' }}</span>
                 </div>
                 <div class="info-item">
+                  <span class="info-label">{{ $t('devices.detail.info.client_version') }}</span>
+                  <span class="info-value">{{ selectedDevice.client_version || '-' }}</span>
+                </div>
+                <div class="info-item">
                   <span class="info-label">{{ $t('devices.detail.info.lan_ip') }}</span>
                   <span class="info-value">{{ selectedDevice.lan_ip || '-' }}</span>
                 </div>

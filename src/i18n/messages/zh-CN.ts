@@ -224,6 +224,7 @@ export default {
         device_alias: '设备别名',
         device_type: '设备类型',
         system_version: '系统版本',
+        client_version: '客户端版本',
         lan_ip: '局域网 IP',
         public_ip: '公网 IP',
         rdp_port: 'RDP 端口',

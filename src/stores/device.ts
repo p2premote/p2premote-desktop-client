@@ -15,6 +15,7 @@ export interface DeviceInfo {
   public_ip?: string
   public_ip_location?: string
   system_version: string
+  client_version?: string
   connect_code?: string
   created_at?: string
 }

@@ -27,6 +27,7 @@ export interface DeviceInfo {
   rdp_port: number
   public_ip?: string
   system_version: string
+  client_version?: string
   service_port: number
   connect_code?: string
   created_at?: string

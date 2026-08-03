@@ -208,6 +208,7 @@ const en = {
         device_alias: 'Device alias',
         device_type: 'Device type',
         system_version: 'System version',
+        client_version: 'Client version',
         lan_ip: 'LAN IP',
         public_ip: 'Public IP',
         rdp_port: 'RDP port',
