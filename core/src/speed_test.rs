@@ -4,7 +4,8 @@
 //! - 对端临时扮演 server，绑定 `0.0.0.0:SPEED_TEST_PORT`；
 //! - 上传与下载分别跑一次 TCP 测试，每个方向持续 6 秒。
 //!
-//! 主动隧道复用健康控制长连接；被动隧道使用独立的 `SpeedHello` 一次性连接。
+//! 测速始终由隧道主动端作为 client 执行；被动端点击测速时，通过既有健康
+//! 长连接请求主动端执行并回传结果。
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -72,8 +73,6 @@ pub struct TunnelSpeedTestResult {
 
 pub struct TunnelSpeedTestCommand {
     pub response: oneshot::Sender<Result<TunnelSpeedTestResult, String>>,
-    /// 测速并发去重标志：runtime 入口抢占式 swap(true)，测速结束后 store(false)。
-    pub busy_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// 被动端：构建 riperf3 server。
@@ -210,7 +209,6 @@ mod tests {
         assert_ne!(SPEED_TEST_PORT, 48082, "must not collide with HEALTH_PORT");
         assert_ne!(SPEED_TEST_PORT, 48083, "must not collide with WebUI port");
     }
-
 
     #[test]
     fn parse_server_stats_reads_forward_receiver_metrics() {

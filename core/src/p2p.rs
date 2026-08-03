@@ -215,6 +215,7 @@ pub async fn wgvpn_health_monitor_loop(
     health_addr: String,
     mut stop_rx: watch::Receiver<bool>,
     mut speed_rx: mpsc::UnboundedReceiver<TunnelSpeedTestCommand>,
+    speed_test_busy: Arc<std::sync::atomic::AtomicBool>,
     event_handler: TunnelHealthEventHandler,
 ) -> Result<()> {
     let last_success = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
@@ -238,6 +239,7 @@ pub async fn wgvpn_health_monitor_loop(
                 &health_addr,
                 &mut stop_rx,
                 &mut speed_rx,
+                &speed_test_busy,
                 Some(&session_handler),
             )
             .await
@@ -285,6 +287,7 @@ async fn active_health_session(
     health_addr: &str,
     stop_rx: &mut watch::Receiver<bool>,
     speed_rx: &mut mpsc::UnboundedReceiver<TunnelSpeedTestCommand>,
+    speed_test_busy: &Arc<std::sync::atomic::AtomicBool>,
     event_handler: Option<&TunnelHealthEventHandler>,
 ) -> Result<()> {
     let stream = tokio::time::timeout(
@@ -324,6 +327,10 @@ async fn active_health_session(
     };
 
     let mut reported_rtt_ms = None;
+    let peer_virtual_ip = health_addr
+        .rsplit_once(':')
+        .map(|(ip, _)| ip)
+        .unwrap_or(health_addr);
     loop {
         tokio::select! {
             _ = stop_rx.changed() => {
@@ -333,27 +340,38 @@ async fn active_health_session(
             }
             request = speed_rx.recv() => {
                 if let Some(request) = request {
-                    // busy_flag 守卫：测速无论成功失败都释放并发去重标志。
-                    // Arc<AtomicBool> 的 Drop 是无操作，故用显式释放。
-                    //
-                    // 设计权衡：本分支会 await 整个测速（约 15-20s），期间
-                    // 心跳定时器分支不会调度，watchdog 会累计 HeartbeatFailed。
-                    // 但健康阈值是 12 次连续失败（≈60s），单次测速远达不到，
-                    // 且 busy_flag 已防止并发测速堆积。彻底解法需把测速移到
-                    // 独立 task + 独立控制 TCP，改动过大且收益有限，暂不实施。
-                    //
-                    // health_addr 形如 "100.99.71.43:48082"，取 IP 部分作为
-                    // peer_virtual_ip（主动端做 client 连被动端 server 用）。
-                    let peer_virtual_ip = health_addr
-                        .rsplit_once(':')
-                        .map(|(ip, _)| ip)
-                        .unwrap_or(health_addr);
-                    let busy_flag = request.busy_flag.clone();
+                    // 本分支串行占用健康连接约 15-20s；健康阈值约 60s，且
+                    // 共享 busy 标志会阻止本地与远端请求并发堆积。
                     let result = run_speed_test_as_client(&mut conn, peer_virtual_ip).await.map_err(|e| e.to_string());
-                    busy_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                    speed_test_busy.store(false, std::sync::atomic::Ordering::SeqCst);
                     let _ = request.response.send(result);
                     if let Some(handler) = event_handler {
                         handler(TunnelHealthEvent::HeartbeatSucceeded { latency_ms: None });
+                    }
+                }
+            }
+            message = conn.next() => {
+                match message.context("failed to read health control message")? {
+                    Some(TunnelControlMessage::SpeedTestRequest { request_id }) => {
+                        execute_requested_speed_test(
+                            &mut conn,
+                            peer_virtual_ip,
+                            request_id,
+                            speed_test_busy,
+                        ).await?;
+                        if let Some(handler) = event_handler {
+                            handler(TunnelHealthEvent::HeartbeatSucceeded { latency_ms: None });
+                        }
+                    }
+                    Some(other) => {
+                        return Err(anyhow!("unexpected health control message: {:?}", other));
+                    }
+                    None => {
+                        if let Some(handler) = event_handler {
+                            handler(TunnelHealthEvent::ConnectionClosed);
+                            return Ok(());
+                        }
+                        return Err(anyhow!("remote health closed"));
                     }
                 }
             }
@@ -363,21 +381,12 @@ async fn active_health_session(
                 conn.send(&TunnelControlMessage::Ping { ts, reported_rtt_ms })
                     .await
                     .context("failed to send health ping")?;
-                let response = tokio::time::timeout(std::time::Duration::from_secs(5), conn.next())
-                .await
-                .context("health pong timeout")?
-                .context("failed to read health pong")?;
-                match response {
-                    Some(TunnelControlMessage::Pong { ts: pong_ts }) if pong_ts == ts => {}
-                    Some(other) => return Err(anyhow!("unexpected health response: {:?}", other)),
-                    None => {
-                        if let Some(handler) = event_handler {
-                            handler(TunnelHealthEvent::ConnectionClosed);
-                            return Ok(());
-                        }
-                        return Err(anyhow!("remote health closed"));
-                    }
-                }
+                wait_for_health_pong(
+                    &mut conn,
+                    peer_virtual_ip,
+                    ts,
+                    speed_test_busy,
+                ).await?;
                 let raw_rtt_ms = (started.elapsed().as_secs_f64() * 1000.0)
                     .round()
                     .clamp(0.0, u32::MAX as f64) as u32;
@@ -393,49 +402,72 @@ async fn active_health_session(
     }
 }
 
-/// 通过独立的一次性控制连接发起测速。
-///
-/// 持久健康连接始终由隧道主动端持有；这里另建连接，使被动端也可以作为
-/// riperf3 client，并让对端 health server 临时承担 server 角色。
-pub async fn run_on_demand_tunnel_speed_test(
-    source_device_id: i64,
+async fn wait_for_health_pong(
+    conn: &mut TunnelControlConnection<TcpStream>,
     peer_virtual_ip: &str,
-) -> Result<TunnelSpeedTestResult> {
-    let health_addr = format!("{}:{}", peer_virtual_ip, HEALTH_PORT);
-    let stream = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        TcpStream::connect(&health_addr),
-    )
-    .await
-    .context("speed control connect timeout")?
-    .with_context(|| format!("failed to connect remote speed control: {health_addr}"))?;
-
-    let mut conn = TunnelControlConnection::new(stream);
-    conn.send(&TunnelControlMessage::SpeedHello {
-        source_device_id,
-        protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
-    })
-    .await
-    .context("failed to send speed hello")?;
-
-    let ack = tokio::time::timeout(std::time::Duration::from_secs(5), conn.next())
-        .await
-        .context("speed hello ack timeout")?
-        .context("failed to read speed hello ack")?;
-    match ack {
-        Some(TunnelControlMessage::HelloAck {
-            ok: true,
-            protocol_version,
-            ..
-        }) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => {}
-        Some(TunnelControlMessage::HelloAck { message, .. }) => {
-            return Err(anyhow!("speed control rejected: {message}"));
+    expected_ts: i64,
+    speed_test_busy: &Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    let mut deferred_speed_request = None;
+    loop {
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), conn.next())
+            .await
+            .context("health pong timeout")?
+            .context("failed to read health pong")?;
+        match response {
+            Some(TunnelControlMessage::Pong { ts }) if ts == expected_ts => break,
+            Some(TunnelControlMessage::SpeedTestRequest { request_id }) => {
+                if deferred_speed_request.is_some() {
+                    conn.send(&TunnelControlMessage::SpeedTestError {
+                        request_id,
+                        message: "speed test already in progress".to_string(),
+                    })
+                    .await?;
+                } else {
+                    deferred_speed_request = Some(request_id);
+                }
+            }
+            Some(other) => return Err(anyhow!("unexpected health response: {:?}", other)),
+            None => return Err(anyhow!("remote health closed")),
         }
-        Some(other) => return Err(anyhow!("unexpected speed hello ack: {:?}", other)),
-        None => return Err(anyhow!("remote speed control closed before hello ack")),
     }
+    if let Some(request_id) = deferred_speed_request {
+        execute_requested_speed_test(conn, peer_virtual_ip, request_id, speed_test_busy).await?;
+    }
+    Ok(())
+}
 
-    run_speed_test_as_client(&mut conn, peer_virtual_ip).await
+async fn execute_requested_speed_test(
+    conn: &mut TunnelControlConnection<TcpStream>,
+    peer_virtual_ip: &str,
+    request_id: u64,
+    speed_test_busy: &Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    if speed_test_busy.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return conn
+            .send(&TunnelControlMessage::SpeedTestError {
+                request_id,
+                message: "speed test already in progress".to_string(),
+            })
+            .await;
+    }
+    let message = match run_speed_test_as_client(conn, peer_virtual_ip).await {
+        Ok(result) => TunnelControlMessage::SpeedTestResult {
+            request_id,
+            latency_ms: result.latency_ms,
+            download_mbps: result.download_mbps,
+            upload_mbps: result.upload_mbps,
+            retransmits: result.retransmits,
+        },
+        Err(err) => TunnelControlMessage::SpeedTestError {
+            request_id,
+            message: err.to_string(),
+        },
+    };
+    speed_test_busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    conn.send(&message)
+        .await
+        .context("failed to return requested speed test result")
 }
 
 /// 测速发起端的 client 流程：
@@ -446,7 +478,7 @@ pub async fn run_on_demand_tunnel_speed_test(
 ///    两次独立 TCP 测试，每次 6 秒；
 /// 5. 从两份 client `Report` 提取各方向结果。
 ///
-/// 主动隧道沿用持久健康连接；被动隧道通过 `SpeedHello` 建立一次性控制连接。
+/// 测速始终由主动端执行；被动端点击时通过健康连接下发请求。
 async fn run_speed_test_as_client(
     conn: &mut TunnelControlConnection<TcpStream>,
     peer_virtual_ip: &str,
@@ -482,11 +514,7 @@ async fn run_speed_test_direction(
 
     // ② 等 SpeedReady（对端 server 已 listen）。riperf3 client 连接失败不重试，
     //    必须等此回执后才能发起 client。
-    match tokio::time::timeout(std::time::Duration::from_secs(10), conn.next())
-        .await
-        .context("speed ready timeout")?
-        .context("speed ready read failed")?
-    {
+    match next_speed_response(conn, std::time::Duration::from_secs(10)).await? {
         Some(TunnelControlMessage::SpeedReady) => {}
         other => return Err(anyhow!("expected SpeedReady, got {:?}", other)),
     }
@@ -511,11 +539,7 @@ async fn measure_speed_latency(conn: &mut TunnelControlConnection<TcpStream>) ->
         conn.send(&TunnelControlMessage::SpeedPing { nonce })
             .await
             .context("failed to send speed ping")?;
-        match tokio::time::timeout(std::time::Duration::from_secs(3), conn.next())
-            .await
-            .context("speed pong timeout")?
-            .context("speed pong read failed")?
-        {
+        match next_speed_response(conn, std::time::Duration::from_secs(3)).await? {
             Some(TunnelControlMessage::SpeedPong { nonce: value }) if value == nonce => {}
             other => return Err(anyhow!("unexpected speed ping response: {:?}", other)),
         }
@@ -524,6 +548,29 @@ async fn measure_speed_latency(conn: &mut TunnelControlConnection<TcpStream>) ->
 
     // latency 是 5 次 RTT 的总和；× 1000 转毫秒 / 5 得平均 RTT。
     Ok(latency.as_secs_f64() * 1000.0 / 5.0)
+}
+
+/// 测速过程中若对端又请求一次测速，立即返回 busy，随后继续等待当前操作的响应。
+async fn next_speed_response(
+    conn: &mut TunnelControlConnection<TcpStream>,
+    timeout: std::time::Duration,
+) -> Result<Option<TunnelControlMessage>> {
+    loop {
+        let message = tokio::time::timeout(timeout, conn.next())
+            .await
+            .context("speed control response timeout")?
+            .context("speed control response read failed")?;
+        match message {
+            Some(TunnelControlMessage::SpeedTestRequest { request_id }) => {
+                conn.send(&TunnelControlMessage::SpeedTestError {
+                    request_id,
+                    message: "speed test already in progress".to_string(),
+                })
+                .await?;
+            }
+            other => return Ok(other),
+        }
+    }
 }
 
 async fn notify_remote_tunnel_stop(source_device_id: i64, health_addr: &str) -> Result<()> {
@@ -676,15 +723,149 @@ mod tests {
 
         let (stop_tx, mut stop_rx) = watch::channel(false);
         let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
+        let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = tokio::spawn(async move {
-            active_health_session(42, &addr.to_string(), &mut stop_rx, &mut speed_rx, None).await
+            active_health_session(
+                42,
+                &addr.to_string(),
+                &mut stop_rx,
+                &mut speed_rx,
+                &speed_test_busy,
+                None,
+            )
+            .await
         });
         server.await.expect("server task");
         stop_tx.send(true).expect("stop active health session");
-        session
+        if let Err(err) = session.await.expect("session task") {
+            assert!(err.to_string().contains("remote health closed"));
+        }
+    }
+
+    #[tokio::test]
+    async fn active_health_session_defers_speed_request_until_pong_then_returns_error() {
+        let listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("session task")
-            .expect("active health session");
+            .expect("bind fake health server");
+        let addr = listener.local_addr().expect("health addr");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept health client");
+            let mut conn = TunnelControlConnection::new(stream);
+            assert!(matches!(
+                conn.next().await.expect("read hello"),
+                Some(TunnelControlMessage::Hello { .. })
+            ));
+            conn.send(&TunnelControlMessage::HelloAck {
+                ok: true,
+                protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+                message: "ok".to_string(),
+            })
+            .await
+            .expect("send hello ack");
+
+            let ts = match conn.next().await.expect("read ping") {
+                Some(TunnelControlMessage::Ping { ts, .. }) => ts,
+                other => panic!("expected ping, got {:?}", other),
+            };
+            // 请求先于 Pong 到达，主动端必须先消费 Pong，再开始 SpeedPing。
+            conn.send(&TunnelControlMessage::SpeedTestRequest { request_id: 9 })
+                .await
+                .expect("send speed request");
+            conn.send(&TunnelControlMessage::Pong { ts })
+                .await
+                .expect("send pong");
+            for _ in 0..5 {
+                let nonce = match conn.next().await.expect("read speed ping") {
+                    Some(TunnelControlMessage::SpeedPing { nonce }) => nonce,
+                    other => panic!("expected speed ping, got {:?}", other),
+                };
+                conn.send(&TunnelControlMessage::SpeedPong { nonce })
+                    .await
+                    .expect("send speed pong");
+            }
+            assert_eq!(
+                conn.next().await.expect("read speed start"),
+                Some(TunnelControlMessage::SpeedStart)
+            );
+            conn.send(&TunnelControlMessage::Stop {
+                reason: "force test error".to_string(),
+            })
+            .await
+            .expect("send unexpected response");
+            assert!(matches!(
+                conn.next().await.expect("read returned speed error"),
+                Some(TunnelControlMessage::SpeedTestError { request_id: 9, .. })
+            ));
+        });
+
+        let (_stop_tx, mut stop_rx) = watch::channel(false);
+        let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
+        let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session = tokio::spawn(async move {
+            active_health_session(
+                42,
+                &addr.to_string(),
+                &mut stop_rx,
+                &mut speed_rx,
+                &speed_test_busy,
+                None,
+            )
+            .await
+        });
+        server.await.expect("server task");
+        assert!(session.await.expect("session task").is_err());
+    }
+
+    #[tokio::test]
+    async fn active_health_session_rejects_remote_request_while_local_speed_is_busy() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake health server");
+        let addr = listener.local_addr().expect("health addr");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept health client");
+            let mut conn = TunnelControlConnection::new(stream);
+            assert!(matches!(
+                conn.next().await.expect("read hello"),
+                Some(TunnelControlMessage::Hello { .. })
+            ));
+            conn.send(&TunnelControlMessage::HelloAck {
+                ok: true,
+                protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+                message: "ok".to_string(),
+            })
+            .await
+            .expect("send hello ack");
+            conn.send(&TunnelControlMessage::SpeedTestRequest { request_id: 10 })
+                .await
+                .expect("send speed request");
+            assert_eq!(
+                conn.next().await.expect("read busy response"),
+                Some(TunnelControlMessage::SpeedTestError {
+                    request_id: 10,
+                    message: "speed test already in progress".to_string(),
+                })
+            );
+        });
+
+        let (_stop_tx, mut stop_rx) = watch::channel(false);
+        let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
+        let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let session_busy = speed_test_busy.clone();
+        let session = tokio::spawn(async move {
+            active_health_session(
+                42,
+                &addr.to_string(),
+                &mut stop_rx,
+                &mut speed_rx,
+                &session_busy,
+                None,
+            )
+            .await
+        });
+        server.await.expect("server task");
+        assert!(session.await.expect("session task").is_err());
+        assert!(speed_test_busy.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -723,7 +904,6 @@ mod tests {
             .expect("notify remote stop");
         server.await.expect("server task");
     }
-
 }
 
 // ============ wgvpn 模块 ============

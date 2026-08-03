@@ -767,8 +767,8 @@ pub(super) async fn handle_data(
             stop_wgvpn_job(shared, target_device_id).await
         }
         Data::TestTunnelSpeed { peer_device_id } => {
-            let passive_speed_request = {
-                let mut state = shared.lock();
+            let passive_health_server = {
+                let state = shared.lock();
                 let Some(session) = state
                     .status
                     .wgvpn_sessions
@@ -781,23 +781,19 @@ pub(super) async fn handle_data(
                 if session.is_active {
                     None
                 } else {
-                    let Some(source_device_id) = state.status.device_id else {
-                        return Some(cmd_response(false, "local device is not registered", None));
+                    let Some(handle) = state.health_server_handle.clone() else {
+                        return Some(cmd_response(
+                            false,
+                            "health control connection is unavailable",
+                            None,
+                        ));
                     };
-                    if !state.wgvpn_on_demand_speed_tests.insert(peer_device_id) {
-                        return Some(cmd_response(false, "speed test already in progress", None));
-                    }
-                    Some((source_device_id, session.peer_virtual_ip))
+                    Some(handle)
                 }
             };
 
-            if let Some((source_device_id, peer_virtual_ip)) = passive_speed_request {
-                let result =
-                    run_on_demand_tunnel_speed_test(source_device_id, &peer_virtual_ip).await;
-                shared
-                    .lock()
-                    .wgvpn_on_demand_speed_tests
-                    .remove(&peer_device_id);
+            if let Some(handle) = passive_health_server {
+                let result = handle.request_peer_speed_test(peer_device_id).await;
                 return Some(response_from_result(result, |value| {
                     serde_json::to_value(value).unwrap_or_default()
                 }));
@@ -822,7 +818,6 @@ pub(super) async fn handle_data(
             if speed_tx
                 .send(TunnelSpeedTestCommand {
                     response: response_tx,
-                    busy_flag: busy_flag.clone(),
                 })
                 .is_err()
             {

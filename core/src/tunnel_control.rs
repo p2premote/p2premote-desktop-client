@@ -9,17 +9,12 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::Framed;
 
-pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 2;
+pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 3;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", content = "c")]
 pub enum TunnelControlMessage {
     Hello {
-        source_device_id: i64,
-        protocol_version: u16,
-    },
-    /// 一次性测速控制连接。与持久健康连接分离，允许隧道任一端作为测速发起者。
-    SpeedHello {
         source_device_id: i64,
         protocol_version: u16,
     },
@@ -52,6 +47,24 @@ pub enum TunnelControlMessage {
     /// 被动端→主动端：riperf3 server 已 listen，可以连接。
     /// riperf3 client 连接失败不重试，必须等此回执后才发起 client。
     SpeedReady,
+    /// 被动端→主动端：要求主动端在现有健康连接上执行测速。
+    SpeedTestRequest {
+        request_id: u64,
+    },
+    /// 主动端→被动端：返回主动端视角的测速结果；被动端展示时交换上下行。
+    SpeedTestResult {
+        request_id: u64,
+        latency_ms: f64,
+        download_mbps: f64,
+        upload_mbps: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retransmits: Option<i64>,
+    },
+    /// 主动端→被动端：测速失败，保留第一次错误且不重试。
+    SpeedTestError {
+        request_id: u64,
+        message: String,
+    },
     Stop {
         reason: String,
     },
@@ -116,15 +129,6 @@ mod tests {
 
     #[test]
     fn speed_control_message_json_roundtrip() {
-        let hello = TunnelControlMessage::SpeedHello {
-            source_device_id: 42,
-            protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
-        };
-        let hello_json = serde_json::to_vec(&hello).expect("serialize speed hello");
-        let hello_decoded: TunnelControlMessage =
-            serde_json::from_slice(&hello_json).expect("decode speed hello");
-        assert_eq!(hello_decoded, hello);
-
         let message = TunnelControlMessage::SpeedStart;
         let json = serde_json::to_vec(&message).expect("serialize speed message");
         let decoded: TunnelControlMessage =
@@ -136,6 +140,18 @@ mod tests {
         let ready_decoded: TunnelControlMessage =
             serde_json::from_slice(&ready_json).expect("decode ready");
         assert_eq!(ready_decoded, ready);
+
+        let result = TunnelControlMessage::SpeedTestResult {
+            request_id: 7,
+            latency_ms: 12.5,
+            download_mbps: 80.0,
+            upload_mbps: 40.0,
+            retransmits: Some(2),
+        };
+        let result_json = serde_json::to_vec(&result).expect("serialize speed result");
+        let result_decoded: TunnelControlMessage =
+            serde_json::from_slice(&result_json).expect("decode speed result");
+        assert_eq!(result_decoded, result);
     }
 
     #[tokio::test]

@@ -4,17 +4,19 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use crate::speed_test::TunnelSpeedTestResult;
 use crate::tunnel_control::{
     TunnelControlConnection, TunnelControlMessage, TUNNEL_CONTROL_PROTOCOL_VERSION,
 };
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
 pub const HEALTH_PORT: u16 = 48082;
 
 static NEXT_HEALTH_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_SPEED_TEST_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassiveHealthEvent {
@@ -29,11 +31,21 @@ pub type HealthDisconnectHandler = Arc<dyn Fn(i64, u64, PassiveHealthEvent) + Se
 ///
 /// 被动端主动断开隧道时，通过此表通知对应的连接 task 退出，
 /// 从而 drop `TcpStream` 触发 TCP FIN 立即送达主动端。
-pub type PeerStopRegistry = Arc<StdMutex<HashMap<i64, (u64, watch::Sender<bool>)>>>;
+struct PassiveSpeedTestCommand {
+    response: oneshot::Sender<Result<TunnelSpeedTestResult, String>>,
+}
+
+struct PeerHealthControl {
+    generation: u64,
+    stop_tx: watch::Sender<bool>,
+    speed_tx: mpsc::UnboundedSender<PassiveSpeedTestCommand>,
+}
+
+type PeerHealthRegistry = Arc<StdMutex<HashMap<i64, PeerHealthControl>>>;
 
 pub struct HealthServerHandle {
     stop_tx: watch::Sender<bool>,
-    peer_stops: PeerStopRegistry,
+    peer_controls: PeerHealthRegistry,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -52,14 +64,40 @@ impl HealthServerHandle {
     ///
     /// peer 不存在时静默（幂等，重复调用无害）。
     pub fn close_peer_connection(&self, peer_device_id: i64) {
-        if let Some((_generation, tx)) = self
-            .peer_stops
+        if let Some(control) = self
+            .peer_controls
             .lock()
             .ok()
             .and_then(|mut m| m.remove(&peer_device_id))
         {
-            let _ = tx.send(true);
+            let _ = control.stop_tx.send(true);
         }
+    }
+
+    /// 通过主动端已经建立的健康长连接请求测速。测速执行端始终是主动端；
+    /// 返回值已转换为被动端视角的上传/下载方向。
+    pub async fn request_peer_speed_test(
+        &self,
+        peer_device_id: i64,
+    ) -> Result<TunnelSpeedTestResult> {
+        let speed_tx = self
+            .peer_controls
+            .lock()
+            .map_err(|_| anyhow!("health connection registry lock poisoned"))?
+            .get(&peer_device_id)
+            .map(|control| control.speed_tx.clone())
+            .ok_or_else(|| anyhow!("health control connection is unavailable"))?;
+        let (response_tx, response_rx) = oneshot::channel();
+        speed_tx
+            .send(PassiveSpeedTestCommand {
+                response: response_tx,
+            })
+            .map_err(|_| anyhow!("health control connection is unavailable"))?;
+        tokio::time::timeout(std::time::Duration::from_secs(40), response_rx)
+            .await
+            .context("tunnel speed test timed out")?
+            .context("health control connection closed")?
+            .map_err(anyhow::Error::msg)
     }
 }
 
@@ -76,17 +114,17 @@ pub async fn spawn_health_server(
     }
 
     let (stop_tx, stop_rx) = watch::channel(false);
-    let peer_stops: PeerStopRegistry = Arc::new(StdMutex::new(HashMap::new()));
+    let peer_controls: PeerHealthRegistry = Arc::new(StdMutex::new(HashMap::new()));
     let task = tokio::spawn({
-        let peer_stops = peer_stops.clone();
+        let peer_controls = peer_controls.clone();
         async move {
-            health_server_loop(listener, stop_rx, peer_stops, on_disconnect).await;
+            health_server_loop(listener, stop_rx, peer_controls, on_disconnect).await;
         }
     });
 
     Ok(HealthServerHandle {
         stop_tx,
-        peer_stops,
+        peer_controls,
         task,
     })
 }
@@ -94,7 +132,7 @@ pub async fn spawn_health_server(
 async fn health_server_loop(
     listener: TcpListener,
     mut stop_rx: watch::Receiver<bool>,
-    peer_stops: PeerStopRegistry,
+    peer_controls: PeerHealthRegistry,
     on_disconnect: HealthDisconnectHandler,
 ) {
     loop {
@@ -109,9 +147,9 @@ async fn health_server_loop(
                     Ok((stream, addr)) => {
                         info!("[Health] connection accepted from {}", addr);
                         let handler = on_disconnect.clone();
-                        let peer_stops = peer_stops.clone();
+                        let peer_controls = peer_controls.clone();
                         tokio::spawn(async move {
-                            health_server_connection_loop(handler, peer_stops, stream).await;
+                            health_server_connection_loop(handler, peer_controls, stream).await;
                         });
                     }
                     Err(err) => {
@@ -126,7 +164,7 @@ async fn health_server_loop(
 
 async fn health_server_connection_loop(
     on_disconnect: HealthDisconnectHandler,
-    peer_stops: PeerStopRegistry,
+    peer_controls: PeerHealthRegistry,
     stream: TcpStream,
 ) {
     let connection_generation = NEXT_HEALTH_CONNECTION_GENERATION.fetch_add(1, Ordering::Relaxed);
@@ -134,26 +172,15 @@ async fn health_server_connection_loop(
     debug!("[Health] connection loop started, peer={:?}", peer);
     let mut conn = TunnelControlConnection::new(stream);
 
-    let (source_device_id, speed_only) =
+    let source_device_id =
         match tokio::time::timeout(std::time::Duration::from_secs(5), conn.next()).await {
             Ok(Ok(Some(TunnelControlMessage::Hello {
                 source_device_id,
                 protocol_version,
-            }))) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => {
-                (source_device_id, false)
-            }
-            Ok(Ok(Some(TunnelControlMessage::SpeedHello {
-                source_device_id,
-                protocol_version,
-            }))) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => (source_device_id, true),
-            Ok(Ok(Some(
-                TunnelControlMessage::Hello {
-                    protocol_version, ..
-                }
-                | TunnelControlMessage::SpeedHello {
-                    protocol_version, ..
-                },
-            ))) => {
+            }))) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => source_device_id,
+            Ok(Ok(Some(TunnelControlMessage::Hello {
+                protocol_version, ..
+            }))) => {
                 warn!(
                     "[Health] unsupported protocol version from {:?}: {}",
                     peer, protocol_version
@@ -201,20 +228,6 @@ async fn health_server_connection_loop(
         return;
     }
 
-    if speed_only {
-        debug!(
-            "[SpeedTest] one-shot control connected, source_device_id={}, peer={:?}",
-            source_device_id, peer
-        );
-        if let Err(err) = speed_control_server_loop(&mut conn, source_device_id).await {
-            warn!(
-                "[SpeedTest] one-shot control failed, source_device_id={}, error={:#}",
-                source_device_id, err
-            );
-        }
-        return;
-    }
-
     // 健康连接恢复时通知上层取消被动会话的断线宽限清理。
     on_disconnect(
         source_device_id,
@@ -226,24 +239,32 @@ async fn health_server_connection_loop(
     // HealthServerHandle.close_peer_connection 发送 true，本 loop 收到后 break，
     // drop `TcpStream` 触发 TCP FIN 立即送达主动端（conn.next() → None）。
     let (peer_stop_tx, mut peer_stop_rx) = watch::channel(false);
-    let replaced_peer_stop = peer_stops.lock().ok().and_then(|mut registry| {
-        registry.insert(source_device_id, (connection_generation, peer_stop_tx))
+    let (speed_request_tx, mut speed_request_rx) = mpsc::unbounded_channel();
+    let replaced_peer_control = peer_controls.lock().ok().and_then(|mut registry| {
+        registry.insert(
+            source_device_id,
+            PeerHealthControl {
+                generation: connection_generation,
+                stop_tx: peer_stop_tx,
+                speed_tx: speed_request_tx,
+            },
+        )
     });
-    if let Some((_previous_generation, previous_tx)) = replaced_peer_stop {
+    if let Some(previous) = replaced_peer_control {
         // 同一设备建立了新一代连接。显式关闭旧连接，避免旧 sender 被覆盖后
         // receiver 永久以 Err 立即返回并形成 busy loop。
-        let _ = previous_tx.send(true);
+        let _ = previous.stop_tx.send(true);
     }
 
     // 清理守卫：无论从哪个分支退出，都从 registry 移除自己的 sender，避免泄漏。
     // 用闭包封装保证所有 return/break 路径都执行清理。
     let cleanup_registry = || {
-        if let Ok(mut registry) = peer_stops.lock() {
+        if let Ok(mut registry) = peer_controls.lock() {
             // 旧连接可能已被同 device_id 的新连接替换；只清理自己的代次，
             // 避免旧 task 退出时误删新连接的 sender。
             let owns_entry = registry
                 .get(&source_device_id)
-                .is_some_and(|(generation, _)| *generation == connection_generation);
+                .is_some_and(|control| control.generation == connection_generation);
             if owns_entry {
                 registry.remove(&source_device_id);
             }
@@ -251,6 +272,7 @@ async fn health_server_connection_loop(
     };
 
     let mut speed_server_task = None;
+    let mut pending_speed_test = None;
     loop {
         tokio::select! {
             // 被动端主动断开：直接 break，drop TcpStream 触发 TCP FIN。
@@ -275,6 +297,29 @@ async fn health_server_connection_loop(
                         break;
                     }
                 }
+            }
+            request = speed_request_rx.recv() => {
+                let Some(request) = request else {
+                    break;
+                };
+                if pending_speed_test.is_some() {
+                    let _ = request.response.send(Err("speed test already in progress".to_string()));
+                    continue;
+                }
+                let request_id = NEXT_SPEED_TEST_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+                if let Err(err) = conn
+                    .send(&TunnelControlMessage::SpeedTestRequest { request_id })
+                    .await
+                {
+                    let _ = request.response.send(Err(err.to_string()));
+                    on_disconnect(
+                        source_device_id,
+                        connection_generation,
+                        PassiveHealthEvent::Disconnected { reason: "write_failed" },
+                    );
+                    break;
+                }
+                pending_speed_test = Some((request_id, request.response));
             }
             msg_result = tokio::time::timeout(std::time::Duration::from_secs(60), conn.next()) => {
                 // 主动端每 5 秒发送一次 Ping；60 秒没有心跳后进入网络异常。
@@ -353,12 +398,63 @@ async fn health_server_connection_loop(
                             }
                             Ok(None) => {}
                             Err(err) => {
+                                if let Some((_request_id, response)) = pending_speed_test.take() {
+                                    let _ = response.send(Err(err.to_string()));
+                                }
                                 warn!(
                                     "[SpeedTest] health control request failed, source_device_id={}, error={:#}",
                                     source_device_id, err
                                 );
                                 break;
                             }
+                        }
+                    }
+                    TunnelControlMessage::SpeedTestResult {
+                        request_id,
+                        latency_ms,
+                        download_mbps,
+                        upload_mbps,
+                        retransmits,
+                    } => {
+                        match pending_speed_test.take() {
+                            Some((pending_id, response)) if pending_id == request_id => {
+                                // 主动端报告的是主动端视角；转换成当前被动端视角。
+                                let _ = response.send(Ok(TunnelSpeedTestResult {
+                                    latency_ms,
+                                    download_mbps: upload_mbps,
+                                    upload_mbps: download_mbps,
+                                    retransmits,
+                                }));
+                            }
+                            Some(pending) => {
+                                pending_speed_test = Some(pending);
+                                warn!(
+                                    "[SpeedTest] unexpected result id, source_device_id={}, request_id={}",
+                                    source_device_id, request_id
+                                );
+                            }
+                            None => warn!(
+                                "[SpeedTest] result without request, source_device_id={}, request_id={}",
+                                source_device_id, request_id
+                            ),
+                        }
+                    }
+                    TunnelControlMessage::SpeedTestError { request_id, message } => {
+                        match pending_speed_test.take() {
+                            Some((pending_id, response)) if pending_id == request_id => {
+                                let _ = response.send(Err(message));
+                            }
+                            Some(pending) => {
+                                pending_speed_test = Some(pending);
+                                warn!(
+                                    "[SpeedTest] unexpected error id, source_device_id={}, request_id={}",
+                                    source_device_id, request_id
+                                );
+                            }
+                            None => warn!(
+                                "[SpeedTest] error without request, source_device_id={}, request_id={}",
+                                source_device_id, request_id
+                            ),
                         }
                     }
                     TunnelControlMessage::Stop { reason } => {
@@ -384,33 +480,11 @@ async fn health_server_connection_loop(
         }
     }
 
+    if let Some((_request_id, response)) = pending_speed_test.take() {
+        let _ = response.send(Err("health control connection closed".to_string()));
+    }
     stop_speed_server_task(&mut speed_server_task).await;
     cleanup_registry();
-}
-
-async fn speed_control_server_loop(
-    conn: &mut TunnelControlConnection<TcpStream>,
-    source_device_id: i64,
-) -> Result<()> {
-    let mut speed_server_task = None;
-    let result = async {
-        loop {
-            let message = tokio::time::timeout(std::time::Duration::from_secs(60), conn.next())
-                .await
-                .context("speed control message timeout")??;
-            let Some(message) = message else {
-                return Ok(());
-            };
-            if let Some(task) =
-                handle_speed_control_message(conn, message, source_device_id).await?
-            {
-                replace_speed_server_task(&mut speed_server_task, task).await;
-            }
-        }
-    }
-    .await;
-    stop_speed_server_task(&mut speed_server_task).await;
-    result
 }
 
 async fn handle_speed_control_message(
@@ -420,21 +494,19 @@ async fn handle_speed_control_message(
 ) -> Result<Option<tokio::task::JoinHandle<()>>> {
     match message {
         TunnelControlMessage::SpeedPing { nonce } => {
-            conn.send(&TunnelControlMessage::SpeedPong { nonce }).await?;
+            conn.send(&TunnelControlMessage::SpeedPong { nonce })
+                .await?;
             Ok(None)
         }
         TunnelControlMessage::SpeedStart => {
-            // 本次测速的接收端临时作为 riperf3 server；发起端通过对端虚拟 IP
-            // 连接该 server。使用独立控制连接后，主动端和被动端都可承担此角色。
+            // 被动端临时作为 riperf3 server；主动端通过被动端虚拟 IP连接。
             let server_lease = crate::speed_test::acquire_speed_test_server_lease().await?;
             let server = crate::speed_test::build_speed_test_server()
                 .context("failed to build speed test server")?;
             let server_task = tokio::spawn(async move {
                 let _server_lease = server_lease;
                 match tokio::time::timeout(
-                    std::time::Duration::from_secs(
-                        crate::speed_test::SPEED_TEST_RUN_TIMEOUT_SECS,
-                    ),
+                    std::time::Duration::from_secs(crate::speed_test::SPEED_TEST_RUN_TIMEOUT_SECS),
                     server.run_once(),
                 )
                 .await
@@ -566,37 +638,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn speed_connection_is_one_shot_and_does_not_publish_health_events() {
-        let (addr, mut rx) = spawn_test_health_connection().await;
+    async fn passive_speed_request_uses_health_connection_and_reverses_directions() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener addr");
+        let peer_stops: PeerHealthRegistry = Arc::new(StdMutex::new(HashMap::new()));
+        let peer_stops_for_task = peer_stops.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept test stream");
+            health_server_connection_loop(Arc::new(|_, _, _| {}), peer_stops_for_task, stream)
+                .await;
+        });
         let stream = TcpStream::connect(addr)
             .await
-            .expect("connect speed control server");
+            .expect("connect health server");
         let mut conn = TunnelControlConnection::new(stream);
 
-        conn.send(&TunnelControlMessage::SpeedHello {
+        conn.send(&TunnelControlMessage::Hello {
             source_device_id: 321,
             protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
         })
         .await
-        .expect("write speed hello");
+        .expect("write hello");
         assert!(matches!(
-            conn.next().await.expect("read speed hello ack"),
+            conn.next().await.expect("read hello ack"),
             Some(TunnelControlMessage::HelloAck { ok: true, .. })
         ));
 
-        conn.send(&TunnelControlMessage::SpeedPing { nonce: 99 })
+        let speed_tx = loop {
+            if let Some(speed_tx) = peer_stops
+                .lock()
+                .expect("lock registry")
+                .get(&321)
+                .map(|control| control.speed_tx.clone())
+            {
+                break speed_tx;
+            }
+            tokio::task::yield_now().await;
+        };
+        let (response_tx, response_rx) = oneshot::channel();
+        speed_tx
+            .send(PassiveSpeedTestCommand {
+                response: response_tx,
+            })
+            .expect("send passive speed request");
+        let request_id = match conn.next().await.expect("read speed request") {
+            Some(TunnelControlMessage::SpeedTestRequest { request_id }) => request_id,
+            other => panic!("unexpected speed request: {:?}", other),
+        };
+        conn.send(&TunnelControlMessage::SpeedTestResult {
+            request_id,
+            latency_ms: 10.0,
+            download_mbps: 20.0,
+            upload_mbps: 30.0,
+            retransmits: Some(1),
+        })
+        .await
+        .expect("write speed result");
+
+        let result = response_rx
             .await
-            .expect("write speed ping");
-        assert_eq!(
-            conn.next().await.expect("read speed pong"),
-            Some(TunnelControlMessage::SpeedPong { nonce: 99 })
-        );
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
-                .await
-                .is_err(),
-            "one-shot speed control must not mutate passive health lifecycle"
-        );
+            .expect("receive passive result")
+            .expect("speed test succeeds");
+        assert_eq!(result.download_mbps, 30.0);
+        assert_eq!(result.upload_mbps, 20.0);
+        assert_eq!(result.retransmits, Some(1));
     }
 
     #[tokio::test]
@@ -726,20 +833,20 @@ mod tests {
         );
     }
 
-    /// 验证方案 A 核心：外部通过 PeerStopRegistry 发送 stop 信号后，
+    /// 验证方案 A 核心：外部通过 PeerHealthRegistry 发送 stop 信号后，
     /// 连接 task 退出并 drop TcpStream，主动端 conn.next() 返回 None。
     ///
     /// 这模拟了被动端点击"断开"时 stop_wgvpn_job 调用 close_peer_connection 的场景：
     /// 被动端 health server 主动关闭 TCP 连接 → TCP FIN → 主动端立即感知。
     #[tokio::test]
     async fn health_connection_closes_on_passive_stop_signal() {
-        // 这个测试需要从外部触发 per-peer stop，所以直接用 PeerStopRegistry。
+        // 这个测试需要从外部触发 per-peer stop，所以直接用 PeerHealthRegistry。
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test listener");
         let addr = listener.local_addr().expect("test listener addr");
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let peer_stops: PeerStopRegistry = Arc::new(StdMutex::new(HashMap::new()));
+        let peer_stops: PeerHealthRegistry = Arc::new(StdMutex::new(HashMap::new()));
         let peer_stops_for_task = peer_stops.clone();
 
         tokio::spawn(async move {
@@ -775,12 +882,12 @@ mod tests {
 
         // 模拟 stop_wgvpn_job 调用 close_peer_connection：
         // 取出 sender 并发送 stop 信号。
-        let (_generation, stop_tx) = peer_stops
+        let control = peer_stops
             .lock()
             .expect("lock registry")
             .remove(&222)
             .expect("peer stop sender registered");
-        stop_tx.send(true).expect("send stop signal");
+        control.stop_tx.send(true).expect("send stop signal");
 
         // 被动端连接 task 收到信号后 break，drop TcpStream 发送 TCP FIN。
         // 主动端 conn.next() 应返回 None（不返回任何消息、不报错）。
@@ -801,7 +908,7 @@ mod tests {
             .await
             .expect("bind test listener");
         let addr = listener.local_addr().expect("test listener addr");
-        let peer_stops: PeerStopRegistry = Arc::new(StdMutex::new(HashMap::new()));
+        let peer_stops: PeerHealthRegistry = Arc::new(StdMutex::new(HashMap::new()));
 
         let peer_stops_for_task = peer_stops.clone();
         tokio::spawn(async move {

@@ -33,9 +33,8 @@ use crate::health::{
 use crate::i18n::localized_message;
 use crate::p2p::wgvpn_flow;
 use crate::p2p::{
-    build_punch_token, close_active_p2p_job, open_active_p2p_job, run_on_demand_tunnel_speed_test,
-    wgvpn_health_monitor_loop, ActiveP2POpenResult, ActiveStartResult, PassivePeerInfo,
-    TunnelHealthEvent,
+    build_punch_token, close_active_p2p_job, open_active_p2p_job, wgvpn_health_monitor_loop,
+    ActiveP2POpenResult, ActiveStartResult, PassivePeerInfo, TunnelHealthEvent,
 };
 use crate::speed_test::TunnelSpeedTestCommand;
 use crate::subnet_router;
@@ -44,7 +43,7 @@ use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -151,8 +150,6 @@ pub(super) struct SharedRuntimeState {
     wgvpn_job_cancels: HashMap<i64, WgvpnJobControl>,
     /// 主动端基于 WGVPN 虚拟 IP 建立的持久 TCP 健康监测任务。
     wgvpn_health_controls: HashMap<i64, WgvpnHealthControl>,
-    /// 被动端通过一次性控制连接发起的测速任务，用于同 peer 并发去重。
-    wgvpn_on_demand_speed_tests: HashSet<i64>,
     /// 被动端健康连接断开后的宽限清理任务；重连或显式 Stop 时取消。
     passive_health_grace_controls: HashMap<i64, PassiveHealthGraceControl>,
     /// 被动端每个设备当前有效的健康 TCP 连接代次。
