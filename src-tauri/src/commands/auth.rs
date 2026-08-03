@@ -93,23 +93,25 @@ pub async fn logout() -> Result<(), String> {
     Ok(())
 }
 
-/// Tauri 命令：注册（无需邮箱验证码，使用客户端本地图片验证码）
+/// Tauri 命令：使用邮件验证码注册。
 #[tauri::command]
-pub async fn register_no_verify(
+pub async fn register_by_email_code(
     username: String,
     email: String,
     password: String,
+    verification_code: String,
     invite_code: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    debug!("RegisterNoVerify request for: {}", email);
+    debug!("RegisterByEmailCode request for: {}", email);
 
     let config = p2premote_core::config::load_machine_config().unwrap_or_default();
-    debug!("[RegisterNoVerify] server base_url: {}", config.server_url);
-    let response = p2premote_core::auth::register_no_verify(
+    debug!("[RegisterByEmailCode] server base_url: {}", config.server_url);
+    let response = p2premote_core::auth::register_by_email_code(
         &config.server_url,
         &username,
         &email,
         &password,
+        &verification_code,
         invite_code.as_deref(),
     )
         .await
@@ -124,6 +126,36 @@ pub async fn register_no_verify(
         "code": response.code,
         "msg": message,
     }))
+}
+
+#[tauri::command]
+pub async fn send_registration_verification_code(email: String) -> Result<serde_json::Value, String> {
+    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    let response = p2premote_core::auth::send_verification_code(&config.server_url, &email, "register")
+        .await
+        .map_err(|e| e.to_string())?;
+    if response.code != 0 {
+        return Err(response.localized_error_message(config.locale.as_deref()));
+    }
+    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
+}
+
+#[tauri::command]
+pub async fn send_reset_password_verification_code(email: String) -> Result<serde_json::Value, String> {
+    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    let response = p2premote_core::auth::send_verification_code(&config.server_url, &email, "reset_password")
+        .await.map_err(|e| e.to_string())?;
+    if response.code != 0 { return Err(response.localized_error_message(config.locale.as_deref())); }
+    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
+}
+
+#[tauri::command]
+pub async fn reset_password_by_email_code(email: String, verification_code: String, new_password: String) -> Result<serde_json::Value, String> {
+    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    let response = p2premote_core::auth::reset_password_by_email_code(&config.server_url, &email, &verification_code, &new_password)
+        .await.map_err(|e| e.to_string())?;
+    if response.code != 0 { return Err(response.localized_error_message(config.locale.as_deref())); }
+    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
 }
 
 /// Tauri 命令：检查是否已登录

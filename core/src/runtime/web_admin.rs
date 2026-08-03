@@ -690,7 +690,10 @@ async fn handle_web_command(
             Ok(serde_json::Value::Null)
         }
         "check_update" => check_update_for_web().await,
-        "register_no_verify" => register_no_verify_for_web(args).await,
+        "register_by_email_code" => register_by_email_code_for_web(args).await,
+        "send_registration_verification_code" => send_registration_verification_code_for_web(args).await,
+        "send_reset_password_verification_code" => send_reset_password_verification_code_for_web(args).await,
+        "reset_password_by_email_code" => reset_password_by_email_code_for_web(args).await,
         "login" => {
             let identifier = arg_string(&args, &["identifier"])?;
             let password = arg_string(&args, &["password"])?;
@@ -977,17 +980,19 @@ fn web_service_info() -> WebServiceInfo {
     }
 }
 
-async fn register_no_verify_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn register_by_email_code_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
     let username = arg_string(&args, &["username"])?;
     let email = arg_string(&args, &["email"])?;
     let password = arg_string(&args, &["password"])?;
+    let verification_code = arg_string(&args, &["verificationCode", "verification_code"])?;
     let invite_code = arg_optional_string(&args, &["inviteCode", "invite_code"]);
     let config = load_machine_config().unwrap_or_default();
-    let response = crate::auth::register_no_verify(
+    let response = crate::auth::register_by_email_code(
         &config.server_url,
         &username,
         &email,
         &password,
+        &verification_code,
         invite_code.as_deref(),
     )
         .await
@@ -1002,6 +1007,36 @@ async fn register_no_verify_for_web(args: serde_json::Value) -> Result<serde_jso
         "msg": message,
         "data": response.data,
     }))
+}
+
+async fn send_registration_verification_code_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let email = arg_string(&args, &["email"])?;
+    let config = load_machine_config().unwrap_or_default();
+    let response = crate::auth::send_verification_code(&config.server_url, &email, "register")
+        .await
+        .map_err(|e| e.to_string())?;
+    if response.code != 0 {
+        return Err(response.localized_error_message(config.locale.as_deref()));
+    }
+    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
+}
+
+async fn send_reset_password_verification_code_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let email = arg_string(&args, &["email"])?;
+    let config = load_machine_config().unwrap_or_default();
+    let response = crate::auth::send_verification_code(&config.server_url, &email, "reset_password").await.map_err(|e| e.to_string())?;
+    if response.code != 0 { return Err(response.localized_error_message(config.locale.as_deref())); }
+    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
+}
+
+async fn reset_password_by_email_code_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let email = arg_string(&args, &["email"])?;
+    let verification_code = arg_string(&args, &["verificationCode", "verification_code"])?;
+    let new_password = arg_string(&args, &["newPassword", "new_password"])?;
+    let config = load_machine_config().unwrap_or_default();
+    let response = crate::auth::reset_password_by_email_code(&config.server_url, &email, &verification_code, &new_password).await.map_err(|e| e.to_string())?;
+    if response.code != 0 { return Err(response.localized_error_message(config.locale.as_deref())); }
+    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
 }
 
 async fn check_update_for_web() -> Result<serde_json::Value, String> {

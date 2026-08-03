@@ -60,7 +60,7 @@
       <div class="footer">
         <router-link to="/register">{{ $t('login.no_account') }}</router-link>
         <span class="separator">|</span>
-        <a href="https://www.p2premote.top/login" target="_blank">{{ $t('login.forgot_password') }}</a>
+        <router-link to="/reset-password">{{ $t('login.forgot_password') }}</router-link>
       </div>
     </el-card>
   </div>

@@ -59,18 +59,58 @@ struct RegisterRequest<'a> {
     username: &'a str,
     email: &'a str,
     password: &'a str,
+    verification_code: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     invite_code: Option<&'a str>,
 }
 
-/// 注册用户（无需邮箱验证码）。
+#[derive(Debug, Serialize)]
+struct VerificationCodeRequest<'a> {
+    email: &'a str,
+    code_type: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct ResetPasswordRequest<'a> {
+    email: &'a str,
+    verification_code: &'a str,
+    new_password: &'a str,
+}
+
+pub async fn send_verification_code(server_url: &str, email: &str, code_type: &str) -> Result<ApiResponse<Option<serde_json::Value>>> {
+    let url = format!("{}/api/v1/auth/verification-code", server_url.trim_end_matches('/'));
+    let response = shared_client()
+        .post(url)
+        .json(&VerificationCodeRequest { email, code_type })
+        .send()
+        .await?;
+    Ok(response.json().await?)
+}
+
+pub async fn reset_password_by_email_code(
+    server_url: &str,
+    email: &str,
+    verification_code: &str,
+    new_password: &str,
+) -> Result<ApiResponse<Option<serde_json::Value>>> {
+    let url = format!("{}/api/v1/auth/reset-password", server_url.trim_end_matches('/'));
+    let response = shared_client()
+        .post(url)
+        .json(&ResetPasswordRequest { email, verification_code, new_password })
+        .send()
+        .await?;
+    Ok(response.json().await?)
+}
+
+/// 使用邮件验证码注册用户。
 ///
 /// 桌面窗口与 Web 管理界面共用此请求实现，确保服务地址和邀请代码处理一致。
-pub async fn register_no_verify(
+pub async fn register_by_email_code(
     server_url: &str,
     username: &str,
     email: &str,
     password: &str,
+    verification_code: &str,
     invite_code: Option<&str>,
 ) -> Result<ApiResponse<Option<serde_json::Value>>> {
     let invite_code = invite_code.map(str::trim).filter(|value| !value.is_empty());
@@ -84,6 +124,7 @@ pub async fn register_no_verify(
             username,
             email,
             password,
+            verification_code,
             invite_code,
         })
         .send()

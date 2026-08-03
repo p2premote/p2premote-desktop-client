@@ -141,7 +141,7 @@ fn show_system_notification(title: String, body: String) -> Result<(), String> {
 use commands::{
     auth::{
         fetch_user_profile, get_invite_info, get_saved_login, get_user_info, is_logged_in, login,
-        logout, register_no_verify, resume_saved_session, save_login_settings, try_auto_login,
+        logout, register_by_email_code, reset_password_by_email_code, send_registration_verification_code, send_reset_password_verification_code, resume_saved_session, save_login_settings, try_auto_login,
     },
     config::{
         check_update, exit_application, get_settings, get_wgvpn_lan_access_config,
@@ -229,7 +229,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             login,
             logout,
-            register_no_verify,
+            register_by_email_code,
+            send_registration_verification_code,
+            send_reset_password_verification_code,
+            reset_password_by_email_code,
             is_logged_in,
             get_user_info,
             fetch_user_profile,

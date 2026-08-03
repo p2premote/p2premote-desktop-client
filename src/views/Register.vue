@@ -17,7 +17,16 @@
         </el-form-item>
 
         <el-form-item :label="$t('register.email_label')" prop="email">
-          <el-input v-model="form.email" :placeholder="$t('register.email_placeholder')" />
+          <el-input v-model="form.email" :disabled="sendCountdown > 0" :placeholder="$t('register.email_placeholder')" />
+        </el-form-item>
+
+        <el-form-item label="邮件验证码" prop="verificationCode">
+          <div class="captcha-row">
+            <el-input v-model="form.verificationCode" inputmode="numeric" maxlength="6" placeholder="请输入 6 位数字验证码" />
+            <el-button :loading="sendingCode" :disabled="sendCountdown > 0" @click="sendVerificationCode">
+              {{ sendCountdown > 0 ? `${sendCountdown}s` : '发送验证码' }}
+            </el-button>
+          </div>
         </el-form-item>
 
         <el-form-item :label="$t('register.invite_code_label')" prop="inviteCode">
@@ -68,6 +77,9 @@ const formRef = ref()
 const loading = ref(false)
 const captchaCanvas = ref<HTMLCanvasElement | null>(null)
 const currentCaptcha = ref('')
+const sendingCode = ref(false)
+const sendCountdown = ref(0)
+let sendCountdownTimer: number | undefined
 
 // 验证码字符集（避免易混淆字符）
 const CAPTCHA_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
@@ -136,6 +148,7 @@ function refreshCaptcha() {
 const form = reactive({
   username: '',
   email: '',
+  verificationCode: '',
   inviteCode: '',
   password: '',
   confirmPassword: '',
@@ -174,6 +187,10 @@ const rules = computed<FormRules>(() => ({
     { required: true, message: t('register.validation.password_required'), trigger: 'blur' },
     { min: 6, message: t('register.validation.password_length'), trigger: 'blur' }
   ],
+  verificationCode: [
+    { required: true, message: '请输入邮件验证码', trigger: 'blur' },
+    { pattern: /^\d{6}$/, message: '验证码必须为 6 位数字', trigger: 'blur' }
+  ],
   confirmPassword: [
     { required: true, message: t('register.validation.confirm_password_required'), trigger: 'blur' },
     { validator: validateConfirmPassword, trigger: 'blur' }
@@ -190,10 +207,11 @@ async function handleRegister() {
 
   loading.value = true
   try {
-    const response = await invoke<{ code: number; msg: string }>('register_no_verify', {
+    const response = await invoke<{ code: number; msg: string }>('register_by_email_code', {
       username: form.username,
       email: form.email,
       password: form.password,
+      verificationCode: form.verificationCode,
       inviteCode: form.inviteCode || undefined
     })
 
@@ -215,6 +233,26 @@ async function handleRegister() {
     refreshCaptcha()
   } finally {
     loading.value = false
+  }
+}
+
+async function sendVerificationCode() {
+  const valid = await formRef.value.validateField('email').catch(() => false)
+  if (!valid) return
+  sendingCode.value = true
+  try {
+    await invoke('send_registration_verification_code', { email: form.email })
+    ElMessage.success('验证码已发送，请在 5 分钟内完成注册')
+    sendCountdown.value = 60
+    sendCountdownTimer = window.setInterval(() => {
+      sendCountdown.value -= 1
+      if (sendCountdown.value <= 0 && sendCountdownTimer) {
+        window.clearInterval(sendCountdownTimer)
+        sendCountdownTimer = undefined
+      }
+    }, 1000)
+  } finally {
+    sendingCode.value = false
   }
 }
 
