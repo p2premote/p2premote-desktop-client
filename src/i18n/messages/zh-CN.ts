@@ -294,6 +294,7 @@ export default {
       auto_tunnel_started: '已开始自动建立隧道，成功或失败后会通知你',
       preflight_failed_title: '无法开始建立隧道',
       preflight_failed_body: '发起打洞前的准备步骤失败：{error}',
+      android_passive_unsupported: 'Android 设备当前仅支持主动建立隧道，不能作为被动方接收连接',
       auto_tunnel_cancelled: '已取消自动建立隧道',
       auto_tunnel_cancel_failed: '取消自动建立隧道失败: {error}',
       tunnel_disconnected: '隧道已断开',

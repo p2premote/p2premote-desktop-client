@@ -718,6 +718,12 @@ function isWindowsDevice(device: DeviceInfo | null): boolean {
   return text.includes('windows') || /(^|\s)win(?:32|64|dows)?(?:\s|$)/.test(text)
 }
 
+function isAndroidDevice(device: DeviceInfo | null): boolean {
+  if (!device) return false
+  const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
+  return text.includes('android')
+}
+
 function tunnelVirtualIp(device: DeviceInfo | null): string {
   if (!device) return ''
   return tunnelStatusMap.value[device.device_id]?.virtual_ip || ''
@@ -964,6 +970,12 @@ function openTunnelAction(device: DeviceInfo) {
   }
   if (lifecycle.state === 'connecting' || activeTunnelJob(device)) {
     void handleCancelActiveTunnelJob(device)
+    return
+  }
+  // Android 当前仅支持主动发起隧道，不能作为被动接收端。
+  // 仅在真正启动后台建链任务前拦截，保留已有任务的取消能力。
+  if (isAndroidDevice(device)) {
+    ElMessage.error(t('devices.message.android_passive_unsupported'))
     return
   }
   void startTunnelSilently(device)

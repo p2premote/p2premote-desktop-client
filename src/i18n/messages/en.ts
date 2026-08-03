@@ -270,6 +270,7 @@ const en = {
       auto_tunnel_started: 'Automatic tunnel establishment started. You will be notified when it succeeds or fails.',
       preflight_failed_title: 'Unable to start tunnel establishment',
       preflight_failed_body: 'A preparation step failed before hole punching: {error}',
+      android_passive_unsupported: 'Android devices currently support initiating tunnels only and cannot accept passive connections',
       auto_tunnel_cancelled: 'Automatic tunnel establishment cancelled',
       auto_tunnel_cancel_failed: 'Failed to cancel automatic tunnel establishment: {error}',
       tunnel_disconnected: 'Tunnel disconnected',
