@@ -126,7 +126,7 @@ const en = {
     },
     auto_login: {
       confirm_title: 'Notice',
-      confirm_body: 'Remember password and automatic sign-in are not enabled, so you will need to enter your credentials after startup.\nFor unattended access, enable both options.',
+      confirm_body: 'Remember password and automatic sign-in are not both enabled, so you will need to enter your credentials after startup.\nFor unattended access, enable both options.',
       confirm_ok: 'Enable anyway',
       settings_query_failed: 'Failed to read sign-in settings. Start at boot was not changed: {error}',
     },

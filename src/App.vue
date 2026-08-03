@@ -508,8 +508,6 @@ const startupProgress = ref(0)
 const startupError = ref('')
 const currentPreflightMessage = ref(t('app.startup_status.launching'))
 const appVersion = ref('1.0.0')
-const savedRememberMe = ref(false)
-const savedAutoLogin = ref(false)
 const forceUpdateVisible = ref(false)
 const optionalUpdatePrompted = ref(false)
 const inviteDialogVisible = ref(false)
@@ -862,19 +860,14 @@ const handleActiveTunnelJobForeground = () => {
 
 async function handleAutoStartChange(val: boolean) {
   if (val) {
-    // 实时从 service 查询"记住密码 / 自动登录"状态，避免使用启动时缓存的陈旧值。
-    // 必须实时查询的原因：登录页 save_login_settings 写入 service 端 machine config 的时机
-    // 晚于 isLoggedIn 变化，且登出后这两项会被 service 清空——任何基于本地 ref 快照的判断
-    // 都可能读到过期值（误判为"未启用"或"已启用"），导致弹窗行为与实际配置不一致。
-    let rememberMe = savedRememberMe.value
-    let autoLogin = savedAutoLogin.value
+    // 开机自启动仅依赖两个登录偏好开关；登录 token 可能尚未生成，
+    // 因此不能将其作为开启自启动的前置条件。
+    let rememberMe = false
+    let autoLogin = false
     try {
       const settings = await invoke<{ remember_me: boolean; auto_login: boolean }>('get_settings')
       rememberMe = settings.remember_me
       autoLogin = settings.auto_login
-      // 顺带刷新缓存，让其他依赖这两项的逻辑也能看到最新值
-      savedRememberMe.value = rememberMe
-      savedAutoLogin.value = autoLogin
     } catch (e) {
       console.warn('[App] 开启自启前查询登录偏好失败:', e)
       autoStart.value = false
@@ -1167,11 +1160,9 @@ async function bootstrapApp() {
     // 加载设置（开机自启状态、日志级别、版本号）
     await setStartupStep(t('app.startup_status.loading_settings'), 92)
     try {
-      const settings = await invoke<{ auto_start: boolean; version: string; remember_me: boolean; auto_login: boolean }>('get_settings')
+      const settings = await invoke<{ auto_start: boolean; version: string }>('get_settings')
       autoStart.value = settings.auto_start
       appVersion.value = settings.version
-      savedRememberMe.value = settings.remember_me
-      savedAutoLogin.value = settings.auto_login
     } catch (e) {
       console.warn('[App] 加载设置失败:', e)
     }

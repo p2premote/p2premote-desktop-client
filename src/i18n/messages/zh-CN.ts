@@ -139,7 +139,7 @@ export default {
     // 自动登录确认
     auto_login: {
       confirm_title: '提示',
-      confirm_body: '当前未启用"记住密码"和"自动登录"，启动后需要输入账号密码登录。\n如果您希望无人值守，请启用"记住密码"和"自动登录"',
+      confirm_body: '当前未同时启用"记住密码"和"自动登录"，启动后需要输入账号密码登录。\n如果您希望无人值守，请启用"记住密码"和"自动登录"',
       confirm_ok: '仍然开启',
       settings_query_failed: '读取登录设置失败，未修改开机自启动：{error}',
     },
