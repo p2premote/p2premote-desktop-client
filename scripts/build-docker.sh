@@ -7,7 +7,8 @@
 #   2) 将 tgz 拷贝到 packaging/linux/docker/ 下并重命名为
 #      p2premote-headless.tar.gz（Dockerfile 默认 ARG）
 #   3) docker build -t <tag> -f Dockerfile packaging/linux/docker/
-#   4) 清理 docker context 内的临时 tgz
+#   4) 将镜像保存为带版本号的 tar 包
+#   5) 清理 docker context 内的临时 tgz
 #
 # 用法:
 #   ./scripts/build-docker.sh -v <version> [--gnu] [--tag <docker-tag>] [--no-tgz-build]
@@ -75,6 +76,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$APP_DIR/build/linux/dist/headless"
+DOCKER_DIST_DIR="$APP_DIR/build/linux/dist/docker"
 DOCKER_CTX="$APP_DIR/packaging/linux/docker"
 DOCKERFILE="$DOCKER_CTX/Dockerfile"
 DEFAULT_TGZ_NAME="p2premote-headless.tar.gz"
@@ -124,7 +126,12 @@ fi
 echo "==> Using headless tgz: $TGZ_PATH"
 echo "==> Preparing docker context: $DOCKER_CTX"
 CONTEXT_TGZ="$DOCKER_CTX/$DEFAULT_TGZ_NAME"
-trap 'rm -f "$CONTEXT_TGZ"' EXIT
+IMAGE_TAR="$DOCKER_DIST_DIR/p2premote-client_${VERSION}.tar"
+IMAGE_TAR_TMP="${IMAGE_TAR}.tmp"
+cleanup() {
+    rm -f "$CONTEXT_TGZ" "$IMAGE_TAR_TMP"
+}
+trap cleanup EXIT
 cp -f "$TGZ_PATH" "$CONTEXT_TGZ"
 
 echo "==> Building docker image: $DOCKER_TAG"
@@ -134,8 +141,14 @@ docker build \
     --build-arg "P2P_HEADLESS_TGZ=$DEFAULT_TGZ_NAME" \
     "$DOCKER_CTX"
 
+echo "==> Saving docker image: $IMAGE_TAR"
+mkdir -p "$DOCKER_DIST_DIR"
+docker save -o "$IMAGE_TAR_TMP" "$DOCKER_TAG"
+mv -f "$IMAGE_TAR_TMP" "$IMAGE_TAR"
+
 echo "==> Done"
 echo "Image: $DOCKER_TAG"
+echo "Image tar: $IMAGE_TAR"
 echo "Run (host network):"
 echo "  docker run -d --name p2premote \\"
 echo "    --network host \\"
