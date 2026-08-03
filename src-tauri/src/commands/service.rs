@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use p2premote_core::config::{
     default_service_binary_name, machine_config_path, machine_log_dir, platform_executable_name,
@@ -74,7 +74,7 @@ async fn ensure_persistent_connection(app: &AppHandle) -> Result<bool, String> {
     let conn = match connect_with_handshake().await {
         Ok(c) => c,
         Err(e) => {
-            info!("[ServiceIPC] service not available: {}", e);
+            debug!("[ServiceIPC] service not available: {}", e);
             return Ok(false);
         }
     };
@@ -93,7 +93,7 @@ async fn ensure_persistent_connection(app: &AppHandle) -> Result<bool, String> {
         *get_last_known_status().lock() = None;
         // 通知 UI 连接已断开，触发重连
         let _ = app_clone.emit("service-connection-lost", ());
-        info!("[ServiceIPC] persistent connection closed");
+        debug!("[ServiceIPC] persistent connection closed");
     });
 
     Ok(true)
@@ -401,14 +401,14 @@ fn collect_service_status_with_runtime(
 
 #[tauri::command]
 pub async fn get_service_status() -> Result<ServiceStatusResponse, String> {
-    info!("[service] get_service_status called");
+    debug!("[service] get_service_status called");
     collect_service_status().await
 }
 
 /// UI 调用：建立到 service 的持久连接，监听服务端推送事件。返回 true=已连接, false=service 未运行
 #[tauri::command]
 pub async fn listen_service_events(app: AppHandle) -> Result<bool, String> {
-    info!("[service] listen_service_events called");
+    debug!("[service] listen_service_events called");
     ensure_persistent_connection(&app).await
 }
 
@@ -450,27 +450,27 @@ pub async fn ensure_background_service_session(
 }
 
 async fn ensure_background_service_session_inner() -> Result<ServiceStatusResponse, String> {
-    info!("[service] === ensure_background_service_session begin ===");
+    debug!("[service] === ensure_background_service_session begin ===");
     let _guard = get_service_session_lock().lock().await;
-    info!("[service] acquired session lock");
+    debug!("[service] acquired session lock");
 
     // 1) 先通过 IPC pipe 检测 service 是否已在运行
     match connect_with_handshake().await {
         Ok(_) => {
-            info!("[service] service already running (IPC OK)");
+            debug!("[service] service already running (IPC OK)");
             // 这里只确认 service/IPC 生命周期，不执行设备注册或网络请求。
             // 登录后的配置同步由 sync_service_runtime_config 负责；service 自身 bootstrap
             // 会在缺少 device_id 时注册设备。把 RegisterDevice 放在这里会让正常 IPC
             // 因外网延迟被误报为“后台服务检查超时”。
             let result = collect_service_status().await;
-            info!(
+            debug!(
                 "[service] === ensure_background_service_session end (already running), running={} ===",
                 result.as_ref().map(|r| r.service.running).unwrap_or(false)
             );
             return result;
         }
         Err(e) => {
-            info!("[service] IPC not available yet: {}", e);
+            debug!("[service] IPC not available yet: {}", e);
         }
     }
 
@@ -479,22 +479,22 @@ async fn ensure_background_service_session_inner() -> Result<ServiceStatusRespon
         warn!("[service] query_service_status failed: {}", e);
         e.to_string()
     })?;
-    info!(
+    debug!(
         "[service] SCM status: installed={}, running={}, enabled={}, raw_state={}",
         scm_status.installed, scm_status.running, scm_status.enabled, scm_status.raw_state
     );
 
     if scm_status.installed {
         if !scm_status.running {
-            info!("[service] attempting SCM start...");
+            debug!("[service] attempting SCM start...");
             match start_service() {
-                Ok(()) => info!("[service] SCM start returned Ok"),
+                Ok(()) => debug!("[service] SCM start returned Ok"),
                 Err(err) => {
                     warn!("[service] SCM start failed: {:#}", err);
                 }
             }
         } else {
-            info!("[service] SCM reports running, waiting for IPC...");
+            debug!("[service] SCM reports running, waiting for IPC...");
         }
 
         let mut ipc_ready = false;
@@ -503,12 +503,12 @@ async fn ensure_background_service_session_inner() -> Result<ServiceStatusRespon
             match connect_with_handshake().await {
                 Ok(_) => {
                     ipc_ready = true;
-                    info!("[service] IPC ready after {}ms", (attempt + 1) * 500);
+                    debug!("[service] IPC ready after {}ms", (attempt + 1) * 500);
                     break;
                 }
                 Err(e) => {
                     if attempt % 5 == 4 {
-                        info!(
+                        debug!(
                             "[service] IPC not ready after {}ms: {}",
                             (attempt + 1) * 500,
                             e
@@ -533,9 +533,9 @@ async fn ensure_background_service_session_inner() -> Result<ServiceStatusRespon
     } else {
         // service 未安装 — 客户端安装包一定会装 service，走到这里说明安装异常
         // 不尝试 IPC 通知，直接返回当前状态
-        info!("[service] service not installed, skipping IPC notifications");
+        debug!("[service] service not installed, skipping IPC notifications");
         let result = collect_service_status().await;
-        info!(
+        debug!(
             "[service] === ensure_background_service_session end (not installed), running={} ===",
             result.as_ref().map(|r| r.service.running).unwrap_or(false)
         );
@@ -543,7 +543,7 @@ async fn ensure_background_service_session_inner() -> Result<ServiceStatusRespon
     }
 
     let result = collect_service_status().await;
-    info!(
+    debug!(
         "[service] === ensure_background_service_session end, running={} ===",
         result.as_ref().map(|r| r.service.running).unwrap_or(false)
     );
@@ -551,11 +551,11 @@ async fn ensure_background_service_session_inner() -> Result<ServiceStatusRespon
 }
 
 pub fn cleanup_background_service_on_app_exit() {
-    info!("[service] === cleanup on app exit begin ===");
+    debug!("[service] === cleanup on app exit begin ===");
 
     let shutdown_sent =
         tauri::async_runtime::block_on(send_command(Data::ShutdownGracefully)).is_ok();
-    info!("[service] shutdown sent: {}", shutdown_sent);
+    debug!("[service] shutdown sent: {}", shutdown_sent);
 
     if shutdown_sent {
         for i in 0..20 {
@@ -564,7 +564,7 @@ pub fn cleanup_background_service_on_app_exit() {
             let service_stopped = query_service_status()
                 .map(|status| !status.running)
                 .unwrap_or(false);
-            info!(
+            debug!(
                 "[service] waiting service stop: attempt={}, pipe_gone={}, service_stopped={}",
                 i + 1,
                 pipe_gone,
@@ -578,7 +578,7 @@ pub fn cleanup_background_service_on_app_exit() {
 
     match query_service_status() {
         Ok(status) if status.installed && status.running => {
-            info!("[service] service still running after graceful, calling stop_service()");
+            debug!("[service] service still running after graceful, calling stop_service()");
             if let Err(err) = stop_service() {
                 warn!("[service] stop SCM service on app exit failed: {}", err);
             } else {
@@ -586,7 +586,7 @@ pub fn cleanup_background_service_on_app_exit() {
                     std::thread::sleep(std::time::Duration::from_millis(300));
                     let service_stopped =
                         query_service_status().map(|s| !s.running).unwrap_or(false);
-                    info!(
+                    debug!(
                         "[service] waiting SCM stop: attempt={}, stopped={}",
                         i + 1,
                         service_stopped
@@ -597,14 +597,14 @@ pub fn cleanup_background_service_on_app_exit() {
                 }
             }
         }
-        Ok(status) => info!(
+        Ok(status) => debug!(
             "[service] service state on exit: installed={}, running={}",
             status.installed, status.running
         ),
         Err(err) => warn!("[service] query SCM service on app exit failed: {}", err),
     }
 
-    info!("[service] === cleanup on app exit done ===");
+    debug!("[service] === cleanup on app exit done ===");
 }
 
 /// 持久连接发送命令（带响应），失败则回退到一次性连接
@@ -678,7 +678,7 @@ pub async fn start_service_active_tunnel(
     temporary_password: Option<String>,
     #[allow(unused_variables)] lan_cidrs: Option<Vec<String>>,
 ) -> Result<String, String> {
-    info!(
+    debug!(
         "[service] start active tunnel requested: target_device_id={}, target_uuid={}, connect_code={}, temp_password={}, lan_cidrs={}",
         target_device_id,
         target_device_uuid,
@@ -694,7 +694,7 @@ pub async fn start_service_active_tunnel(
             "message": crate::commands::localized("service.start.confirming", &[]),
         }),
     );
-    info!(
+    debug!(
         "[service] ensuring background service before active tunnel: target_device_id={}",
         target_device_id
     );
@@ -707,7 +707,7 @@ pub async fn start_service_active_tunnel(
             "message": crate::commands::localized("service.start.service_ready", &[]),
         }),
     );
-    info!(
+    debug!(
         "[service] background service ready, sending StartActiveTunnelJob IPC: target_device_id={}",
         target_device_id
     );
@@ -731,7 +731,7 @@ pub async fn start_service_active_tunnel(
         Ok(Data::CommandResponse {
             ok: true, message, ..
         }) => {
-            info!(
+            debug!(
                 "[service] StartActiveTunnelJob IPC succeeded: target_device_id={}",
                 target_device_id
             );
@@ -805,7 +805,7 @@ pub async fn start_service_anonymous_active_tunnel(
     connect_code: String,
     temporary_password: String,
 ) -> Result<serde_json::Value, String> {
-    info!(
+    debug!(
         "[service] anonymous active tunnel requested: connect_code={}",
         connect_code
     );
