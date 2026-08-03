@@ -69,6 +69,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormRules } from 'element-plus/es/components/form/index.mjs'
 import { invoke } from '../runtime/bridge'
+import { errorMessage } from '../utils/errorMessage'
 import AppLogo from '../components/AppLogo.vue'
 
 const { t } = useI18n()
@@ -229,7 +230,7 @@ async function handleRegister() {
       refreshCaptcha()
     }
   } catch (e) {
-    ElMessage.error(t('register.message.failed_with_error', { error: e }))
+    ElMessage.error(errorMessage(e, t('register.message.failed')))
     refreshCaptcha()
   } finally {
     loading.value = false
@@ -251,6 +252,8 @@ async function sendVerificationCode() {
         sendCountdownTimer = undefined
       }
     }, 1000)
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '验证码发送失败，请稍后重试'))
   } finally {
     sendingCode.value = false
   }
