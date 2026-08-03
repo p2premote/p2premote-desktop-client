@@ -38,7 +38,6 @@
       "resources/wintun.dll",
       "resources/p2premote-punch.dll",
       "resources/.p2premote_default.json",
-      "resources/config-demo-full.json",
       "resources/web/**/*"
     ],
     "icon": [

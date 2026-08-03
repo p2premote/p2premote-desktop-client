@@ -890,14 +890,6 @@ mod wgvpn_tests {
     }
 
     #[test]
-    fn bundled_full_config_demo_parses_as_jsonc() {
-        let demo = include_str!("../../src-tauri/resources/config-demo-full.json");
-        let config = parse_machine_config(demo).unwrap();
-        assert!(config.webui_enabled);
-        assert_eq!(config.server_url, "https://cli.p2premote.top");
-    }
-
-    #[test]
     fn bundled_default_config_parses_as_jsonc() {
         let defaults = load_default_machine_config().unwrap();
         assert!(defaults.webui_enabled);
