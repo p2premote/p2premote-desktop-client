@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,6 +62,27 @@ pub struct MachineConfig {
     pub cached_public_ip_location: Option<String>,
     #[serde(default)]
     pub cached_public_network_checked_at: i64,
+}
+
+/// 不属于用户配置的持久化运行时状态。
+///
+/// 这些字段与登录会话、设备身份和瞬态网络缓存有关，单独保存到 state.json，
+/// 避免 config.json 在用户未修改配置时仍因运行状态变化而出现内容。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct MachineState {
+    auth_token: Option<String>,
+    refresh_token: Option<String>,
+    access_token_expires_at: Option<i64>,
+    user_email: Option<String>,
+    device_id: Option<i64>,
+    device_uuid: Option<String>,
+    device_fingerprint: Option<String>,
+    device_fingerprint_platform: Option<String>,
+    device_fingerprint_version: u32,
+    cached_public_ip: Option<String>,
+    cached_public_ip_location: Option<String>,
+    cached_public_network_checked_at: i64,
 }
 
 impl Default for MachineConfig {
@@ -361,6 +383,30 @@ pub fn machine_config_path() -> PathBuf {
     machine_config_dir().join("config.json")
 }
 
+pub fn machine_state_path() -> PathBuf {
+    machine_config_dir().join("state.json")
+}
+
+/// 安装包自带的全量配置基线。该文件只读；用户只在 data/config.json 中保存覆盖项。
+pub fn default_machine_config_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        return linux_resources_dir().join(".p2premote_default.json");
+    }
+
+    #[cfg(windows)]
+    {
+        return install_root_dir()
+            .join("resources")
+            .join(".p2premote_default.json");
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(windows)))]
+    {
+        PathBuf::from(".p2premote_default.json")
+    }
+}
+
 /// 进程内只设置一次权限
 static DIR_PERMISSIONS_SET: AtomicBool = AtomicBool::new(false);
 
@@ -433,16 +479,35 @@ fn secure_config_dir(dir: &Path) {
 }
 
 pub fn load_machine_config() -> Result<MachineConfig> {
+    let defaults = load_default_machine_config()?;
     let path = machine_config_path();
     if !path.exists() {
-        return Ok(MachineConfig::default());
+        return Ok(apply_machine_state(defaults, load_machine_state()?));
     }
 
     let content = fs::read_to_string(&path)
         .with_context(|| format!("failed to read machine config: {}", path.display()))?;
-    let cfg = parse_machine_config(&content)
+    let mut overrides = parse_config_value(&content)
         .with_context(|| format!("failed to parse machine config: {}", path.display()))?;
-    Ok(cfg)
+    let legacy_state = extract_state_fields(&mut overrides);
+    let state_path = machine_state_path();
+    let state = if state_path.exists() {
+        load_machine_state()?
+    } else if let Some(legacy_state) = legacy_state.as_ref() {
+        let state: MachineState = serde_json::from_value(legacy_state.clone())
+            .context("invalid legacy runtime state in config.json")?;
+        save_machine_state(&state)?;
+        state
+    } else {
+        MachineState::default()
+    };
+    if legacy_state.is_some() {
+        // 仅移除已迁移的状态字段，保留旧全量 config.json 的其余字段，避免在此处
+        // 混入默认配置差异化迁移。
+        atomic_write_json(&path, &overrides)?;
+    }
+    let config = merge_machine_config(defaults, overrides)?;
+    Ok(apply_machine_state(config, state))
 }
 
 /// 配置文件允许 JSONC 注释和尾随逗号，便于用户直接维护 `config.json`。
@@ -450,9 +515,159 @@ fn parse_machine_config(content: &str) -> Result<MachineConfig> {
     json5::from_str::<MachineConfig>(content).context("invalid JSONC configuration")
 }
 
+fn parse_config_value(content: &str) -> Result<Value> {
+    let value = json5::from_str::<Value>(content).context("invalid JSONC configuration")?;
+    if !value.is_object() {
+        anyhow::bail!("configuration root must be an object");
+    }
+    Ok(value)
+}
+
+fn load_default_machine_config() -> Result<MachineConfig> {
+    const EMBEDDED_DEFAULTS: &str =
+        include_str!("../../src-tauri/resources/.p2premote_default.json");
+
+    let path = default_machine_config_path();
+    let content = if path.exists() {
+        fs::read_to_string(&path)
+            .with_context(|| format!("failed to read default machine config: {}", path.display()))?
+    } else {
+        EMBEDDED_DEFAULTS.to_string()
+    };
+    let mut config = parse_machine_config(&content)
+        .with_context(|| format!("failed to parse default machine config: {}", path.display()))?;
+    // 安装路径随平台和部署目录变化，默认文件中的空值表示使用本机解析出的资源路径。
+    if config.p2p_punch_path.trim().is_empty() {
+        config.p2p_punch_path = default_p2p_punch_path().to_string_lossy().to_string();
+    }
+    Ok(config)
+}
+
+fn merge_machine_config(defaults: MachineConfig, overrides: Value) -> Result<MachineConfig> {
+    let mut merged =
+        serde_json::to_value(defaults).context("failed to serialize default config")?;
+    let default_object = merged
+        .as_object_mut()
+        .context("default configuration must be an object")?;
+    for (key, value) in overrides
+        .as_object()
+        .context("configuration root must be an object")?
+    {
+        default_object.insert(key.clone(), value.clone());
+    }
+    serde_json::from_value(merged).context("invalid configuration override")
+}
+
+fn config_overrides(config: &MachineConfig, defaults: &MachineConfig) -> Result<Value> {
+    let current = serde_json::to_value(config).context("failed to serialize machine config")?;
+    let default_values = serde_json::to_value(defaults).context("failed to serialize defaults")?;
+    let current = current
+        .as_object()
+        .context("machine configuration must be an object")?;
+    let default_values = default_values
+        .as_object()
+        .context("default configuration must be an object")?;
+    let mut overrides = Map::new();
+    for (key, value) in current {
+        if is_machine_state_field(key) {
+            continue;
+        }
+        if default_values.get(key) != Some(value) {
+            overrides.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(Value::Object(overrides))
+}
+
 pub fn save_machine_config(config: &MachineConfig) -> Result<()> {
     ensure_machine_dirs()?;
-    atomic_write_json(&machine_config_path(), config)
+    let defaults = load_default_machine_config()?;
+    let overrides = config_overrides(config, &defaults)?;
+    atomic_write_json(&machine_config_path(), &overrides)?;
+    save_machine_state(&machine_state_from_config(config))
+}
+
+fn is_machine_state_field(key: &str) -> bool {
+    matches!(
+        key,
+        "auth_token"
+            | "refresh_token"
+            | "access_token_expires_at"
+            | "user_email"
+            | "device_id"
+            | "device_uuid"
+            | "device_fingerprint"
+            | "device_fingerprint_platform"
+            | "device_fingerprint_version"
+            | "cached_public_ip"
+            | "cached_public_ip_location"
+            | "cached_public_network_checked_at"
+    )
+}
+
+fn extract_state_fields(overrides: &mut Value) -> Option<Value> {
+    let values = overrides.as_object_mut()?;
+    let mut state = Map::new();
+    let keys: Vec<String> = values
+        .keys()
+        .filter(|key| is_machine_state_field(key))
+        .cloned()
+        .collect();
+    for key in keys {
+        if let Some(value) = values.remove(&key) {
+            state.insert(key, value);
+        }
+    }
+    (!state.is_empty()).then_some(Value::Object(state))
+}
+
+fn load_machine_state() -> Result<MachineState> {
+    let path = machine_state_path();
+    if !path.exists() {
+        return Ok(MachineState::default());
+    }
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read machine state: {}", path.display()))?;
+    json5::from_str(&content)
+        .context("invalid JSONC state configuration")
+        .with_context(|| format!("failed to parse machine state: {}", path.display()))
+}
+
+fn save_machine_state(state: &MachineState) -> Result<()> {
+    atomic_write_json(&machine_state_path(), state)
+}
+
+fn machine_state_from_config(config: &MachineConfig) -> MachineState {
+    MachineState {
+        auth_token: config.auth_token.clone(),
+        refresh_token: config.refresh_token.clone(),
+        access_token_expires_at: config.access_token_expires_at,
+        user_email: config.user_email.clone(),
+        device_id: config.device_id,
+        device_uuid: config.device_uuid.clone(),
+        device_fingerprint: config.device_fingerprint.clone(),
+        device_fingerprint_platform: config.device_fingerprint_platform.clone(),
+        device_fingerprint_version: config.device_fingerprint_version,
+        cached_public_ip: config.cached_public_ip.clone(),
+        cached_public_ip_location: config.cached_public_ip_location.clone(),
+        cached_public_network_checked_at: config.cached_public_network_checked_at,
+    }
+}
+
+fn apply_machine_state(mut config: MachineConfig, state: MachineState) -> MachineConfig {
+    config.auth_token = state.auth_token;
+    config.refresh_token = state.refresh_token;
+    config.access_token_expires_at = state.access_token_expires_at;
+    config.user_email = state.user_email;
+    config.device_id = state.device_id;
+    config.device_uuid = state.device_uuid;
+    config.device_fingerprint = state.device_fingerprint;
+    config.device_fingerprint_platform = state.device_fingerprint_platform;
+    config.device_fingerprint_version = state.device_fingerprint_version;
+    config.cached_public_ip = state.cached_public_ip;
+    config.cached_public_ip_location = state.cached_public_ip_location;
+    config.cached_public_network_checked_at = state.cached_public_network_checked_at;
+    config
 }
 
 /// 清除所有凭据：token/refresh/expires/user_email/device + remember_me/auto_login。
@@ -592,11 +807,101 @@ mod wgvpn_tests {
     }
 
     #[test]
+    fn config_overrides_only_include_values_different_from_defaults() {
+        let defaults = MachineConfig::default();
+        let mut config = defaults.clone();
+        config.auto_start = true;
+        config.webui_enabled = false;
+
+        let overrides = config_overrides(&config, &defaults).unwrap();
+        assert_eq!(
+            overrides,
+            serde_json::json!({
+                "auto_start": true,
+                "webui_enabled": false,
+            })
+        );
+    }
+
+    #[test]
+    fn config_overrides_exclude_runtime_state() {
+        let defaults = MachineConfig::default();
+        let mut config = defaults.clone();
+        config.auto_start = true;
+        config.auth_token = Some("access-token".to_string());
+        config.device_id = Some(42);
+        config.cached_public_ip = Some("203.0.113.8".to_string());
+
+        assert_eq!(
+            config_overrides(&config, &defaults).unwrap(),
+            serde_json::json!({ "auto_start": true })
+        );
+    }
+
+    #[test]
+    fn legacy_config_state_is_extracted_without_touching_user_overrides() {
+        let mut overrides = serde_json::json!({
+            "auto_start": true,
+            "auth_token": "access-token",
+            "device_id": 42,
+        });
+
+        let state = extract_state_fields(&mut overrides).unwrap();
+        assert_eq!(overrides, serde_json::json!({ "auto_start": true }));
+        assert_eq!(
+            state,
+            serde_json::json!({
+                "auth_token": "access-token",
+                "device_id": 42,
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_state_is_applied_after_configuration_overrides() {
+        let config = apply_machine_state(
+            MachineConfig::default(),
+            MachineState {
+                auth_token: Some("access-token".to_string()),
+                device_uuid: Some("device-uuid".to_string()),
+                ..MachineState::default()
+            },
+        );
+
+        assert_eq!(config.auth_token.as_deref(), Some("access-token"));
+        assert_eq!(config.device_uuid.as_deref(), Some("device-uuid"));
+    }
+
+    #[test]
+    fn config_overrides_merge_on_top_of_defaults() {
+        let defaults = MachineConfig::default();
+        let config = merge_machine_config(
+            defaults.clone(),
+            serde_json::json!({
+                "server_url": "https://example.test",
+                "webui_enabled": false,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(config.server_url, "https://example.test");
+        assert!(!config.webui_enabled);
+        assert_eq!(config.log_level, defaults.log_level);
+    }
+
+    #[test]
     fn bundled_full_config_demo_parses_as_jsonc() {
         let demo = include_str!("../../src-tauri/resources/config-demo-full.json");
         let config = parse_machine_config(demo).unwrap();
         assert!(config.webui_enabled);
         assert_eq!(config.server_url, "https://cli.p2premote.top");
+    }
+
+    #[test]
+    fn bundled_default_config_parses_as_jsonc() {
+        let defaults = load_default_machine_config().unwrap();
+        assert!(defaults.webui_enabled);
+        assert!(!defaults.p2p_punch_path.is_empty());
     }
 
     #[test]

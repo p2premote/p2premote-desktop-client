@@ -129,6 +129,7 @@ prepare_prefix_root() {
   cp "$release_dir/p2premote-cli" "$root/resources/p2premote-cli"
   cp "$WIREGUARD_GO" "$root/resources/wireguard-go"
   cp "$WG_CLI" "$root/resources/wg"
+  cp "$APP_DIR/src-tauri/resources/.p2premote_default.json" "$root/resources/.p2premote_default.json"
   cp -a "$APP_DIR/dist/." "$root/resources/web/"
   cp "$APP_DIR/packaging/linux/headless/scripts/install-service.sh" "$root/install-service.sh"
   cp "$APP_DIR/packaging/linux/headless/scripts/uninstall-service.sh" "$root/uninstall-service.sh"
