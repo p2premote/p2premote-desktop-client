@@ -718,6 +718,7 @@ fn show_passive_tunnel_popup(locale: Option<&str>, username: &str, device_name: 
 #[cfg(not(windows))]
 fn show_passive_tunnel_popup(_locale: Option<&str>, _username: &str, _device_name: &str) {}
 
+#[cfg(any(windows, test))]
 pub(super) fn passive_tunnel_popup_text(
     locale: Option<&str>,
     username: &str,

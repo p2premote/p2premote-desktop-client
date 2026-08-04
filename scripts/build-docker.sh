@@ -3,7 +3,7 @@
 # 构建 p2premote Linux 客户端 Docker 镜像。
 #
 # 流程：
-#   1) 调用 build-linux-headless.sh 生成 musl 静态 tgz
+#   1) 调用 build-linux-headless.sh 生成当前 Linux 主机架构的 GNU/glibc tgz
 #   2) 将 tgz 拷贝到 packaging/linux/docker/ 下并重命名为
 #      p2premote-headless.tar.gz（Dockerfile 默认 ARG）
 #   3) docker build -t <tag> -f Dockerfile packaging/linux/docker/
@@ -11,10 +11,9 @@
 #   5) 清理 docker context 内的临时 tgz
 #
 # 用法:
-#   ./scripts/build-docker.sh -v <version> [--gnu] [--tag <docker-tag>] [--no-tgz-build]
+#   ./scripts/build-docker.sh -v <version> [--tag <docker-tag>] [--no-tgz-build]
 #
 #   -v <version>        客户端版本号，传给 build-linux-headless.sh
-#   --gnu               使用 GNU/glibc 构建基线（默认 musl，见 build-linux-headless.sh）
 #   --tag <docker-tag>  自定义镜像 tag，默认 p2premote/client:<version>
 #   --no-tgz-build      跳过 headless 构建，假定 dist 目录下已存在 tgz
 #                       （需配合 --tgz-path 或自动按版本探测）
@@ -24,13 +23,12 @@ umask 022
 
 usage() {
     cat >&2 <<'EOF'
-Usage: build-docker.sh -v <version> [--gnu] [--tag <docker-tag>] [--no-tgz-build]
+Usage: build-docker.sh -v <version> [--tag <docker-tag>] [--no-tgz-build]
                       [--tgz-path <path>] [-h]
 EOF
 }
 
 VERSION=""
-USE_GNU=0
 DOCKER_TAG=""
 SKIP_TGZ_BUILD=0
 EXPLICIT_TGZ=""
@@ -40,10 +38,6 @@ while [[ $# -gt 0 ]]; do
         -v)
             VERSION="${2:-}"
             shift 2
-            ;;
-        --gnu)
-            USE_GNU=1
-            shift
             ;;
         --tag)
             DOCKER_TAG="${2:-}"
@@ -73,6 +67,11 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "This script must run in a Linux or WSL shell." >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$APP_DIR/build/linux/dist/headless"
@@ -93,28 +92,26 @@ fi
 if [[ "$SKIP_TGZ_BUILD" -eq 0 ]]; then
     echo "==> Building headless tgz via build-linux-headless.sh"
     HEADLESS_ARGS=(-v "$VERSION")
-    if [[ "$USE_GNU" -eq 1 ]]; then
-        HEADLESS_ARGS+=(--gnu)
-    fi
     "$SCRIPT_DIR/build-linux-headless.sh" "${HEADLESS_ARGS[@]}"
 else
     echo "==> Skipping headless build (--no-tgz-build)"
 fi
 
-# 探测 dist 目录中的 tgz：优先用户显式指定，否则按 GNU/musl 标签规则匹配版本号
-TARGET_LABEL="x86_64-unknown-linux-musl"
-if [[ "$USE_GNU" -eq 1 ]]; then
-    TARGET_LABEL="x86_64-linux-gnu"
-fi
-TARGET_LABEL_U="${TARGET_LABEL//-/_}"
-
+# 探测 dist 目录中的 tgz：优先用户显式指定，否则按当前 Linux 主机架构匹配。
+case "$(uname -m)" in
+    *aarch64*|arm64) TARGET_LABEL="aarch64-linux-gnu" ;;
+    *x86_64*|amd64) TARGET_LABEL="x86_64-linux-gnu" ;;
+    *) echo "Unsupported Linux host architecture: $(uname -m)" >&2; exit 1 ;;
+esac
 if [[ -n "$EXPLICIT_TGZ" ]]; then
     TGZ_PATH="$EXPLICIT_TGZ"
-elif [[ -f "$DIST_DIR/p2premote-headless_${VERSION}_${TARGET_LABEL_U}.tar.gz" ]]; then
-    TGZ_PATH="$DIST_DIR/p2premote-headless_${VERSION}_${TARGET_LABEL_U}.tar.gz"
 else
-    # 回退：版本号下任意 headless tgz
-    TGZ_PATH="$(ls -1 "$DIST_DIR"/p2premote-headless_${VERSION}_*.tar.gz 2>/dev/null | head -n 1 || true)"
+    # 构建版本带短 Git 提交号；优先选择当前主机架构的对应包。
+    TGZ_PATH="$(ls -1 "$DIST_DIR"/p2premote-headless_${VERSION}-*_${TARGET_LABEL}.tar.gz 2>/dev/null | head -n 1 || true)"
+    if [[ -z "$TGZ_PATH" ]]; then
+        # 回退：版本号下任意 headless tgz。
+        TGZ_PATH="$(ls -1 "$DIST_DIR"/p2premote-headless_${VERSION}-*.tar.gz 2>/dev/null | head -n 1 || true)"
+    fi
 fi
 
 if [[ -z "$TGZ_PATH" || ! -f "$TGZ_PATH" ]]; then

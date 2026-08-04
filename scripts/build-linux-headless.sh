@@ -4,28 +4,15 @@ set -euo pipefail
 umask 022
 
 usage() {
-  echo "Usage: $0 -v <version> [--gnu|--target <rust-target>|--static-musl]" >&2
+  echo "Usage: $0 -v <version>" >&2
 }
 
 VERSION=""
-TARGET_TRIPLE="${P2PREMOTE_LINUX_TARGET:-x86_64-unknown-linux-musl}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -v)
       VERSION="${2:-}"
       shift 2
-      ;;
-    --target)
-      TARGET_TRIPLE="${2:-}"
-      shift 2
-      ;;
-    --static-musl)
-      TARGET_TRIPLE="x86_64-unknown-linux-musl"
-      shift
-      ;;
-    --gnu)
-      TARGET_TRIPLE=""
-      shift
       ;;
     -h|--help)
       usage
@@ -43,6 +30,11 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "This script must run in a Linux or WSL shell." >&2
+  exit 1
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$REPO_ROOT"
 GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=6 HEAD)"
@@ -57,25 +49,20 @@ PKG_ROOT="$OUT_DIR/package/p2premote-headless"
 PUNCH_LIB="$APP_DIR/src-tauri/resources/libp2premote-punch.a"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
 WG_CLI="$OUT_DIR/wg"
-TARGET_LABEL="x86_64-linux-gnu"
-if [[ -n "$TARGET_TRIPLE" ]]; then
-  TARGET_LABEL="${TARGET_TRIPLE//-/_}"
-fi
-case "${TARGET_TRIPLE:-$(uname -m)}" in
+case "$(uname -m)" in
   *aarch64*|arm64)
     LINUX_ARCH="arm64"
+    TARGET_LABEL="aarch64-linux-gnu"
     ;;
   *x86_64*|amd64)
     LINUX_ARCH="amd64"
+    TARGET_LABEL="x86_64-linux-gnu"
     ;;
   *)
-    echo "Unsupported Linux target architecture: ${TARGET_TRIPLE:-$(uname -m)}" >&2
+    echo "Unsupported Linux host architecture: $(uname -m)" >&2
     exit 1
     ;;
 esac
-if [[ -z "$TARGET_TRIPLE" && "$LINUX_ARCH" == "arm64" ]]; then
-  TARGET_LABEL="aarch64-linux-gnu"
-fi
 
 rm -rf "$OUT_DIR" "$DIST_DIR"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
@@ -90,6 +77,15 @@ echo "==> Building static WireGuard CLI"
 bash "$APP_DIR/scripts/build-wireguard-tools.sh" -o "$WG_CLI" -a "$LINUX_ARCH"
 
 echo "==> Building browser management UI"
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js 22 or newer is required to build the browser management UI." >&2
+  exit 1
+fi
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
+if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 22 )); then
+  echo "Node.js 22 or newer is required (found $(node --version))." >&2
+  exit 1
+fi
 (
   cd "$APP_DIR"
   npm ci
@@ -99,24 +95,11 @@ echo "==> Building browser management UI"
 echo "==> Building Rust headless binaries"
 (
   cd "$REPO_ROOT"
-  if [[ -n "$TARGET_TRIPLE" ]]; then
-    if ! rustup target list --installed | grep -qx "$TARGET_TRIPLE"; then
-      echo "Rust target is not installed: $TARGET_TRIPLE" >&2
-      echo "Run: rustup target add $TARGET_TRIPLE" >&2
-      exit 1
-    fi
-    P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" cargo build --release --target "$TARGET_TRIPLE" -p p2premote-service -p p2premote-cli
-  else
-    P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" cargo build --release -p p2premote-service -p p2premote-cli
-  fi
+  P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" cargo build --release -p p2premote-service -p p2premote-cli
 )
 
 rust_release_dir() {
-  if [[ -n "$TARGET_TRIPLE" ]]; then
-    echo "$REPO_ROOT/target/$TARGET_TRIPLE/release"
-  else
-    echo "$REPO_ROOT/target/release"
-  fi
+  echo "$REPO_ROOT/target/release"
 }
 
 prepare_prefix_root() {
