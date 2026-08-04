@@ -19,7 +19,7 @@ pub(super) fn spawn_passive_health_watchdog(
             .passive_health_watchdog_generations
             .insert(peer_device_id, generation);
     }
-    info!(
+    debug!(
         "[wgvpn-health] passive first-connection watchdog started: peer_device_id={}, seconds={}",
         peer_device_id, PASSIVE_HEALTH_CONNECT_WAIT_SECS
     );
@@ -31,7 +31,7 @@ pub(super) fn spawn_passive_health_watchdog(
             .iter()
             .any(|session| session.peer_device_id == peer_device_id && !session.is_active);
         if expired && passive_session_exists {
-            info!(
+            warn!(
                 "[wgvpn-health] passive first health connection timed out: peer_device_id={}",
                 peer_device_id
             );
@@ -72,7 +72,7 @@ pub(super) fn spawn_wgvpn_health_monitor(
     {
         Some(device_id) => device_id,
         None => {
-            info!(
+            warn!(
                 "[wgvpn-health] skipped without local device id: peer_device_id={}",
                 peer_device_id
             );
@@ -98,7 +98,7 @@ pub(super) fn spawn_wgvpn_health_monitor(
         }
     }
     let health_addr = format!("{}:{}", peer_virtual_ip, HEALTH_PORT);
-    info!(
+    debug!(
         "[wgvpn-health] monitor started: peer_device_id={}, address={}",
         peer_device_id, health_addr
     );
@@ -148,11 +148,11 @@ pub(super) fn spawn_wgvpn_health_monitor(
         }
 
         match result {
-            Ok(()) => info!(
+            Ok(()) => debug!(
                 "[wgvpn-health] monitor stopped: peer_device_id={}",
                 peer_device_id
             ),
-            Err(err) => info!(
+            Err(err) => warn!(
                 "[wgvpn-health] monitor exited with error: peer_device_id={}, error={:#}",
                 peer_device_id, err
             ),
@@ -381,7 +381,7 @@ pub(super) fn schedule_passive_health_grace(
             let _ = previous.cancel_tx.send(true);
         }
     }
-    info!(
+    debug!(
         "[wgvpn-health] cleanup grace started: peer_device_id={}, reason={}, seconds={}",
         peer_device_id, reason, WGVPN_HEALTH_GRACE_SECS
     );
@@ -482,7 +482,7 @@ pub(super) fn cleanup_wgvpn_session_async(
                 }
                 refresh_wgvpn_sessions(&shared);
             }
-            Err(err) => info!(
+            Err(err) => warn!(
                 "[wgvpn-health] cleanup config load failed: peer_device_id={}, error={}",
                 peer_device_id, err
             ),

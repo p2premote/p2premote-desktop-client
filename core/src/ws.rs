@@ -353,7 +353,7 @@ impl ServiceWsClient {
                                 }
                             }
                             Some(Ok(Message::Close(_))) | None => {
-                                info!("[ServiceWS] connection closed by peer or stream ended");
+                                debug!("[ServiceWS] connection closed by peer or stream ended");
                                 *connected.lock().await = false;
                                 break;
                             }
@@ -385,7 +385,7 @@ impl ServiceWsClient {
             }
 
             let _ = event_tx.send(WsEvent::Disconnected);
-            info!("[ServiceWS] message loop exited");
+            debug!("[ServiceWS] message loop exited");
         });
 
         *self.task_handle.lock().await = Some(task);

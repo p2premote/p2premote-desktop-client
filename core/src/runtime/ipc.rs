@@ -67,7 +67,7 @@ pub(super) async fn handle_client(
     }
 
     // 握手成功
-    info!("[ServiceControl] client connected and authenticated");
+    tracing::debug!("[ServiceControl] client connected and authenticated");
     conn.send(&Data::CommandResponse {
         ok: true,
         message: "ok".to_string(),
@@ -96,7 +96,7 @@ pub(super) async fn handle_client(
             msg = conn.next() => {
                 match msg? {
                     Some(data) => {
-                        tracing::info!("[ServiceControl] received: {:?}", data_variant(&data));
+                        tracing::debug!("[ServiceControl] received: {:?}", data_variant(&data));
                         let response = handle_data(data, shared).await;
                         // 批量唤醒：多条命令只触发一次 bootstrap / shutdown
                         {

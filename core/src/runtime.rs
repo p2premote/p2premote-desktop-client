@@ -50,7 +50,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch, Notify};
 use tokio::time::Instant;
 use tokio::time::{interval, Duration};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod active_jobs;
 mod ipc;
@@ -356,10 +356,17 @@ pub async fn run_service_foreground() -> Result<()> {
     let health_shared = shared.clone();
     let health_handler: HealthDisconnectHandler = Arc::new(
         move |peer_device_id, generation, event| {
-            info!(
-                "[ServiceRuntime] tunnel health event: peer_device_id={}, event={:?}",
-                peer_device_id, event
-            );
+            if matches!(&event, PassiveHealthEvent::HeartbeatSucceeded { .. }) {
+                debug!(
+                    "[ServiceRuntime] tunnel health event: peer_device_id={}, event={:?}",
+                    peer_device_id, event
+                );
+            } else {
+                info!(
+                    "[ServiceRuntime] tunnel health event: peer_device_id={}, event={:?}",
+                    peer_device_id, event
+                );
+            }
             if event == PassiveHealthEvent::Connected {
                 {
                     let mut state = health_shared.lock();
@@ -380,7 +387,7 @@ pub async fn run_service_foreground() -> Result<()> {
                 .copied()
                 == Some(generation);
             if !is_current {
-                info!(
+                debug!(
                 "[ServiceRuntime] ignored stale health connection event: peer_device_id={}, generation={}, event={:?}",
                 peer_device_id, generation, event
             );
@@ -415,7 +422,7 @@ pub async fn run_service_foreground() -> Result<()> {
             Some(handle)
         }
         Err(err) => {
-            info!("[ServiceRuntime] health server start failed: {}", err);
+            warn!("[ServiceRuntime] health server start failed: {}", err);
             None
         }
     };
@@ -453,7 +460,7 @@ pub async fn run_service_foreground() -> Result<()> {
                 );
             }
             _ = wake.notified() => {
-                info!("[ServiceRuntime] wake received, running bootstrap");
+                debug!("[ServiceRuntime] wake received, running bootstrap");
                 spawn_bootstrap_maintenance(
                     shared.clone(), ws_client.clone(), event_tx.clone(), maintenance_lock.clone(), "wake"
                 );
@@ -471,7 +478,7 @@ pub async fn run_service_foreground() -> Result<()> {
                         last_status,
                         last_report_at,
                     ).await {
-                        info!("[ServiceRuntime] device status report failed: {}", err);
+                        warn!("[ServiceRuntime] device status report failed: {}", err);
                         set_last_error(&report_shared, err.to_string());
                     }
                 });
@@ -483,7 +490,7 @@ pub async fn run_service_foreground() -> Result<()> {
                 tokio::spawn(async move {
                     let _maintenance_guard = refresh_lock.lock().await;
                     if let Err(err) = maybe_refresh_auth(&refresh_shared, &refresh_wake).await {
-                        info!("[ServiceRuntime] auth refresh failed: {}", err);
+                        warn!("[ServiceRuntime] auth refresh failed: {}", err);
                         set_last_error(&refresh_shared, err.to_string());
                     }
                 });
@@ -607,7 +614,7 @@ pub async fn run_service_foreground() -> Result<()> {
     if let Some(handle) = health_server {
         match Arc::try_unwrap(handle) {
             Ok(handle) => handle.stop(),
-            Err(_) => info!("[ServiceRuntime] health server handle still shared, skip explicit stop"),
+            Err(_) => debug!("[ServiceRuntime] health server handle still shared, skip explicit stop"),
         }
     }
     info!("[ServiceRuntime] stopped");

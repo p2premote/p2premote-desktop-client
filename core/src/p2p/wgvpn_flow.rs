@@ -1015,7 +1015,11 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
         let _ = wgvpn::stop_tunnel(&wireguard_exe, WG_TUNNEL_NAME);
         let _ = std::fs::remove_file(wgvpn_dir().join(WG_CONF_NAME));
     }
-    info!("[wgvpn] cleaned {} stale session file(s)", cleaned);
+    if cleaned == 0 {
+        tracing::debug!("[wgvpn] no stale session files found");
+    } else {
+        info!("[wgvpn] cleaned {} stale session file(s)", cleaned);
+    }
     Ok(())
 }
 fn resolve_wireguard_exe() -> String {

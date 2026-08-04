@@ -145,7 +145,7 @@ async fn health_server_loop(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, addr)) => {
-                        info!("[Health] connection accepted from {}", addr);
+                        debug!("[Health] connection accepted from {}", addr);
                         let handler = on_disconnect.clone();
                         let peer_controls = peer_controls.clone();
                         tokio::spawn(async move {
