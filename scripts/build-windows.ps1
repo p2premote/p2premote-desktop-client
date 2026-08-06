@@ -85,3 +85,18 @@ finally {
     $env:P2PREMOTE_CLIENT_VERSION = $previousClientVersion
     $env:P2PREMOTE_PUNCH_DIR = $previousPunchDir
 }
+
+# Tauri normally includes x64 in the NSIS filename, but normalize it here so
+# every Windows package produced by this script is accepted by package
+# management and cannot be mistaken for another architecture.
+$nsisDirectory = Join-Path $projectRoot 'target\release\bundle\nsis'
+$expectedInstallerName = "p2pRemote_${buildVersion}_x64-setup.exe"
+$expectedInstallerPath = Join-Path $nsisDirectory $expectedInstallerName
+if (-not (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
+    $candidates = @(Get-ChildItem -LiteralPath $nsisDirectory -Filter "p2pRemote_${buildVersion}*.exe" -File)
+    if ($candidates.Count -ne 1) {
+        throw "expected exactly one Windows x64 NSIS installer under $nsisDirectory, found $($candidates.Count)"
+    }
+    Move-Item -LiteralPath $candidates[0].FullName -Destination $expectedInstallerPath
+}
+Write-Host "Generated Windows x64 installer: $expectedInstallerPath"

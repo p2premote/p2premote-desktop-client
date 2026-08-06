@@ -147,7 +147,7 @@ fi
 echo "==> Using headless tgz: $TGZ_PATH"
 echo "==> Preparing docker context: $DOCKER_CTX"
 CONTEXT_TGZ="$DOCKER_CTX/$DEFAULT_TGZ_NAME"
-IMAGE_TAR="$DOCKER_DIST_DIR/p2premote-client_${VERSION}.tar"
+IMAGE_TAR="$DOCKER_DIST_DIR/p2premote-client_${VERSION}_${TARGET_LABEL}.tar"
 IMAGE_TAR_TMP="${IMAGE_TAR}.tmp"
 cleanup() {
     rm -f "$CONTEXT_TGZ" "$IMAGE_TAR_TMP"

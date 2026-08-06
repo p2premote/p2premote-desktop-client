@@ -26,6 +26,8 @@
 src-tauri\target\release\bundle\nsis\
 ```
 
+脚本会把 NSIS 安装包规范化为 `p2pRemote_<version>-<git-sha>_x64-setup.exe`，文件名中的 `x64` 用于后台校验架构。
+
 要求已安装 Node.js、Rust、Tauri CLI、Windows 编译工具链，并且相邻目录 `../p2premote-punch` 必须存在；脚本会把当前版本和该源码目录显式传给 Tauri 构建。任何必需工具、源码或资源缺失都会直接失败。
 
 ## 2. Linux Headless x86_64
@@ -90,7 +92,7 @@ p2premote/client:1.6.4
 镜像归档位于：
 
 ```text
-build/linux/dist/docker/p2premote-client_1.6.4.tar
+build/linux/dist/docker/p2premote-client_1.6.4_x86_64-linux-gnu.tar
 ```
 
 也可以跳过 Headless 编译，直接指定已有压缩包：
