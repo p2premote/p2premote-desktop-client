@@ -1,6 +1,6 @@
 [package]
 name = "p2premote"
-version = "1.3.27-df0f06"
+version = "1.7.5-fc3d59"
 description = "P2P Remote Desktop Client - Tauri Version"
 authors = ["p2premote"]
 edition = "2021"

@@ -41,10 +41,9 @@ RUN set -eux; \
         /opt/p2premote/resources/p2premote-cli \
         /opt/p2premote/resources/wireguard-go \
         /opt/p2premote/resources/wg; \
-    # 可选脚本（裸机部署用）缺失不阻塞镜像构建
-    for f in /opt/p2premote/install-service.sh /opt/p2premote/uninstall-service.sh; do \
-        [ -f "$f" ] && chmod 755 "$f" || true; \
-    done; \
+    chmod 755 \
+        /opt/p2premote/install-service.sh \
+        /opt/p2premote/uninstall-service.sh; \
     mkdir -p /opt/p2premote/data /opt/p2premote/logs /opt/p2premote/run
 
 # 固定安装根目录，保证 core 的资源、配置、日志、run 目录解析稳定。

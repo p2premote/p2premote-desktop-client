@@ -1,18 +1,15 @@
 param(
-    [string]$OutPath = "src-tauri/resources/p2premote-punch.dll",
-    [string]$PunchSource = ""
+    [Parameter(Mandatory = $true)]
+    [string]$OutPath,
+    [Parameter(Mandatory = $true)]
+    [string]$PunchSource
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-if ($PunchSource) {
-    $sourceDir = Resolve-Path $PunchSource
-} elseif ($env:P2PREMOTE_PUNCH_DIR) {
-    $sourceDir = Resolve-Path $env:P2PREMOTE_PUNCH_DIR
-} else {
-    $sourceDir = Resolve-Path (Join-Path $repoRoot "..\p2premote-punch")
-}
+$sourceDir = Resolve-Path $PunchSource
+$goCommand = Get-Command go -ErrorAction Stop
 $resolvedOutPath = Join-Path $repoRoot $OutPath
 $outDir = Split-Path -Parent $resolvedOutPath
 $headerPath = [System.IO.Path]::ChangeExtension($resolvedOutPath, ".h")
@@ -28,7 +25,10 @@ try {
 
     Push-Location $sourceDir
     try {
-        go build -buildmode=c-shared -ldflags "-s -w" -o $resolvedOutPath .\punchffi
+        & $goCommand.Source build -buildmode=c-shared -ldflags "-s -w" -o $resolvedOutPath .\punchffi
+        if ($LASTEXITCODE -ne 0) {
+            throw "punch DLL build failed with exit code $LASTEXITCODE"
+        }
     } finally {
         Pop-Location
     }
@@ -37,22 +37,31 @@ try {
     $env:GOARCH = $previousGoarch
 }
 
+if (-not (Test-Path -LiteralPath $resolvedOutPath -PathType Leaf)) {
+    throw "punch DLL was not generated: $resolvedOutPath"
+}
+
 if (Test-Path $headerPath) {
     Remove-Item $headerPath -Force
 }
 
-$objdump = Get-Command objdump -ErrorAction SilentlyContinue
-if ($objdump) {
-    $dllNames = & $objdump.Source -p $resolvedOutPath |
-        Select-String "DLL Name:" |
-        ForEach-Object { $_.Line.Split(":")[-1].Trim().ToLowerInvariant() }
+$objdump = Get-Command objdump -ErrorAction Stop
+$dumpOutput = & $objdump.Source -p $resolvedOutPath
+if ($LASTEXITCODE -ne 0) {
+    throw "objdump failed with exit code $LASTEXITCODE"
+}
+if (-not $dumpOutput) {
+    throw "objdump produced no output for $resolvedOutPath"
+}
+$dllNames = $dumpOutput |
+    Select-String "DLL Name:" |
+    ForEach-Object { $_.Line.Split(":")[-1].Trim().ToLowerInvariant() }
 
-    $unexpected = $dllNames | Where-Object {
-        $_ -notin @("kernel32.dll", "msvcrt.dll")
-    }
-    if ($unexpected) {
-        throw "unexpected DLL imports: $($unexpected -join ', ')"
-    }
+$unexpected = $dllNames | Where-Object {
+    $_ -notin @("kernel32.dll", "msvcrt.dll")
+}
+if ($unexpected) {
+    throw "unexpected DLL imports: $($unexpected -join ', ')"
 }
 
 Get-Item $resolvedOutPath | Select-Object FullName, Length, LastWriteTime

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|_| env::consts::OS.to_string());
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS is not set");
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let resources_dir = manifest_dir.join("..").join("src-tauri").join("resources");
@@ -13,20 +13,14 @@ fn main() {
     println!("cargo:rerun-if-changed={}", punch_library.display());
 
     if !punch_library.exists() {
-        println!(
-            "cargo:warning={} not found; wgvpn binaries require it during build",
+        panic!(
+            "{} not found; wgvpn binaries require it during build",
             punch_library.display()
         );
-        return;
     }
 
     if requires_runtime_library_copy(&target_os) {
-        let Some(profile_dir) = target_profile_dir() else {
-            println!(
-                "cargo:warning=failed to resolve target profile dir for p2premote punch library"
-            );
-            return;
-        };
+        let profile_dir = target_profile_dir();
         copy_library(&punch_library, &profile_dir);
         copy_library(&punch_library, &profile_dir.join("deps"));
     }
@@ -47,27 +41,34 @@ fn punch_library_name(target_os: &str) -> &'static str {
         "windows" => "p2premote-punch.dll",
         "macos" => "libp2premote-punch.dylib",
         "linux" => "libp2premote-punch.a",
-        _ => "libp2premote-punch.so",
+        other => panic!("unsupported target OS: {other}"),
     }
 }
 
-fn target_profile_dir() -> Option<PathBuf> {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").ok()?);
-    out_dir.ancestors().nth(3).map(Path::to_path_buf)
+fn target_profile_dir() -> PathBuf {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set"));
+    out_dir
+        .ancestors()
+        .nth(3)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            panic!(
+                "failed to resolve target profile dir from {}",
+                out_dir.display()
+            )
+        })
 }
 
 fn copy_library(source: &Path, dir: &Path) {
-    if let Err(err) = fs::create_dir_all(dir) {
-        println!("cargo:warning=failed to create {}: {}", dir.display(), err);
-        return;
-    }
+    fs::create_dir_all(dir)
+        .unwrap_or_else(|err| panic!("failed to create {}: {}", dir.display(), err));
     let target = dir.join(source.file_name().expect("punch library file name"));
-    if let Err(err) = fs::copy(source, &target) {
-        println!(
-            "cargo:warning=failed to copy {} to {}: {}",
+    fs::copy(source, &target).unwrap_or_else(|err| {
+        panic!(
+            "failed to copy {} to {}: {}",
             source.display(),
             target.display(),
             err
-        );
-    }
+        )
+    });
 }

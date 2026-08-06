@@ -11,7 +11,11 @@ VERSION=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -v)
-      VERSION="${2:-}"
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "-v requires a version value" >&2
+        exit 1
+      fi
+      VERSION="$2"
       shift 2
       ;;
     -h|--help)
@@ -27,6 +31,10 @@ done
 
 if [[ -z "$VERSION" ]]; then
   usage
+  exit 1
+fi
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "version must be in semver format like 1.2.3" >&2
   exit 1
 fi
 
@@ -47,14 +55,15 @@ OUT_DIR="$APP_DIR/build/linux/headless"
 DIST_DIR="$APP_DIR/build/linux/dist/headless"
 PKG_ROOT="$OUT_DIR/package/p2premote-headless"
 PUNCH_LIB="$APP_DIR/src-tauri/resources/libp2premote-punch.a"
+PUNCH_SOURCE_DIR="$REPO_ROOT/../p2premote-punch"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
 WG_CLI="$OUT_DIR/wg"
 case "$(uname -m)" in
-  *aarch64*|arm64)
+  aarch64)
     LINUX_ARCH="arm64"
     TARGET_LABEL="aarch64-linux-gnu"
     ;;
-  *x86_64*|amd64)
+  x86_64)
     LINUX_ARCH="amd64"
     TARGET_LABEL="x86_64-linux-gnu"
     ;;
@@ -64,33 +73,46 @@ case "$(uname -m)" in
     ;;
 esac
 
+if [[ ! -d "$PUNCH_SOURCE_DIR" ]]; then
+  echo "p2premote-punch source directory not found: $PUNCH_SOURCE_DIR" >&2
+  exit 1
+fi
+
 rm -rf "$OUT_DIR" "$DIST_DIR"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
 
 echo "==> Building static p2premote-punch"
-"$APP_DIR/scripts/build-p2premote-punch.sh" -o "$PUNCH_LIB" -a "$LINUX_ARCH"
+"$APP_DIR/scripts/build-p2premote-punch.sh" -o "$PUNCH_LIB" -a "$LINUX_ARCH" -s "$PUNCH_SOURCE_DIR"
 
-echo "==> Building userspace WireGuard fallback"
-bash "$APP_DIR/scripts/build-wireguard-go.sh" -o "$WIREGUARD_GO" -a "$LINUX_ARCH"
+echo "==> Building userspace WireGuard implementation"
+bash "$APP_DIR/scripts/build-wireguard-go.sh" -o "$WIREGUARD_GO" -a "$LINUX_ARCH" -s "$PUNCH_SOURCE_DIR"
 
 echo "==> Building static WireGuard CLI"
 bash "$APP_DIR/scripts/build-wireguard-tools.sh" -o "$WG_CLI" -a "$LINUX_ARCH"
 
 echo "==> Building browser management UI"
-if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js 22 or newer is required to build the browser management UI." >&2
-  exit 1
+if [[ "${P2PREMOTE_SKIP_WEB_BUILD:-0}" == "1" ]]; then
+  if [[ ! -f "$APP_DIR/dist/index.html" ]]; then
+    echo "P2PREMOTE_SKIP_WEB_BUILD=1 requires a prebuilt frontend under $APP_DIR/dist." >&2
+    exit 1
+  fi
+  echo "Skipping browser management UI build; using existing $APP_DIR/dist"
+else
+  if ! command -v node >/dev/null 2>&1; then
+    echo "Node.js 22 or newer is required to build the browser management UI." >&2
+    exit 1
+  fi
+  NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
+  if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 22 )); then
+    echo "Node.js 22 or newer is required (found $(node --version))." >&2
+    exit 1
+  fi
+  (
+    cd "$APP_DIR"
+    npm ci
+    npm run build
+  )
 fi
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 22 )); then
-  echo "Node.js 22 or newer is required (found $(node --version))." >&2
-  exit 1
-fi
-(
-  cd "$APP_DIR"
-  npm ci
-  npm run build
-)
 
 echo "==> Building Rust headless binaries"
 (

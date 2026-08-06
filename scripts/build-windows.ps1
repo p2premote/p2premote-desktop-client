@@ -1,5 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
+    [Alias('v')]
     [string]$Version,
     [switch]$SkipBuild
 )
@@ -11,7 +12,11 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$gitCommit = (git -C $projectRoot rev-parse --short=6 HEAD).Trim()
+$gitCommitOutput = & git -C $projectRoot rev-parse --short=6 HEAD
+if ($LASTEXITCODE -ne 0) {
+    throw "failed to resolve the current git commit id"
+}
+$gitCommit = $gitCommitOutput.Trim()
 if ($gitCommit -notmatch '^[0-9a-f]{6}$') {
     throw "failed to resolve the current git commit id"
 }
@@ -39,8 +44,9 @@ function Update-RegexReplace {
 
     $content = Get-Content -Path $Path -Raw
     $regex = [System.Text.RegularExpressions.Regex]::new($Pattern)
-    if (-not $regex.IsMatch($content)) {
-        throw "failed to update version in $Path"
+    $matches = $regex.Matches($content)
+    if ($matches.Count -ne 1) {
+        throw "expected exactly one version field in $Path, found $($matches.Count)"
     }
 
     $updated = $regex.Replace($content, $Replacement)
@@ -58,10 +64,24 @@ if ($SkipBuild) {
     exit 0
 }
 
+$punchSource = Join-Path $projectRoot '..\p2premote-punch'
+if (-not (Test-Path -LiteralPath $punchSource -PathType Container)) {
+    throw "p2premote-punch source directory not found: $punchSource"
+}
+$previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
+$previousPunchDir = $env:P2PREMOTE_PUNCH_DIR
+$env:P2PREMOTE_CLIENT_VERSION = $buildVersion
+$env:P2PREMOTE_PUNCH_DIR = (Resolve-Path -LiteralPath $punchSource).Path
+
 Push-Location $projectRoot
 try {
-    npx tauri build
+    & npx tauri build
+    if ($LASTEXITCODE -ne 0) {
+        throw "tauri build failed with exit code $LASTEXITCODE"
+    }
 }
 finally {
     Pop-Location
+    $env:P2PREMOTE_CLIENT_VERSION = $previousClientVersion
+    $env:P2PREMOTE_PUNCH_DIR = $previousPunchDir
 }

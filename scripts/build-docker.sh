@@ -36,11 +36,19 @@ EXPLICIT_TGZ=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v)
-            VERSION="${2:-}"
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "-v requires a version value" >&2
+                exit 1
+            fi
+            VERSION="$2"
             shift 2
             ;;
         --tag)
-            DOCKER_TAG="${2:-}"
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "--tag requires a value" >&2
+                exit 1
+            fi
+            DOCKER_TAG="$2"
             shift 2
             ;;
         --no-tgz-build)
@@ -48,7 +56,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --tgz-path)
-            EXPLICIT_TGZ="${2:-}"
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "--tgz-path requires a file path" >&2
+                exit 1
+            fi
+            EXPLICIT_TGZ="$2"
             shift 2
             ;;
         -h|--help)
@@ -64,6 +76,10 @@ done
 
 if [[ -z "$VERSION" ]]; then
     usage
+    exit 1
+fi
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "version must be in semver format like 1.2.3" >&2
     exit 1
 fi
 
@@ -97,25 +113,33 @@ else
     echo "==> Skipping headless build (--no-tgz-build)"
 fi
 
-# 探测 dist 目录中的 tgz：优先用户显式指定，否则按当前 Linux 主机架构匹配。
+# 选择 dist 目录中的 tgz：显式路径和当前 Linux 主机架构都必须严格匹配。
 case "$(uname -m)" in
-    *aarch64*|arm64) TARGET_LABEL="aarch64-linux-gnu" ;;
-    *x86_64*|amd64) TARGET_LABEL="x86_64-linux-gnu" ;;
+    aarch64) TARGET_LABEL="aarch64-linux-gnu" ;;
+    x86_64) TARGET_LABEL="x86_64-linux-gnu" ;;
     *) echo "Unsupported Linux host architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 if [[ -n "$EXPLICIT_TGZ" ]]; then
     TGZ_PATH="$EXPLICIT_TGZ"
 else
-    # 构建版本带短 Git 提交号；优先选择当前主机架构的对应包。
-    TGZ_PATH="$(ls -1 "$DIST_DIR"/p2premote-headless_${VERSION}-*_${TARGET_LABEL}.tar.gz 2>/dev/null | head -n 1 || true)"
-    if [[ -z "$TGZ_PATH" ]]; then
-        # 回退：版本号下任意 headless tgz。
-        TGZ_PATH="$(ls -1 "$DIST_DIR"/p2premote-headless_${VERSION}-*.tar.gz 2>/dev/null | head -n 1 || true)"
+    shopt -s nullglob
+    TGZ_CANDIDATES=("$DIST_DIR"/p2premote-headless_"$VERSION"-*_"$TARGET_LABEL".tar.gz)
+    shopt -u nullglob
+    if (( ${#TGZ_CANDIDATES[@]} != 1 )); then
+        echo "Expected exactly one ${TARGET_LABEL} headless tgz for version $VERSION under $DIST_DIR; found ${#TGZ_CANDIDATES[@]}." >&2
+        printf '  %s\n' "${TGZ_CANDIDATES[@]}" >&2
+        exit 1
     fi
+    TGZ_PATH="${TGZ_CANDIDATES[0]}"
 fi
 
-if [[ -z "$TGZ_PATH" || ! -f "$TGZ_PATH" ]]; then
-    echo "headless tgz not found under $DIST_DIR for version $VERSION" >&2
+if [[ ! -f "$TGZ_PATH" ]]; then
+    echo "headless tgz not found: $TGZ_PATH" >&2
+    exit 1
+fi
+TGZ_NAME="$(basename "$TGZ_PATH")"
+if [[ "$TGZ_NAME" != p2premote-headless_"$VERSION"-*_"$TARGET_LABEL".tar.gz ]]; then
+    echo "headless tgz does not match version $VERSION and architecture $TARGET_LABEL: $TGZ_PATH" >&2
     echo "run without --no-tgz-build, or pass --tgz-path <path>" >&2
     exit 1
 fi

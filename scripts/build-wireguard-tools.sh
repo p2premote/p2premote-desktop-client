@@ -8,19 +8,27 @@ SHA256="af459827b80bfd31b83b08077f4b5843acb7d18ad9a33a2ef532d3090f291fbf"
 SOURCE_URL="https://git.zx2c4.com/wireguard-tools/snapshot/wireguard-tools-${VERSION}.tar.xz"
 
 usage() {
-  echo "Usage: $0 -o <output-path> [-a amd64|arm64]" >&2
+  echo "Usage: $0 -o <output-path> -a <amd64|arm64>" >&2
 }
 
 OUT_PATH=""
-ARCH="${P2PREMOTE_LINUX_ARCH:-amd64}"
+ARCH=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o)
-      OUT_PATH="${2:-}"
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "-o requires an output path" >&2
+        exit 1
+      fi
+      OUT_PATH="$2"
       shift 2
       ;;
     -a)
-      ARCH="${2:-}"
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "-a requires amd64 or arm64" >&2
+        exit 1
+      fi
+      ARCH="$2"
       shift 2
       ;;
     -h|--help)
@@ -36,6 +44,10 @@ done
 
 if [[ -z "$OUT_PATH" ]]; then
   usage
+  exit 1
+fi
+if [[ -z "$ARCH" ]]; then
+  echo "Linux architecture is required; pass -a amd64 or -a arm64." >&2
   exit 1
 fi
 
@@ -54,13 +66,25 @@ esac
 
 CC_VALUE="${P2PREMOTE_WG_CC:-$DEFAULT_CC}"
 if ! command -v "$CC_VALUE" >/dev/null 2>&1; then
-  if [[ "$ARCH" == "amd64" ]] && command -v musl-gcc >/dev/null 2>&1; then
-    CC_VALUE="musl-gcc"
-  else
-    echo "Static musl compiler not found: $CC_VALUE" >&2
-    exit 1
-  fi
+  echo "Required compiler not found: $CC_VALUE" >&2
+  exit 1
 fi
+
+CC_MACHINE="$("$CC_VALUE" -dumpmachine)"
+case "$ARCH" in
+  amd64)
+    [[ "$CC_MACHINE" == x86_64-* ]] || {
+      echo "Compiler $CC_VALUE targets $CC_MACHINE, expected x86_64." >&2
+      exit 1
+    }
+    ;;
+  arm64)
+    [[ "$CC_MACHINE" == aarch64-* ]] || {
+      echo "Compiler $CC_VALUE targets $CC_MACHINE, expected aarch64." >&2
+      exit 1
+    }
+    ;;
+esac
 
 for tool in curl sha256sum tar make readelf; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -105,6 +129,15 @@ cp "$WORK_DIR/source/src/wg" "$OUT_PATH"
 chmod 755 "$OUT_PATH"
 if readelf -l "$OUT_PATH" | grep -q 'INTERP'; then
   echo "wg is dynamically linked; refusing non-portable package" >&2
+  exit 1
+fi
+EXPECTED_MACHINE=""
+case "$ARCH" in
+  amd64) EXPECTED_MACHINE="Advanced Micro Devices X86-64" ;;
+  arm64) EXPECTED_MACHINE="AArch64" ;;
+esac
+if ! readelf -h "$OUT_PATH" | grep -q "Machine:.*$EXPECTED_MACHINE"; then
+  echo "wg architecture does not match linux/$ARCH" >&2
   exit 1
 fi
 "$OUT_PATH" --version
