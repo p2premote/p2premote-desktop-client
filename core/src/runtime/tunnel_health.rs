@@ -257,7 +257,7 @@ pub(super) fn record_wgvpn_health_success(
     expected_generation: Option<u64>,
     latency_ms: Option<u32>,
 ) {
-    let changed = {
+    let recovered = {
         let mut state = shared.lock();
         if !monitor_generation_matches(&state, peer_device_id, expected_generation) {
             return;
@@ -266,9 +266,10 @@ pub(super) fn record_wgvpn_health_success(
             .wgvpn_health_runtime
             .entry(peer_device_id)
             .or_default();
-        let changed = health.state != WgvpnHealthState::Connected
+        let recovered = health.state != WgvpnHealthState::Connected
             || health.consecutive_failures != 0
-            || health.grace_deadline.is_some()
+            || health.grace_deadline.is_some();
+        let changed = recovered
             || latency_ms.is_some_and(|value| health.latency_ms != Some(value));
         health.state = WgvpnHealthState::Connected;
         health.consecutive_failures = 0;
@@ -279,9 +280,9 @@ pub(super) fn record_wgvpn_health_success(
         if changed {
             publish_wgvpn_health_status_locked(&mut state, peer_device_id);
         }
-        changed
+        recovered
     };
-    if changed {
+    if recovered {
         cancel_passive_health_grace(shared, peer_device_id);
         info!(
             "[wgvpn-health] connection recovered: peer_device_id={}",
@@ -437,6 +438,15 @@ pub(super) fn cleanup_wgvpn_session_async(
                 let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
                 {
                     let mut state = shared.lock();
+                    if role == TunnelLifecycleRole::Active {
+                        // A completed job is only valid while its data-plane
+                        // session exists. Do not leave Succeeded behind for a
+                        // restarted GUI to interpret as a fresh connection.
+                        state
+                            .status
+                            .active_tunnel_jobs
+                            .retain(|job| job.target_device_id != peer_device_id);
+                    }
                     upsert_tunnel_lifecycle(
                         &mut state.status,
                         TunnelLifecycleStatus {

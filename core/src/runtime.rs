@@ -316,16 +316,18 @@ pub async fn run_service_foreground() -> Result<()> {
     crate::device::initialize_public_network_group(startup_locale.as_deref());
 
     // WGVPN 数据面属于 service 进程，重启后不可恢复；这里只清理崩溃残留。
-    match crate::config::load_machine_config() {
-        Ok(config) => {
-            if let Err(err) = wgvpn_flow::cleanup_stale_sessions(&config) {
-                info!("[ServiceRuntime] wgvpn stale cleanup failed: {}", err);
-            }
+    let cleanup_config = match crate::config::load_machine_config() {
+        Ok(config) => config,
+        Err(err) => {
+            info!(
+                "[ServiceRuntime] config load failed during wgvpn stale cleanup; using defaults: {}",
+                err
+            );
+            crate::config::MachineConfig::default()
         }
-        Err(err) => info!(
-            "[ServiceRuntime] skip wgvpn restore (config load failed): {}",
-            err
-        ),
+    };
+    if let Err(err) = wgvpn_flow::cleanup_stale_sessions(&cleanup_config) {
+        info!("[ServiceRuntime] wgvpn stale cleanup failed: {}", err);
     }
 
     let startup_login_enabled = crate::config::load_machine_config()

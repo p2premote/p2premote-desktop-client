@@ -1,4 +1,5 @@
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
+use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -6,6 +7,113 @@ use std::sync::{Arc, Mutex};
 use tracing_subscriber::fmt::MakeWriter;
 
 const MAX_ROLLED_LOG_FILES: usize = 3;
+pub const AUDIT_LOG_FILE_NAME: &str = "p2premote-audit.log";
+
+static AUDIT_LOG_WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelAuditAction {
+    Established,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelAuditRole {
+    Active,
+    Passive,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TunnelAuditEvent {
+    pub action: TunnelAuditAction,
+    pub role: TunnelAuditRole,
+    pub local_device_id: Option<i64>,
+    pub peer_device_id: i64,
+    pub local_virtual_ip: String,
+    pub peer_virtual_ip: String,
+    pub exposed_lan_cidrs: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct TunnelAuditLine<'a> {
+    timestamp: String,
+    event: TunnelAuditAction,
+    tunnel_type: &'static str,
+    role: TunnelAuditRole,
+    local_device_id: Option<i64>,
+    peer_device_id: i64,
+    local_virtual_ip: &'a str,
+    peer_virtual_ip: &'a str,
+    exposed_lan_cidrs: &'a [String],
+}
+
+/// Append one successful tunnel lifecycle transition to the standalone audit log.
+///
+/// Audit logging is deliberately best-effort and never participates in tunnel
+/// rollback: a filesystem failure is reported to the service log, but is not
+/// returned to the caller.
+pub fn record_tunnel_audit(event: TunnelAuditEvent) {
+    let action = event.action;
+    let peer_device_id = event.peer_device_id;
+    if let Err(err) = append_tunnel_audit(&crate::config::machine_log_dir(), &event) {
+        tracing::warn!(
+            action = ?action,
+            peer_device_id,
+            error = %err,
+            "failed to append tunnel audit event"
+        );
+    }
+}
+
+fn append_tunnel_audit(log_dir: &Path, event: &TunnelAuditEvent) -> io::Result<()> {
+    let _guard = AUDIT_LOG_WRITE_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("audit log write lock is poisoned"))?;
+    fs::create_dir_all(log_dir)?;
+
+    let record = TunnelAuditLine {
+        timestamp: audit_timestamp(),
+        event: event.action,
+        tunnel_type: "wgvpn",
+        role: event.role,
+        local_device_id: event.local_device_id,
+        peer_device_id: event.peer_device_id,
+        local_virtual_ip: &event.local_virtual_ip,
+        peer_virtual_ip: &event.peer_virtual_ip,
+        exposed_lan_cidrs: &event.exposed_lan_cidrs,
+    };
+    let mut line = serde_json::to_vec(&record).map_err(io::Error::other)?;
+    line.push(b'\n');
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join(AUDIT_LOG_FILE_NAME))?;
+    file.write_all(&line)?;
+    file.sync_data()
+}
+
+fn audit_timestamp() -> String {
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let offset_seconds = now.offset().whole_seconds();
+    let offset_sign = if offset_seconds < 0 { '-' } else { '+' };
+    let offset_seconds = offset_seconds.abs();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}{}{:02}:{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second(),
+        now.nanosecond() / 1_000_000,
+        offset_sign,
+        offset_seconds / 3_600,
+        (offset_seconds % 3_600) / 60,
+    )
+}
 
 struct DailyLogFile {
     // Keep the handle optional so Windows can close it before the current log
@@ -252,6 +360,51 @@ mod tests {
         assert!(dir.join("service-2026-07-03.log").exists());
         assert!(dir.join("service-2026-07-04.log").exists());
         assert!(dir.join("service-2026-07-05.log").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn audit_log_appends_json_lines_without_rotation() {
+        let dir = test_dir("audit");
+        let established = TunnelAuditEvent {
+            action: TunnelAuditAction::Established,
+            role: TunnelAuditRole::Active,
+            local_device_id: Some(41),
+            peer_device_id: 59,
+            local_virtual_ip: "100.99.71.2".to_string(),
+            peer_virtual_ip: "100.99.71.1".to_string(),
+            exposed_lan_cidrs: vec!["192.168.10.0/24".to_string()],
+        };
+        let disconnected = TunnelAuditEvent {
+            action: TunnelAuditAction::Disconnected,
+            role: TunnelAuditRole::Active,
+            local_device_id: Some(41),
+            peer_device_id: 59,
+            local_virtual_ip: "100.99.71.2".to_string(),
+            peer_virtual_ip: "100.99.71.1".to_string(),
+            exposed_lan_cidrs: vec!["192.168.10.0/24".to_string()],
+        };
+
+        append_tunnel_audit(&dir, &established).unwrap();
+        append_tunnel_audit(&dir, &disconnected).unwrap();
+
+        let content = fs::read_to_string(dir.join(AUDIT_LOG_FILE_NAME)).unwrap();
+        let records = content
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["event"], "established");
+        assert_eq!(records[1]["event"], "disconnected");
+        assert_eq!(records[0]["tunnel_type"], "wgvpn");
+        assert_eq!(records[0]["role"], "active");
+        assert_eq!(records[0]["local_device_id"], 41);
+        assert_eq!(records[0]["peer_device_id"], 59);
+        assert_eq!(records[0]["local_virtual_ip"], "100.99.71.2");
+        assert_eq!(records[0]["peer_virtual_ip"], "100.99.71.1");
+        assert_eq!(records[0]["exposed_lan_cidrs"][0], "192.168.10.0/24");
+        assert!(records[0]["timestamp"].as_str().unwrap().contains('T'));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
     }
 }

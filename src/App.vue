@@ -690,6 +690,17 @@ function primePassiveWgvpnPeers(runtime: BackgroundServiceStatus['runtime'] | nu
   }
 }
 
+function primeActiveTunnelJobs(runtime: BackgroundServiceStatus['runtime'] | null | undefined) {
+  handledActiveTunnelJobKeys.clear()
+  for (const job of runtime?.active_tunnel_jobs || []) {
+    if (job.state !== 'succeeded' && job.state !== 'failed' && job.state !== 'cancelled') continue
+    handledActiveTunnelJobKeys.set(
+      job.target_device_id,
+      new Set([`${job.target_device_id}:${job.state}:${job.updated_at}`]),
+    )
+  }
+}
+
 async function handlePassiveWgvpnSessions(
   runtime?: BackgroundServiceStatus['runtime'] | null,
 ) {
@@ -1151,6 +1162,9 @@ async function bootstrapApp() {
     // 初次启动也要把 localStorage/系统探测得到的语言同步给 service。
     // 否则英文系统在用户手动切换语言之前，后端状态消息仍会使用中文。
     await setLocale(locale.value)
+    // The initial service snapshot is baseline state, not a newly completed
+    // event. Historical terminal jobs must not produce startup notifications.
+    primeActiveTunnelJobs(backgroundServiceStatus.value?.runtime)
     primePassiveWgvpnPeers(backgroundServiceStatus.value?.runtime)
     if (forceUpdateVisible.value) {
       await setupWsListeners()
