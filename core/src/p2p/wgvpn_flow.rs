@@ -39,7 +39,7 @@ const WG_CONF_NAME: &str = "wg0.conf";
 const WGVPN_LISTEN_PORT: u16 = 51820;
 
 /// wgvpn 会话句柄（停止时用）。扩展字段支持多 peer 按 pubkey 精确增删。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct WgVpnSession {
     pub target_device_id: i64,
     pub tunnel_name: String, // WireGuard 隧道名（多 peer 模式下永远 "wg0"）
@@ -48,39 +48,23 @@ pub struct WgVpnSession {
     pub peer_device_id: i64,     // 对端 device_id
     pub peer_pubkey: String,     // 对端公钥（wg set remove 用）
     pub peer_virtual_ip: String, // 对端虚拟 IP
-    #[serde(default)]
     pub gonc_handle_id: String, // gonc 库化 UDP tunnel handle
     pub local_forward_port: u16, // gonc 本地 UDP 转发端口
     pub is_active: bool,         // 本端角色（true=主动发起，false=被动等待）
-    #[serde(default)]
     pub exposed_lan_cidrs: Vec<String>,
-    #[serde(default)]
     pub advertised_lan_routes: Vec<String>,
-    #[serde(default)]
     pub lan_mode: LanMode,
-    #[serde(default)]
     pub subnet_router_handle_id: String,
-    #[serde(default)]
     pub userspace_wg_peer_handle: String,
-    #[serde(default)]
     pub userspace_wg: bool,
-    #[serde(default)]
     pub subnet_router_started: bool,
-    #[serde(default)]
     pub subnet_tcp_sessions: u32,
-    #[serde(default)]
     pub subnet_udp_sessions: u32,
-    #[serde(default)]
     pub subnet_wg_rx_packets: u64,
-    #[serde(default)]
     pub subnet_wg_tx_packets: u64,
-    #[serde(default)]
     pub subnet_icmp_success: u64,
-    #[serde(default)]
     pub subnet_icmp_failed: u64,
-    #[serde(default)]
     pub subnet_rejected_flows: u64,
-    #[serde(default)]
     pub subnet_last_error: String,
 }
 
@@ -471,19 +455,6 @@ pub async fn start_active_wgvpn(
         userspace_wg: cfg!(windows),
         ..Default::default()
     };
-    if let Err(err) = persist_session(&session) {
-        if !userspace_wg_peer_handle.is_empty() {
-            let _ =
-                gonc_ffi::stop_windows_wg_peer(Path::new(&punch_lib), &userspace_wg_peer_handle);
-        } else if !handle.tunnel_name.is_empty() {
-            let _ = wgvpn::remove_peer(&wg_cli, &handle.tunnel_name, &peer_pubkey);
-        }
-        if !tunnel_existed && !handle.tunnel_name.is_empty() {
-            let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(), &handle.tunnel_name);
-        }
-        let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
-        return Err(err);
-    }
     let audit_event = wgvpn_audit_event(TunnelAuditAction::Established, config.device_id, &session);
     WGVPN_SESSIONS.lock().insert(target_device_id, session);
     record_tunnel_audit(audit_event);
@@ -806,25 +777,6 @@ pub async fn start_passive_wgvpn(
             }),
         ..Default::default()
     };
-    if let Err(err) = persist_session(&session) {
-        release_reserved_ip(reserved_peer_ip);
-        if !session.userspace_wg_peer_handle.is_empty() {
-            let _ = gonc_ffi::stop_windows_wg_peer(
-                Path::new(&punch_lib),
-                &session.userspace_wg_peer_handle,
-            );
-        }
-        if !handle.tunnel_name.is_empty() {
-            let _ = wgvpn::remove_peer(&wg_cli, &handle.tunnel_name, &peer_pubkey);
-        }
-        if !tunnel_existed && !handle.tunnel_name.is_empty() {
-            let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(), &handle.tunnel_name);
-        }
-        let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
-        let _ =
-            gonc_ffi::stop_subnet_router(Path::new(&punch_lib), &session.subnet_router_handle_id);
-        return Err(err);
-    }
     let audit_event = wgvpn_audit_event(TunnelAuditAction::Established, config.device_id, &session);
     WGVPN_SESSIONS.lock().insert(source_device_id, session);
     release_reserved_ip(reserved_peer_ip);
@@ -847,7 +799,6 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
     let session = WGVPN_SESSIONS
         .lock()
         .remove(&target_device_id)
-        .or_else(|| load_session(target_device_id).ok())
         .ok_or_else(|| anyhow!("wgvpn session not found: {}", target_device_id))?;
 
     // 主动端断开时，经已建立的虚拟网卡通知被动端同步清理会话。
@@ -895,12 +846,8 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
         warn!("[wgvpn] stop gonc udp tunnel failed: {:#}", e);
     }
 
-    // 3. 删 session 文件
-    let _ = std::fs::remove_file(session_path(target_device_id));
-
-    // 4. 判断是否还要保留 wg0 接口
-    //    优先看 wg0 接口真实 peer 数（跨进程权威），fallback 看本进程 session 表。
-    //    不能只看本进程 WGVPN_SESSIONS——stop 命令常在新进程里跑，session 表为空会误判。
+    // 3. 判断是否还要保留 wg0 接口。系统接口的 peer 数与本 service
+    //    内存 session 表共同保护仍在运行的多 peer 会话。
     let real_peer_count = if session.userspace_wg || session.tunnel_name.is_empty() {
         0
     } else {
@@ -948,45 +895,22 @@ fn wgvpn_dir() -> PathBuf {
     install_data_dir().join("wgvpn")
 }
 
-fn session_path(target_device_id: i64) -> PathBuf {
-    wgvpn_dir().join(format!("session-{}.json", target_device_id))
-}
-
 /// 返回所有 wgvpn 会话的快照（供 service runtime 推送给 UI）。
 pub fn snapshot_sessions() -> Vec<WgVpnSession> {
     WGVPN_SESSIONS.lock().values().cloned().collect()
 }
 
-fn persist_session(session: &WgVpnSession) -> Result<()> {
-    std::fs::create_dir_all(wgvpn_dir()).context("failed to create wgvpn dir")?;
-    let path = session_path(session.target_device_id);
-    let text =
-        serde_json::to_string_pretty(session).context("failed to serialize wgvpn session")?;
-    std::fs::write(&path, text)
-        .with_context(|| format!("failed to write wgvpn session: {}", path.display()))
-}
-
-fn load_session(target_device_id: i64) -> Result<WgVpnSession> {
-    let path = session_path(target_device_id);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read wgvpn session: {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse wgvpn session: {}", path.display()))
-}
-
 /// service 启动时清理上次进程异常退出留下的 WGVPN 资源。
 ///
 /// gonc UDP 数据面和 Windows userspace WireGuard 都属于进程内状态，重启后
-/// 无法恢复。磁盘 session 仅作为删除残留系统 WireGuard Peer/配置的清理日志，
-/// 绝不能回填为活跃会话。
-pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
+/// 无法恢复；新 service 生命周期只从空状态开始。
+pub fn cleanup_stale_sessions(config: &MachineConfig) {
     // run_service_foreground may be started again in the same process (tests,
     // embedded/service lifecycle changes). A service start is a hard tunnel
     // boundary: process-local sessions and IP reservations must never survive it.
     WGVPN_SESSIONS.lock().clear();
     RESERVED_ACTIVE_IPS.lock().clear();
 
-    let wg_dir = wgvpn_dir();
     if cfg!(windows) {
         let punch_lib = resolve_p2p_punch_lib(config);
         if let Err(err) = gonc_ffi::cleanup_windows_wg_platform(Path::new(&punch_lib)) {
@@ -998,54 +922,6 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
     let tools_available =
         !cfg!(windows) && Path::new(&wg_cli).exists() && Path::new(&wireguard_exe).exists();
     let tunnel_alive = tools_available && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
-    let mut cleaned = 0usize;
-
-    if wg_dir.exists() {
-        let entries = std::fs::read_dir(&wg_dir).context("failed to read wgvpn dir")?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let fname = match path.file_name().and_then(|s| s.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
-            // 只处理 session-*.json
-            if !fname.starts_with("session-") || !fname.ends_with(".json") {
-                continue;
-            }
-            // 提取 target_device_id（session-<id>.json）
-            let id_str = &fname["session-".len()..fname.len() - ".json".len()];
-            let device_id: i64 = match id_str.parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            match load_session(device_id) {
-                Ok(session) => {
-                    // 仅使用磁盘记录定位残留系统 WireGuard Peer；进程内 gonc/netstack
-                    // 已随旧 service 消失，不能恢复为活跃会话。
-                    warn!(
-                        "[wgvpn] session {} stale after service restart (tunnel_alive={}), cleaning up",
-                        device_id, tunnel_alive
-                    );
-                    if !session.userspace_wg && tools_available {
-                        let _ =
-                            wgvpn::remove_peer(&wg_cli, &session.tunnel_name, &session.peer_pubkey);
-                    }
-                    let _ = std::fs::remove_file(&path);
-                    cleaned += 1;
-                }
-                Err(e) => {
-                    warn!(
-                        "[wgvpn] failed to load session file {}: {:#}",
-                        path.display(),
-                        e
-                    );
-                    let _ = std::fs::remove_file(&path);
-                    cleaned += 1;
-                }
-            }
-        }
-    }
 
     // wg0 is owned by this service. A new service lifecycle never adopts an
     // existing interface, even if it still contains untracked peers.
@@ -1053,12 +929,6 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
         let _ = wgvpn::stop_tunnel(&wireguard_exe, WG_TUNNEL_NAME);
     }
     let _ = std::fs::remove_file(wgvpn_dir().join(WG_CONF_NAME));
-    if cleaned == 0 {
-        tracing::debug!("[wgvpn] no stale session files found");
-    } else {
-        info!("[wgvpn] cleaned {} stale session file(s)", cleaned);
-    }
-    Ok(())
 }
 fn resolve_wireguard_exe() -> String {
     crate::config::default_wireguard_path()

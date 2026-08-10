@@ -326,9 +326,7 @@ pub async fn run_service_foreground() -> Result<()> {
             crate::config::MachineConfig::default()
         }
     };
-    if let Err(err) = wgvpn_flow::cleanup_stale_sessions(&cleanup_config) {
-        info!("[ServiceRuntime] wgvpn stale cleanup failed: {}", err);
-    }
+    wgvpn_flow::cleanup_stale_sessions(&cleanup_config);
 
     let startup_login_enabled = crate::config::load_machine_config()
         .map(|config| persistent_login_enabled(&config))
