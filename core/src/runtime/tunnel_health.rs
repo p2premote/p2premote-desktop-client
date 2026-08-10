@@ -435,7 +435,13 @@ pub(super) fn cleanup_wgvpn_session_async(
             .unwrap_or(TunnelLifecycleRole::Active);
         match load_machine_config() {
             Ok(config) => {
-                let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
+                let cleanup_error = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await.err();
+                if let Some(err) = cleanup_error.as_ref() {
+                    warn!(
+                        "[wgvpn-health] session cleanup incomplete: peer_device_id={}, error={:#}",
+                        peer_device_id, err
+                    );
+                }
                 {
                     let mut state = shared.lock();
                     if role == TunnelLifecycleRole::Active {
@@ -464,13 +470,21 @@ pub(super) fn cleanup_wgvpn_session_async(
                             stage: None,
                             virtual_ip: None,
                             peer_virtual_ip: None,
-                            last_result: if reason == "health_grace_expired" {
+                            last_result: if cleanup_error.is_some() {
+                                TunnelLastResult::AttemptFailed
+                            } else if reason == "health_grace_expired" {
                                 TunnelLastResult::HealthGraceExpired
                             } else {
                                 TunnelLastResult::PeerDisconnected
                             },
-                            error_code: Some(reason.to_string()),
-                            message: Some(if reason == "health_grace_expired" {
+                            error_code: Some(if cleanup_error.is_some() {
+                                "cleanup_failed".to_string()
+                            } else {
+                                reason.to_string()
+                            }),
+                            message: Some(if let Some(err) = cleanup_error.as_ref() {
+                                err.to_string()
+                            } else if reason == "health_grace_expired" {
                                 localized_message(
                                     locale.as_deref(),
                                     "tunnel.lifecycle.health_grace_expired",

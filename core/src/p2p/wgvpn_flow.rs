@@ -48,7 +48,7 @@ pub struct WgVpnSession {
     pub peer_device_id: i64,     // 对端 device_id
     pub peer_pubkey: String,     // 对端公钥（wg set remove 用）
     pub peer_virtual_ip: String, // 对端虚拟 IP
-    pub gonc_handle_id: String, // gonc 库化 UDP tunnel handle
+    pub gonc_handle_id: String,  // gonc 库化 UDP tunnel handle
     pub local_forward_port: u16, // gonc 本地 UDP 转发端口
     pub is_active: bool,         // 本端角色（true=主动发起，false=被动等待）
     pub exposed_lan_cidrs: Vec<String>,
@@ -796,10 +796,9 @@ pub async fn start_passive_wgvpn(
 
 /// 停止指定会话。
 pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result<()> {
-    let session = WGVPN_SESSIONS
-        .lock()
-        .remove(&target_device_id)
-        .ok_or_else(|| anyhow!("wgvpn session not found: {}", target_device_id))?;
+    let Some(session) = WGVPN_SESSIONS.lock().remove(&target_device_id) else {
+        return Ok(());
+    };
 
     // 主动端断开时，经已建立的虚拟网卡通知被动端同步清理会话。
     // 被动端执行 stop 时 is_active=false，不会反向通知，避免停止消息循环。
@@ -818,6 +817,7 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
     let wg_cli = resolve_wg_cli();
     let wireguard_exe = resolve_wireguard_exe();
     let punch_lib = resolve_p2p_punch_lib(config);
+    let mut cleanup_errors = Vec::new();
 
     // 1. 精确删除当前 Peer，不影响同引擎的其他主动/被动会话。
     if !session.userspace_wg_peer_handle.is_empty() {
@@ -825,6 +825,7 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
             gonc_ffi::stop_windows_wg_peer(Path::new(&punch_lib), &session.userspace_wg_peer_handle)
         {
             warn!("[wgvpn] stop userspace WG peer failed: {:#}", e);
+            cleanup_errors.push(format!("stop userspace WG peer: {e:#}"));
         }
     } else if !session.tunnel_name.is_empty() {
         if let Err(e) = wgvpn::remove_peer(&wg_cli, &session.tunnel_name, &session.peer_pubkey) {
@@ -832,6 +833,7 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
                 "[wgvpn] remove peer failed (will continue cleanup): {:#}",
                 e
             );
+            cleanup_errors.push(format!("remove WireGuard peer: {e:#}"));
         }
     }
 
@@ -839,11 +841,13 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
         gonc_ffi::stop_subnet_router(Path::new(&punch_lib), &session.subnet_router_handle_id)
     {
         warn!("[wgvpn] stop subnet router failed: {:#}", e);
+        cleanup_errors.push(format!("stop subnet router: {e:#}"));
     }
 
     // 2. 停止该 peer 对应的 gonc UDP 数据面
     if let Err(e) = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &session.gonc_handle_id) {
         warn!("[wgvpn] stop gonc udp tunnel failed: {:#}", e);
+        cleanup_errors.push(format!("stop gonc UDP tunnel: {e:#}"));
     }
 
     // 3. 判断是否还要保留 wg0 接口。系统接口的 peer 数与本 service
@@ -862,9 +866,16 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
         // 真的无 peer 了，卸载整个 wg0 接口
         if let Err(e) = wgvpn::stop_tunnel(&wireguard_exe, &session.tunnel_name) {
             warn!("[wgvpn] stop tunnel failed: {:#}", e);
+            cleanup_errors.push(format!("stop WireGuard tunnel: {e:#}"));
         }
         // 清理 conf 文件
-        let _ = std::fs::remove_file(wgvpn_dir().join(WG_CONF_NAME));
+        let conf_path = wgvpn_dir().join(WG_CONF_NAME);
+        if let Err(e) = std::fs::remove_file(&conf_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn!("[wgvpn] remove tunnel config failed: {:#}", e);
+                cleanup_errors.push(format!("remove tunnel config {}: {e}", conf_path.display()));
+            }
+        }
         info!(
             "[wgvpn] last peer removed, tunnel {} uninstalled",
             session.tunnel_name
@@ -875,12 +886,23 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
             real_peer_count, session.tunnel_name, local_remaining
         );
     }
+    ensure_wgvpn_cleanup_complete(&cleanup_errors)?;
     record_tunnel_audit(wgvpn_audit_event(
         TunnelAuditAction::Disconnected,
         config.device_id,
         &session,
     ));
     Ok(())
+}
+
+fn ensure_wgvpn_cleanup_complete(cleanup_errors: &[String]) -> Result<()> {
+    if cleanup_errors.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "wgvpn cleanup incomplete: {}",
+        cleanup_errors.join("; ")
+    ))
 }
 
 // ============ 内部辅助 ============
@@ -904,7 +926,7 @@ pub fn snapshot_sessions() -> Vec<WgVpnSession> {
 ///
 /// gonc UDP 数据面和 Windows userspace WireGuard 都属于进程内状态，重启后
 /// 无法恢复；新 service 生命周期只从空状态开始。
-pub fn cleanup_stale_sessions(config: &MachineConfig) {
+pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
     // run_service_foreground may be started again in the same process (tests,
     // embedded/service lifecycle changes). A service start is a hard tunnel
     // boundary: process-local sessions and IP reservations must never survive it.
@@ -913,22 +935,36 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) {
 
     if cfg!(windows) {
         let punch_lib = resolve_p2p_punch_lib(config);
-        if let Err(err) = gonc_ffi::cleanup_windows_wg_platform(Path::new(&punch_lib)) {
-            warn!("[wgvpn] failed to clear stale Wintun state: {:#}", err);
-        }
+        gonc_ffi::cleanup_windows_wg_platform(Path::new(&punch_lib))
+            .context("failed to clear stale Wintun state")?;
     }
     let wg_cli = resolve_wg_cli();
     let wireguard_exe = resolve_wireguard_exe();
-    let tools_available =
-        !cfg!(windows) && Path::new(&wg_cli).exists() && Path::new(&wireguard_exe).exists();
-    let tunnel_alive = tools_available && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
-
-    // wg0 is owned by this service. A new service lifecycle never adopts an
-    // existing interface, even if it still contains untracked peers.
-    if tunnel_alive {
-        let _ = wgvpn::stop_tunnel(&wireguard_exe, WG_TUNNEL_NAME);
+    if !cfg!(windows) {
+        if !Path::new(&wg_cli).exists() || !Path::new(&wireguard_exe).exists() {
+            return Err(anyhow!(
+                "cannot verify stale wgvpn cleanup: required tools are missing"
+            ));
+        }
+        // wg0 is owned by this service. A new service lifecycle never adopts
+        // an existing interface, even if it contains untracked peers.
+        if wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME) {
+            wgvpn::stop_tunnel(&wireguard_exe, WG_TUNNEL_NAME)
+                .context("failed to stop stale wg0 interface")?;
+        }
     }
-    let _ = std::fs::remove_file(wgvpn_dir().join(WG_CONF_NAME));
+    let conf_path = wgvpn_dir().join(WG_CONF_NAME);
+    if let Err(err) = std::fs::remove_file(&conf_path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to remove stale wgvpn config: {}",
+                    conf_path.display()
+                )
+            });
+        }
+    }
+    Ok(())
 }
 fn resolve_wireguard_exe() -> String {
     crate::config::default_wireguard_path()
@@ -1309,6 +1345,14 @@ mod tests {
             100
         ));
         assert!(!has_established_handshake("abc123\t99\n", 100));
+    }
+
+    #[test]
+    fn cleanup_errors_prevent_successful_disconnect_completion() {
+        let errors = vec!["stop WireGuard tunnel: access denied".to_string()];
+        let err = ensure_wgvpn_cleanup_complete(&errors).unwrap_err();
+        assert!(err.to_string().contains("cleanup incomplete"));
+        assert!(err.to_string().contains("access denied"));
     }
 
     #[test]

@@ -395,10 +395,7 @@ pub(super) async fn stop_wgvpn_job(
     };
 
     match wgvpn_flow::stop_wgvpn(&config, peer_device_id).await {
-        Ok(()) | Err(_) => {
-            // stop_wgvpn 对已不存在的 session 返回 "session not found"（Err），
-            // 这在"job task 的 cancel 分支已先清理过"或"重复 stop"时会发生，
-            // 属于正常的幂等结果，不应当作失败上报给 UI。
+        Ok(()) => {
             {
                 let mut state = shared.lock();
                 state
@@ -445,6 +442,39 @@ pub(super) async fn stop_wgvpn_job(
                 Some(shared.lock().status.clone()),
             ))
         }
+        Err(err) => {
+            warn!(
+                "[wgvpn] cleanup failed: peer_device_id={}, error={:#}",
+                peer_device_id, err
+            );
+            {
+                let mut state = shared.lock();
+                state
+                    .status
+                    .wgvpn_jobs
+                    .retain(|j| j.peer_device_id != peer_device_id);
+                state.wgvpn_health_runtime.remove(&peer_device_id);
+                if let Some(lifecycle) = state
+                    .status
+                    .tunnel_lifecycles
+                    .iter_mut()
+                    .find(|item| item.peer_device_id == peer_device_id)
+                {
+                    lifecycle.state = TunnelLifecycleState::NotEstablished;
+                    lifecycle.last_result = TunnelLastResult::AttemptFailed;
+                    lifecycle.error_code = Some("cleanup_failed".to_string());
+                    lifecycle.message = Some(err.to_string());
+                    lifecycle.connected_at = None;
+                    lifecycle.updated_at = now_ts();
+                }
+            }
+            refresh_wgvpn_sessions(shared);
+            Some(cmd_response(
+                false,
+                &err.to_string(),
+                Some(shared.lock().status.clone()),
+            ))
+        }
     }
 }
 
@@ -472,7 +502,12 @@ pub(super) async fn cancel_all_wgvpn_jobs(shared: &Arc<Mutex<SharedRuntimeState>
             .map(|s| s.target_device_id)
             .collect();
         for peer_id in peer_ids {
-            let _ = wgvpn_flow::stop_wgvpn(&config, peer_id).await;
+            if let Err(err) = wgvpn_flow::stop_wgvpn(&config, peer_id).await {
+                warn!(
+                    "[wgvpn] logout cleanup failed: peer_device_id={}, error={:#}",
+                    peer_id, err
+                );
+            }
         }
     }
     {
