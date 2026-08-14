@@ -219,11 +219,11 @@ async function handleRegister() {
     if (response.code == 0) {
       ElMessage.success({
         message: t('register.message.success'),
-        duration: 30000
+        duration: 3000
       })
       setTimeout(() => {
         router.push('/login')
-      }, 30000)
+      }, 3000)
     } else {
       // Tauri 已优先按结构化错误键本地化；旧服务端兼容回退到 msg。
       ElMessage.error(response.msg || t('register.message.failed'))

@@ -509,7 +509,7 @@ export default {
       confirm_password_required: '请确认密码',
     },
     message: {
-      success: '注册成功！请前往邮箱点击验证链接完成激活',
+      success: '注册成功，账号已激活，即将前往登录页面',
       failed: '注册失败',
       failed_with_error: '注册失败: {error}',
     },

@@ -481,7 +481,7 @@ const en = {
       confirm_password_required: 'Confirm your password',
     },
     message: {
-      success: 'Registration succeeded. Open the verification link sent to your email to activate the account.',
+      success: 'Registration succeeded. Your account is active. Redirecting to sign in.',
       failed: 'Registration failed',
       failed_with_error: 'Registration failed: {error}',
     },
