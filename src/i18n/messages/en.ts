@@ -46,7 +46,7 @@ const en = {
     force_update: {
       title: 'Client update required',
       body: 'Version v{current} is no longer supported. Update to v{min} or later to continue.',
-      update_now: 'Update now',
+      update_now: 'Open download page',
       exit: 'Exit',
     },
     settings: {
@@ -148,15 +148,14 @@ const en = {
       copy_invite_link_failed: 'Failed to copy the invite link: {error}',
       invite_code_copied: 'Invite code copied',
       invite_link_copied: 'Invite link copied',
-      no_download_url: 'No download URL is configured',
       already_latest: 'You already have the latest version',
       check_update_failed: 'Update check failed: {error}',
       logout_confirm_title: 'Notice',
       logout_confirm_body: 'Are you sure you want to sign out?',
       update_available_title: 'Update available',
-      update_available_force: 'Current version: v{current}. Latest version: v{latest}. Update now?',
-      update_available_optional: 'Version v{latest} is available. Current version: v{current}. Update now?',
-      update_now: 'Update now',
+      update_available_force: 'Current version: v{current}. Latest version: v{latest}. Open the download page?',
+      update_available_optional: 'Version v{latest} is available. Current version: v{current}. Open the download page?',
+      update_now: 'Open download page',
       later: 'Later',
     },
     invite: {

@@ -70,7 +70,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
-import { invoke } from '../runtime/bridge'
+import { invoke, openClientDownloadPage } from '../runtime/bridge'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { useAuthStore } from '../stores/auth'
@@ -84,7 +84,6 @@ interface UpdateCheckResponse {
   current: string
   latest: string
   min_supported: string
-  download_url: string
   release_notes: string
   error?: string | null
 }
@@ -149,9 +148,15 @@ async function loadSavedLogin() {
   }
 }
 
-async function checkForceUpdateAfterLogin() {
+async function canLoginWithCurrentVersion() {
   const result = await invoke<UpdateCheckResponse>('check_update')
   if (result.mode === 'force') {
+    ElMessage.warning(t('login.message.version_outdated'))
+    try {
+      await openClientDownloadPage()
+    } catch (error) {
+      ElMessage.error(t('app.actions.open_update_failed', { error }))
+    }
     return false
   }
   return true
@@ -173,6 +178,11 @@ async function handleLogin() {
     autoLogin: loginForm.rememberMe && loginForm.autoLogin,
   }
   try {
+    const canContinue = await canLoginWithCurrentVersion()
+    if (!canContinue) {
+      return
+    }
+
     if (useSavedSession) {
       await authStore.resumeSavedSession(loginSettings.autoLogin)
     } else {
@@ -192,14 +202,6 @@ async function handleLogin() {
         throw new Error(t('login.message.settings_save_mismatch'))
       }
     }
-
-    const canContinue = await checkForceUpdateAfterLogin()
-    if (!canContinue) {
-      ElMessage.warning(t('login.message.version_outdated'))
-      router.push('/')
-      return
-    }
-
     if (alive.value) {
       ElMessage.success(t('login.message.success'))
       router.push('/')

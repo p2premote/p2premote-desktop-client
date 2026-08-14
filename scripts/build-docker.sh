@@ -115,8 +115,14 @@ fi
 
 # 选择 dist 目录中的 tgz：显式路径和当前 Linux 主机架构都必须严格匹配。
 case "$(uname -m)" in
-    aarch64) TARGET_LABEL="aarch64-linux-gnu" ;;
-    x86_64) TARGET_LABEL="x86_64-linux-gnu" ;;
+    aarch64)
+        TARGET_LABEL="aarch64-linux-gnu"
+        UPDATE_TARGET="linux-docker-aarch64"
+        ;;
+    x86_64)
+        TARGET_LABEL="x86_64-linux-gnu"
+        UPDATE_TARGET="linux-docker-x64"
+        ;;
     *) echo "Unsupported Linux host architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 if [[ -n "$EXPLICIT_TGZ" ]]; then
@@ -160,6 +166,7 @@ docker build \
     -t "$DOCKER_TAG" \
     -f "$DOCKERFILE" \
     --build-arg "P2P_HEADLESS_TGZ=$DEFAULT_TGZ_NAME" \
+    --build-arg "P2PREMOTE_UPDATE_TARGET=$UPDATE_TARGET" \
     "$DOCKER_CTX"
 
 echo "==> Saving docker image: $IMAGE_TAR"

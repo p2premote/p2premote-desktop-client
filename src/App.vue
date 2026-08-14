@@ -249,6 +249,7 @@ import {
   toggleMaximizeWindow,
   isWindowMaximized,
   openExternal,
+  openClientDownloadPage,
   logoutWebAdmin,
   unlockWebAdmin,
 } from './runtime/bridge'
@@ -420,7 +421,6 @@ interface UpdateCheckResponse {
   current: string
   latest: string
   min_supported: string
-  download_url: string
   release_notes: string
   error?: string | null
 }
@@ -537,7 +537,6 @@ const updateInfo = ref({
   current: '1.0.0',
   latest: '',
   minSupported: '',
-  downloadUrl: '',
   releaseNotes: ''
 })
 let wsReconnectTimer: ReturnType<typeof window.setInterval> | null = null
@@ -918,13 +917,8 @@ async function handleCheckUpdate() {
 }
 
 async function openUpdatePage() {
-  if (!updateInfo.value.downloadUrl) {
-    ElMessage.warning(t('app.actions.no_download_url'))
-    return
-  }
-
   try {
-    await openExternal(updateInfo.value.downloadUrl)
+    await openClientDownloadPage()
   } catch (e) {
     ElMessage.error(t('app.actions.open_update_failed', { error: e }))
   }
@@ -1073,12 +1067,15 @@ async function checkForUpdates(manual = false) {
       current: result.current || appVersion.value,
       latest: result.latest || '',
       minSupported: result.min_supported || '',
-      downloadUrl: result.download_url || '',
       releaseNotes: result.release_notes || ''
     }
 
     if (result.mode === 'force') {
+      const firstDetection = !forceUpdateVisible.value
       forceUpdateVisible.value = true
+      if (firstDetection) {
+        await openUpdatePage()
+      }
       return
     }
 

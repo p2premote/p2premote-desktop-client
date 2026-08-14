@@ -164,6 +164,17 @@ export async function openExternal(url: string): Promise<void> {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
+export async function openClientDownloadPage(): Promise<void> {
+  const url = 'https://www.p2premote.top/#download'
+  if (isTauriRuntime()) {
+    const opener = await import('@tauri-apps/plugin-opener')
+    await opener.openUrl(url)
+    return
+  }
+
+  window.location.assign(url)
+}
+
 export async function minimizeWindow(): Promise<void> {
   if (!isTauriRuntime()) {
     return

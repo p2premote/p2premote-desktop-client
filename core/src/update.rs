@@ -4,7 +4,6 @@ use serde::Deserialize;
 pub struct VersionPolicyData {
     pub latest_version: String,
     pub min_supported_version: String,
-    pub download_url: String,
     #[serde(default)]
     pub release_notes: String,
 }
@@ -60,8 +59,9 @@ pub async fn fetch_version_policy(
     server_url: &str,
 ) -> Result<VersionPolicyData, VersionPolicyError> {
     let url = format!(
-        "{}/api/v1/client/version-policy",
-        server_url.trim_end_matches('/')
+        "{}/api/v1/client/version-policy?target={}",
+        server_url.trim_end_matches('/'),
+        client_update_target()
     );
     let response = crate::http::shared_client()
         .get(url)
@@ -77,6 +77,32 @@ pub async fn fetch_version_policy(
         .map_err(|error| VersionPolicyError::Decode(error.to_string()))?
         .data
         .ok_or(VersionPolicyError::Empty)
+}
+
+/// Returns the version-policy target used by this installation. Container
+/// packaging can override the inferred host target with P2PREMOTE_UPDATE_TARGET.
+pub fn client_update_target() -> String {
+    if let Ok(target) = std::env::var("P2PREMOTE_UPDATE_TARGET") {
+        if matches!(
+            target.as_str(),
+            "windows"
+                | "linux-headless-x64"
+                | "linux-headless-aarch64"
+                | "linux-docker-x64"
+                | "linux-docker-aarch64"
+                | "android"
+        ) {
+            return target;
+        }
+    }
+
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", _) => "windows",
+        ("linux", "aarch64") => "linux-headless-aarch64",
+        ("linux", _) => "linux-headless-x64",
+        _ => "windows",
+    }
+    .to_string()
 }
 
 pub fn evaluate_version_policy(current: &str, policy: &VersionPolicyData) -> VersionEvaluation {
@@ -136,11 +162,23 @@ mod tests {
     }
 
     #[test]
+    fn selects_a_supported_update_target() {
+        assert!(matches!(
+            client_update_target().as_str(),
+            "windows"
+                | "linux-headless-x64"
+                | "linux-headless-aarch64"
+                | "linux-docker-x64"
+                | "linux-docker-aarch64"
+                | "android"
+        ));
+    }
+
+    #[test]
     fn evaluates_force_optional_and_current_modes() {
         let mut policy = VersionPolicyData {
             latest_version: "2.0.0".to_string(),
             min_supported_version: "1.5.0".to_string(),
-            download_url: String::new(),
             release_notes: String::new(),
         };
         assert_eq!(evaluate_version_policy("1.4.0", &policy).mode, "force");

@@ -1054,7 +1054,6 @@ async fn check_update_for_web() -> Result<serde_json::Value, String> {
                 "",
                 "",
                 "",
-                "",
                 Some(&message),
             ));
         }
@@ -1067,7 +1066,6 @@ async fn check_update_for_web() -> Result<serde_json::Value, String> {
         &current,
         &data.latest_version,
         &data.min_supported_version,
-        &data.download_url,
         &data.release_notes,
         None,
     ))
@@ -1089,7 +1087,6 @@ fn update_response(
     current: &str,
     latest: &str,
     min_supported: &str,
-    download_url: &str,
     release_notes: &str,
     error: Option<&str>,
 ) -> serde_json::Value {
@@ -1100,7 +1097,6 @@ fn update_response(
         "current": current,
         "latest": latest,
         "min_supported": min_supported,
-        "download_url": download_url,
         "release_notes": release_notes,
         "error": error,
     })

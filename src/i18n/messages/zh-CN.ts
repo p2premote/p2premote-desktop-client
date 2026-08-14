@@ -50,7 +50,7 @@ export default {
     force_update: {
       title: '客户端需要更新',
       body: '当前版本 v{current} 已不再受支持，请升级到 v{min} 及以上版本后继续使用。',
-      update_now: '立即更新',
+      update_now: '前往官网下载',
       exit: '退出程序',
     },
     // 设置 popover
@@ -162,15 +162,14 @@ export default {
       copy_invite_link_failed: '复制邀请链接失败: {error}',
       invite_code_copied: '邀请码已复制',
       invite_link_copied: '邀请链接已复制',
-      no_download_url: '未配置下载地址',
       already_latest: '当前已经是最新版本',
       check_update_failed: '检查更新失败: {error}',
       logout_confirm_title: '提示',
       logout_confirm_body: '确定要退出登录吗？',
       update_available_title: '发现新版本',
-      update_available_force: '当前版本 v{current}，最新版本 v{latest}。是否现在去更新？',
-      update_available_optional: '发现新版本 v{latest}，当前版本为 v{current}。是否现在去更新？',
-      update_now: '立即更新',
+      update_available_force: '当前版本 v{current}，最新版本 v{latest}。是否前往官网下载？',
+      update_available_optional: '发现新版本 v{latest}，当前版本为 v{current}。是否前往官网下载？',
+      update_now: '前往官网下载',
       later: '稍后再说',
     },
     // 邀请弹窗

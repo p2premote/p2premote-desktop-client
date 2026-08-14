@@ -50,6 +50,10 @@ RUN set -eux; \
 # 参考 core/src/config.rs 的 linux_install_root_dir。
 ENV P2PREMOTE_INSTALL_ROOT=/opt/p2premote
 
+# Docker 与直接安装的 Headless 包使用同一二进制，通过运行时目标区分版本策略。
+ARG P2PREMOTE_UPDATE_TARGET=linux-docker-x64
+ENV P2PREMOTE_UPDATE_TARGET=${P2PREMOTE_UPDATE_TARGET}
+
 # Web Admin 默认监听端口。host 网络模式下宿主机直接暴露该端口；
 # 外部访问该端口的源 IP 即真实客户端 IP，是 web_admin_allowed_ip 生效的前提。
 EXPOSE 48083

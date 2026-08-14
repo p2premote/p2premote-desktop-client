@@ -342,7 +342,6 @@ pub struct UpdateCheckResponse {
     pub current: String,
     pub latest: String,
     pub min_supported: String,
-    pub download_url: String,
     pub release_notes: String,
     pub error: Option<String>,
 }
@@ -366,7 +365,6 @@ pub async fn check_update() -> Result<UpdateCheckResponse, String> {
                 current: APP_VERSION.to_string(),
                 latest: data.latest_version,
                 min_supported: data.min_supported_version,
-                download_url: data.download_url,
                 release_notes: data.release_notes,
                 error: None,
             })
@@ -381,7 +379,6 @@ pub async fn check_update() -> Result<UpdateCheckResponse, String> {
                 current: APP_VERSION.to_string(),
                 latest: String::new(),
                 min_supported: String::new(),
-                download_url: String::new(),
                 release_notes: String::new(),
                 error: Some(message),
             })
