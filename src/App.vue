@@ -548,12 +548,12 @@ const titlebarDragAttributes = titlebarDragEnabled
 const memberLevelLabel = computed(() => {
   const level = authStore.userInfo?.member_level
   if (level === 'pro') {
-    return 'pro'
+    return t('app.user.member_pro')
   }
-  if (level === 'free') {
-    return 'free'
+  if (authStore.userInfo?.is_pro) {
+    return t('app.user.member_pro_trial')
   }
-  return level || 'free'
+  return t('app.user.member_free')
 })
 
 function normalizeError(error: unknown): string {

@@ -11,8 +11,10 @@ export interface UserInfo {
   member_level?: string
   member_expire_time?: string
   trial_start_time?: string
+  trial_expire_time?: string
   trial_used?: boolean
   trial_remaining_days?: number
+  is_pro?: boolean
 }
 
 export interface DeviceInfo {
@@ -84,8 +86,10 @@ export const useAuthStore = defineStore('auth', () => {
         member_level: response.data.user.member_level,
         member_expire_time: response.data.user.member_expire_time,
         trial_start_time: response.data.user.trial_start_time,
+        trial_expire_time: response.data.user.trial_expire_time,
         trial_used: response.data.user.trial_used,
-        trial_remaining_days: response.data.user.trial_remaining_days
+        trial_remaining_days: response.data.user.trial_remaining_days,
+        is_pro: response.data.user.is_pro
       }
       console.log('[AuthStore] 登录成功, user:', userInfo.value.username)
 

@@ -17,9 +17,13 @@ pub struct UserInfo {
     #[serde(default)]
     pub trial_start_time: Option<String>,
     #[serde(default)]
+    pub trial_expire_time: Option<String>,
+    #[serde(default)]
     pub trial_used: Option<bool>,
     #[serde(default)]
     pub trial_remaining_days: Option<i32>,
+    #[serde(default)]
+    pub is_pro: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

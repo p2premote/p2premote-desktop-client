@@ -69,6 +69,9 @@ const en = {
       label: 'User',
       logout: 'Sign out',
       default_name: 'User',
+      member_pro: 'Pro',
+      member_pro_trial: 'Pro Trial',
+      member_free: 'Free',
     },
     window: {
       minimize_aria: 'Minimize window',

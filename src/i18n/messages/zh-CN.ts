@@ -75,6 +75,9 @@ export default {
       label: '用户',
       logout: '退出登录',
       default_name: '用户',
+      member_pro: 'Pro',
+      member_pro_trial: 'Pro 试用',
+      member_free: 'Free',
     },
     // 窗口控制
     window: {
