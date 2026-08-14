@@ -1871,11 +1871,11 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 .action-tile.primary .action-help {
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.85);
+  color: color-mix(in srgb, var(--fluent-text-on-accent) 85%, transparent);
 }
 
 .action-tile.primary .action-help:hover {
-  color: #fff;
+  color: var(--fluent-text-on-accent);
 }
 
 /* ===== LAN 访问配置 ===== */

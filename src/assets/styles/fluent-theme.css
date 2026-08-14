@@ -7,7 +7,7 @@
  * - 卡片实色白 + 细描边 + subtle 阴影表达层级（不使用半透明）
  *
  * 通过覆盖 Element Plus 的 CSS 变量，让所有 el-* 组件自动跟随 Fluent 风格。
- * 暗色模式预留结构：将来新增 :root[data-theme="dark"] 块即可切换。
+ * 暗色模式通过 :root[data-theme="dark"] 和系统偏好同步覆盖同一组令牌。
  */
 
 :root {
@@ -52,6 +52,8 @@
     /* 交互层：hover/pressed 透明叠加（Win11 CardBackgroundHover / SubtleFillColorTertiary） */
     --fluent-layer-hover: rgba(0, 0, 0, 0.0373);
     --fluent-layer-pressed: rgba(0, 0, 0, 0.0578);
+    --fluent-layer-disabled: #F0F0F0;
+    --fluent-bg-subtle: #F0F0F0;
 
     /* 强调色（Win11 SystemAccent 亮色） */
     --fluent-accent: #0067C0;
@@ -84,6 +86,7 @@
     --fluent-danger: #C42B1C;
     --fluent-danger-bg: rgba(196, 43, 28, 0.08);
     --fluent-danger-stroke: rgba(196, 43, 28, 0.25);
+    --fluent-text-on-danger: #FFFFFF;
     --fluent-info: #0067C0;
     --fluent-info-bg: rgba(0, 103, 192, 0.08);
 
@@ -133,6 +136,9 @@
     --el-text-color-secondary: var(--fluent-text-secondary);
     --el-text-color-placeholder: var(--fluent-text-tertiary);
     --el-text-color-disabled: var(--fluent-text-disabled);
+    --el-disabled-bg-color: var(--fluent-layer-disabled);
+    --el-disabled-text-color: var(--fluent-text-disabled);
+    --el-disabled-border-color: var(--fluent-stroke-strong);
 
     /* 边框色 */
     --el-border-color: #D1D1D1;
@@ -188,14 +194,28 @@
     --fluent-accent-pressed: #4CC2F1;
     --fluent-accent-light: rgba(96, 205, 255, 0.12);
     --fluent-accent-text: #60CDFF;
+    --fluent-text-on-accent: #0B1F2A;
     --fluent-layer-hover: rgba(255, 255, 255, 0.06);
     --fluent-layer-pressed: rgba(255, 255, 255, 0.09);
+    --fluent-layer-disabled: #383838;
+    --fluent-bg-subtle: #383838;
     --fluent-stroke: var(--color-border);
     --fluent-stroke-strong: rgba(255, 255, 255, 0.16);
     --fluent-divider: rgba(255, 255, 255, 0.1);
     --fluent-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.28);
     --fluent-shadow-flyout: 0 8px 24px rgba(0, 0, 0, 0.42);
     --fluent-shadow-dialog: 0 20px 48px rgba(0, 0, 0, 0.52);
+    --fluent-success: #6CCB6C;
+    --fluent-success-bg: rgba(108, 203, 108, 0.14);
+    --fluent-warning: #F2B544;
+    --fluent-warning-bg: rgba(242, 181, 68, 0.14);
+    --fluent-warning-stroke: rgba(242, 181, 68, 0.34);
+    --fluent-danger: #FF8A80;
+    --fluent-danger-bg: rgba(255, 138, 128, 0.14);
+    --fluent-danger-stroke: rgba(255, 138, 128, 0.34);
+    --fluent-text-on-danger: #3B0A06;
+    --fluent-info: #60CDFF;
+    --fluent-info-bg: rgba(96, 205, 255, 0.14);
     --status-online: #5EEAD4;
     --status-online-bg: rgba(94, 234, 212, 0.12);
     --el-border-color: rgba(255, 255, 255, 0.16);
@@ -325,12 +345,13 @@ body,
 .el-button--primary {
     --el-button-bg-color: var(--fluent-accent);
     --el-button-border-color: var(--fluent-accent);
+    --el-button-text-color: var(--fluent-text-on-accent);
     --el-button-hover-bg-color: var(--fluent-accent-hover);
     --el-button-hover-border-color: var(--fluent-accent-hover);
-    --el-button-hover-text-color: #fff;
+    --el-button-hover-text-color: var(--fluent-text-on-accent);
     --el-button-active-bg-color: var(--fluent-accent-pressed);
     --el-button-active-border-color: var(--fluent-accent-pressed);
-    --el-button-active-text-color: #fff;
+    --el-button-active-text-color: var(--fluent-text-on-accent);
     font-weight: 600;
 }
 
@@ -338,7 +359,7 @@ body,
  * 需排除所有特殊类型（primary/success/warning/danger/text/link），
  * 因为 EP 未给默认 button 提供专属 class，只能靠 :not() 反选。 */
 .el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.is-text):not(.is-link) {
-    --el-button-bg-color: #FBFBFB;
+    --el-button-bg-color: var(--fluent-layer);
     --el-button-border-color: var(--fluent-stroke-strong);
     --el-button-text-color: var(--fluent-text);
     --el-button-hover-bg-color: var(--fluent-layer-hover);
@@ -347,6 +368,16 @@ body,
     --el-button-active-bg-color: var(--fluent-layer-pressed);
     --el-button-active-border-color: var(--fluent-stroke-strong);
     --el-button-active-text-color: var(--fluent-text);
+}
+
+/* 所有禁用按钮使用主题层，不沿用 EP 的浅色默认值，避免暗色模式白底白字。 */
+.el-button.is-disabled,
+.el-button.is-disabled:hover,
+.el-button.is-disabled:focus,
+.el-button.is-disabled:active {
+    --el-button-disabled-bg-color: var(--fluent-layer-disabled);
+    --el-button-disabled-border-color: var(--fluent-stroke-strong);
+    --el-button-disabled-text-color: var(--fluent-text-disabled);
 }
 
 /* 文字按钮：无底无描边，hover 浅灰底圆角 */
@@ -397,14 +428,28 @@ body,
         --fluent-accent-hover: #7BD7FF;
         --fluent-accent-pressed: #4CC2F1;
         --fluent-accent-light: rgba(96, 205, 255, 0.12);
+        --fluent-text-on-accent: #0B1F2A;
         --fluent-layer-hover: rgba(255, 255, 255, 0.06);
         --fluent-layer-pressed: rgba(255, 255, 255, 0.09);
+        --fluent-layer-disabled: #383838;
+        --fluent-bg-subtle: #383838;
         --fluent-stroke: var(--color-border);
         --fluent-stroke-strong: rgba(255, 255, 255, 0.16);
         --fluent-divider: rgba(255, 255, 255, 0.1);
         --fluent-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.28);
         --fluent-shadow-flyout: 0 8px 24px rgba(0, 0, 0, 0.42);
         --fluent-shadow-dialog: 0 20px 48px rgba(0, 0, 0, 0.52);
+        --fluent-success: #6CCB6C;
+        --fluent-success-bg: rgba(108, 203, 108, 0.14);
+        --fluent-warning: #F2B544;
+        --fluent-warning-bg: rgba(242, 181, 68, 0.14);
+        --fluent-warning-stroke: rgba(242, 181, 68, 0.34);
+        --fluent-danger: #FF8A80;
+        --fluent-danger-bg: rgba(255, 138, 128, 0.14);
+        --fluent-danger-stroke: rgba(255, 138, 128, 0.34);
+        --fluent-text-on-danger: #3B0A06;
+        --fluent-info: #60CDFF;
+        --fluent-info-bg: rgba(96, 205, 255, 0.14);
         --status-online: #5EEAD4;
         --status-online-bg: rgba(94, 234, 212, 0.12);
         --el-border-color: rgba(255, 255, 255, 0.16);

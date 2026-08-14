@@ -1695,7 +1695,7 @@ watch(
 
 .close-btn:hover {
   background: var(--fluent-danger);
-  color: #fff;
+  color: var(--fluent-text-on-danger);
 }
 
 .close-btn:active {
