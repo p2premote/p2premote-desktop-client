@@ -45,7 +45,7 @@ async function send() {
   sending.value = true
   try {
     await invoke('send_reset_password_verification_code', { email: form.email })
-    ElMessage.success('验证码已发送')
+    ElMessage.success('如果该邮箱已注册，验证码将发送到邮箱，请注意查收')
     seconds.value = 60
     timer = window.setInterval(() => {
       if (--seconds.value <= 0 && timer) { clearInterval(timer); timer = undefined }
