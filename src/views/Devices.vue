@@ -87,8 +87,8 @@
                 <el-dropdown-menu>
                   <el-dropdown-item command="alias">{{ $t('devices.menu.set_alias') }}</el-dropdown-item>
                   <!--
-                  <el-dropdown-item command="connect-code">生成连接码</el-dropdown-item>
-                  <el-dropdown-item command="set-password">设置连接密码</el-dropdown-item>
+                  <el-dropdown-item command="connect-code">{{ $t('devices.menu.generate_connect_code') }}</el-dropdown-item>
+                  <el-dropdown-item command="set-password">{{ $t('devices.menu.set_password') }}</el-dropdown-item>
                   -->
                   <el-dropdown-item command="delete" divided>{{ $t('devices.menu.delete_device') }}</el-dropdown-item>
                 </el-dropdown-menu>
@@ -267,10 +267,10 @@
                 </div>
                 <!--
                 <div class="info-item wide">
-                  <span class="info-label">连接码</span>
+                  <span class="info-label">{{ $t('devices.detail.info.connect_code') }}</span>
                   <div class="connect-code-inline">
-                    <span class="info-value code">{{ selectedDevice.connect_code || currentConnectCode || '未生成' }}</span>
-                    <el-button size="small" @click="copyInlineConnectCode">复制</el-button>
+                    <span class="info-value code">{{ selectedDevice.connect_code || currentConnectCode || $t('common.not_generated') }}</span>
+                    <el-button size="small" @click="copyInlineConnectCode">{{ $t('common.copy') }}</el-button>
                   </div>
                 </div>
                 -->
@@ -298,30 +298,30 @@
     </el-dialog>
 
     <!--
-    <el-dialog v-model="passwordDialogVisible" title="设置连接密码" width="420px">
+    <el-dialog v-model="passwordDialogVisible" :title="$t('devices.password_dialog.title')" width="420px">
       <el-form :model="passwordForm" label-width="90px">
-        <el-form-item label="连接密码">
-          <el-input v-model="passwordForm.password" type="password" placeholder="请输入连接密码" show-password />
+        <el-form-item :label="$t('devices.password_dialog.label')">
+          <el-input v-model="passwordForm.password" type="password" :placeholder="$t('devices.password_dialog.placeholder')" show-password />
         </el-form-item>
-        <el-form-item label="确认密码">
-          <el-input v-model="passwordForm.confirmPassword" type="password" placeholder="请再次输入密码" show-password />
+        <el-form-item :label="$t('devices.password_dialog.confirm_label')">
+          <el-input v-model="passwordForm.confirmPassword" type="password" :placeholder="$t('devices.password_dialog.confirm_placeholder')" show-password />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="passwordDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="confirmSetPassword" :loading="passwordForm.loading">确定</el-button>
+        <el-button @click="passwordDialogVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="confirmSetPassword" :loading="passwordForm.loading">{{ $t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="connectCodeDialogVisible" title="设备连接码" width="420px">
+    <el-dialog v-model="connectCodeDialogVisible" :title="$t('devices.connect_code_dialog.title')" width="420px">
       <div class="connect-code-display">
-        <p>设备“{{ selectedDevice?.device_alias || selectedDevice?.device_name }}”的连接码：</p>
+        <p>{{ $t('devices.connect_code_dialog.body', { name: selectedDevice?.device_alias || selectedDevice?.device_name }) }}</p>
         <div class="code-box">{{ currentConnectCode }}</div>
-        <p class="code-hint">其他人可以通过连接码和密码远程连接此设备</p>
+        <p class="code-hint">{{ $t('devices.connect_code_dialog.hint') }}</p>
       </div>
       <template #footer>
-        <el-button @click="connectCodeDialogVisible = false">关闭</el-button>
-        <el-button type="primary" @click="copyConnectCode">复制连接码</el-button>
+        <el-button @click="connectCodeDialogVisible = false">{{ $t('common.close') }}</el-button>
+        <el-button type="primary" @click="copyConnectCode">{{ $t('devices.connect_code_dialog.copy') }}</el-button>
       </template>
     </el-dialog>
     -->
@@ -1137,11 +1137,11 @@ async function confirmSetAlias() {
 async function confirmSetPassword() {
   if (!selectedDevice.value) return
   if (passwordForm.password.length < 4) {
-    ElMessage.warning('密码长度不能少于 4 个字符')
+    ElMessage.warning(t('devices.message.password_too_short'))
     return
   }
   if (passwordForm.password !== passwordForm.confirmPassword) {
-    ElMessage.warning('两次输入的密码不一致')
+    ElMessage.warning(t('devices.message.password_mismatch'))
     return
   }
 
@@ -1151,10 +1151,10 @@ async function confirmSetPassword() {
       deviceId: selectedDevice.value.device_id,
       password: passwordForm.password,
     })
-    ElMessage.success('密码设置成功')
+    ElMessage.success(t('devices.message.password_set_success'))
     passwordDialogVisible.value = false
   } catch (e) {
-    ElMessage.error('设置失败: ' + e)
+    ElMessage.error(t('devices.message.password_set_failed', { error: e }))
   } finally {
     passwordForm.loading = false
   }
@@ -1171,31 +1171,31 @@ async function generateConnectCode(device: DeviceInfo) {
     }
     connectCodeDialogVisible.value = true
   } catch (e) {
-    ElMessage.error('生成连接码失败: ' + e)
+    ElMessage.error(t('devices.message.generate_code_failed', { error: e }))
   }
 }
 
 async function copyConnectCode() {
   try {
     await navigator.clipboard.writeText(currentConnectCode.value)
-    ElMessage.success('连接码已复制到剪贴板')
+    ElMessage.success(t('devices.message.code_copied'))
   } catch {
-    ElMessage.error('复制失败')
+    ElMessage.error(t('devices.message.copy_failed'))
   }
 }
 
 async function copyInlineConnectCode() {
   const code = selectedDevice.value?.connect_code || currentConnectCode.value
   if (!code) {
-    ElMessage.warning('当前还没有可复制的连接码')
+    ElMessage.warning(t('devices.message.no_code_to_copy'))
     return
   }
 
   try {
     await navigator.clipboard.writeText(code)
-    ElMessage.success('连接码已复制到剪贴板')
+    ElMessage.success(t('devices.message.code_copied'))
   } catch {
-    ElMessage.error('复制失败')
+    ElMessage.error(t('devices.message.copy_failed'))
   }
 }
 */

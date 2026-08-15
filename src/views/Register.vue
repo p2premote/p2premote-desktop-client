@@ -20,11 +20,11 @@
           <el-input v-model="form.email" :disabled="sendCountdown > 0" :placeholder="$t('register.email_placeholder')" />
         </el-form-item>
 
-        <el-form-item label="邮件验证码" prop="verificationCode">
+        <el-form-item :label="$t('register.validation.verification_code_label')" prop="verificationCode">
           <div class="captcha-row">
-            <el-input v-model="form.verificationCode" inputmode="numeric" maxlength="6" placeholder="请输入 6 位数字验证码" />
+            <el-input v-model="form.verificationCode" inputmode="numeric" maxlength="6" :placeholder="$t('register.validation.verification_code_placeholder')" />
             <el-button :loading="sendingCode" :disabled="sendCountdown > 0" @click="sendVerificationCode">
-              {{ sendCountdown > 0 ? `${sendCountdown}s` : '发送验证码' }}
+              {{ sendCountdown > 0 ? `${sendCountdown}s` : $t('register.message.send_code') }}
             </el-button>
           </div>
         </el-form-item>
@@ -178,7 +178,7 @@ const validateCaptcha = (_rule: any, value: string, callback: any) => {
 const rules = computed<FormRules>(() => ({
   username: [
     { required: true, message: t('register.validation.username_required'), trigger: 'blur' },
-    { min: 2, max: 20, message: t('register.validation.username_length'), trigger: 'blur' }
+    { min: 3, max: 30, message: t('register.validation.username_length'), trigger: 'blur' }
   ],
   email: [
     { required: true, message: t('register.validation.email_required'), trigger: 'blur' },
@@ -189,8 +189,8 @@ const rules = computed<FormRules>(() => ({
     { min: 6, message: t('register.validation.password_length'), trigger: 'blur' }
   ],
   verificationCode: [
-    { required: true, message: '请输入邮件验证码', trigger: 'blur' },
-    { pattern: /^\d{6}$/, message: '验证码必须为 6 位数字', trigger: 'blur' }
+    { required: true, message: t('register.validation.verification_code_required'), trigger: 'blur' },
+    { pattern: /^\d{6}$/, message: t('register.validation.verification_code_format'), trigger: 'blur' }
   ],
   confirmPassword: [
     { required: true, message: t('register.validation.confirm_password_required'), trigger: 'blur' },
@@ -243,7 +243,7 @@ async function sendVerificationCode() {
   sendingCode.value = true
   try {
     await invoke('send_registration_verification_code', { email: form.email })
-    ElMessage.success('验证码已发送，请在 5 分钟内完成注册')
+    ElMessage.success(t('register.message.code_sent'))
     sendCountdown.value = 60
     sendCountdownTimer = window.setInterval(() => {
       sendCountdown.value -= 1
@@ -253,7 +253,7 @@ async function sendVerificationCode() {
       }
     }, 1000)
   } catch (error) {
-    ElMessage.error(errorMessage(error, '验证码发送失败，请稍后重试'))
+    ElMessage.error(errorMessage(error, t('register.message.code_send_failed')))
   } finally {
     sendingCode.value = false
   }
