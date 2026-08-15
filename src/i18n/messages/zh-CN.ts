@@ -68,7 +68,7 @@ export default {
       check_update: '检查更新',
       visit_website: '访问官网',
       invite_friend: '邀请好友',
-      subscribe: '订阅',
+      subscribe: '会员',
     },
     // 用户菜单
     user: {
@@ -156,7 +156,7 @@ export default {
       maximize_failed: '无法切换窗口大小',
       close_failed: '关闭窗口失败: {error}',
       open_website_failed: '打开官网失败: {error}',
-      open_subscribe_failed: '打开订阅页面失败: {error}',
+      open_subscribe_failed: '打开会员页面失败: {error}',
       get_invite_failed: '获取邀请码失败: {error}',
       copy_invite_code_failed: '复制邀请码失败: {error}',
       copy_invite_link_failed: '复制邀请链接失败: {error}',

@@ -311,7 +311,7 @@ fn zh_message(key: &str) -> &str {
         "membership.trial_already_used" => "试用机会已使用",
         "membership.expired" => "会员已过期，请续费",
         "payment.disabled" => "支付功能暂未开启",
-        "payment.plan.invalid" => "无效的订阅类型",
+        "payment.plan.invalid" => "无效的会员类型",
 
         // ---- P2P WebSocket structured errors ----
         "p2p.attempt.config_load_failed" => "对端加载配置失败",
