@@ -36,6 +36,10 @@ pub struct ActiveStartResult {
     pub reused: bool,
     pub local_port: u16,
     pub rdp_address: String,
+    #[serde(default)]
+    pub source_nat_type: String,
+    #[serde(default)]
+    pub target_nat_type: String,
     pub message: String,
     #[serde(default)]
     pub warning: Option<String>,
@@ -662,6 +666,29 @@ pub async fn close_active_p2p_job(
     error_code: String,
     error_message: String,
 ) -> Result<()> {
+    close_active_p2p_job_with_nat(
+        config,
+        opened,
+        target_device_id,
+        success,
+        String::new(),
+        String::new(),
+        error_code,
+        error_message,
+    )
+    .await
+}
+
+pub async fn close_active_p2p_job_with_nat(
+    config: &MachineConfig,
+    opened: &ActiveP2POpenResult,
+    target_device_id: i64,
+    success: bool,
+    source_nat_type: String,
+    target_nat_type: String,
+    error_code: String,
+    error_message: String,
+) -> Result<()> {
     let source_device_id = config
         .device_id
         .ok_or_else(|| anyhow!("device not registered"))?;
@@ -672,8 +699,8 @@ pub async fn close_active_p2p_job(
         success,
         source_device_id,
         target_device_id,
-        String::new(),
-        String::new(),
+        source_nat_type,
+        target_nat_type,
         error_code,
         error_message,
     )

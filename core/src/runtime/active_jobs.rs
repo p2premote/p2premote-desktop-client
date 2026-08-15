@@ -328,6 +328,8 @@ pub(super) fn spawn_active_tunnel_job_task(
 
             match attempt_result {
                 Some(Ok(result)) if result.success => {
+                    let source_nat_type = result.source_nat_type.clone();
+                    let target_nat_type = result.target_nat_type.clone();
                     let result_for_status = result;
                     let session_info = wgvpn_flow::snapshot_sessions()
                         .into_iter()
@@ -399,11 +401,13 @@ pub(super) fn spawn_active_tunnel_job_task(
                         .lock()
                         .active_tunnel_job_cancels
                         .remove(&target_device_id);
-                    let _ = close_active_p2p_job(
+                    let _ = crate::p2p::close_active_p2p_job_with_nat(
                         &config,
                         &opened,
                         target_device_id,
                         true,
+                        source_nat_type,
+                        target_nat_type,
                         String::new(),
                         String::new(),
                     )
@@ -630,6 +634,8 @@ pub(super) async fn start_wgvpn_active_with_notify(
         reused: false,
         local_port: 0,
         rdp_address: format!("{}:{}", started.peer_virtual_ip, target_rdp_port),
+        source_nat_type: started.local_nat_type,
+        target_nat_type: started.remote_nat_type,
         message: started.message,
         warning: started.warning,
     })

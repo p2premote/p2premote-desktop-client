@@ -242,6 +242,8 @@ pub struct WgVpnStartResult {
     pub success: bool,
     pub virtual_ip: String,
     pub peer_virtual_ip: String,
+    pub local_nat_type: String,
+    pub remote_nat_type: String,
     pub message: String,
     pub warning: Option<String>,
 }
@@ -463,6 +465,8 @@ pub async fn start_active_wgvpn(
         success: true,
         virtual_ip: my_ip,
         peer_virtual_ip: peer_ip,
+        local_nat_type: udp_tunnel.local_nat_type,
+        remote_nat_type: udp_tunnel.remote_nat_type,
         message: format!(
             "wgvpn established via gonc tunnel {} on {}",
             udp_tunnel.handle_id, udp_tunnel.local_forward_addr
@@ -786,6 +790,8 @@ pub async fn start_passive_wgvpn(
         success: true,
         virtual_ip: my_ip,
         peer_virtual_ip: peer_ip,
+        local_nat_type: udp_tunnel.local_nat_type,
+        remote_nat_type: udp_tunnel.remote_nat_type,
         message: format!(
             "wgvpn established via gonc tunnel {} on {}",
             udp_tunnel.handle_id, udp_tunnel.local_forward_addr
