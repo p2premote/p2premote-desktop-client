@@ -172,7 +172,7 @@ export async function openClientDownloadPage(): Promise<void> {
     return
   }
 
-  window.location.assign(url)
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 export async function minimizeWindow(): Promise<void> {

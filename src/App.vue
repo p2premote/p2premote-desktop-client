@@ -1071,11 +1071,7 @@ async function checkForUpdates(manual = false) {
     }
 
     if (result.mode === 'force') {
-      const firstDetection = !forceUpdateVisible.value
       forceUpdateVisible.value = true
-      if (firstDetection) {
-        await openUpdatePage()
-      }
       return
     }
 
