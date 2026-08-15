@@ -106,7 +106,16 @@
                 <div v-if="lanAccessForm.enabled" class="lan-cidr-editor">
                   <div class="lan-cidr-content">
                     <div class="lan-cidr-input">
-                      <div class="lan-cidr-label">{{ $t('devices.detail.lan_access.cidr_label') }}</div>
+                      <div class="lan-cidr-label">
+                        <span>{{ $t('devices.detail.lan_access.cidr_label') }}</span>
+                        <el-tooltip
+                          :content="$t('devices.detail.lan_access.cidr_hint')"
+                          placement="top-start"
+                          popper-class="lan-cidr-hint-popper"
+                        >
+                          <span class="action-help lan-cidr-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
+                        </el-tooltip>
+                      </div>
                       <el-input
                         v-model="lanAccessForm.cidrsText"
                         type="textarea"
@@ -1909,9 +1918,18 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 
 .lan-cidr-label {
   margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 13px;
   font-weight: 600;
   color: var(--fluent-text);
+}
+
+.lan-cidr-help {
+  margin-left: 0;
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .lan-access-actions {
@@ -2018,5 +2036,13 @@ async function confirmDeleteDevice(device: DeviceInfo) {
     flex-direction: column;
     align-items: flex-start;
   }
+}
+</style>
+
+<style>
+/* LAN 网段提示浮层：保留换行并限制宽度（popper 挂载在 body 下，需全局样式） */
+.lan-cidr-hint-popper {
+  max-width: 360px;
+  white-space: pre-line;
 }
 </style>

@@ -186,6 +186,7 @@ const en = {
         allow_desc: 'After a P2P tunnel is established, the peer can access this device\'s LAN subnets.',
         cidr_label: 'Local LAN subnets',
         cidr_placeholder: 'For example, 192.168.1.0/24. Enter one subnet per line.',
+        cidr_hint: 'Specify the LAN subnets or hosts that the peer may access. Changes take effect after the tunnel is re-established. The peer can access these addresses directly by their real LAN IPs.\n\nNotes: Overlapping subnets on both ends may cause routing conflicts or unexpected behavior; devices in these subnets are exposed to the peer, which may pose security risks to your internal network. Include only the minimum range necessary.\n\nExamples: 192.168.1.0/24\n192.168.1.100/32 (one per line)',
       },
       connection: {
         section: 'Connection',
