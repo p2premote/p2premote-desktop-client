@@ -243,12 +243,16 @@ const rules = computed<FormRules>(() => ({
 onMounted(() => {
   void refreshLocalDevice()
   listen<BackgroundServiceStatus['runtime']>('service-status-changed', (event) => {
-    // 状态广播每次心跳都会携带该字段，只在密码实际变化时才提示
+    // 状态广播每次心跳都会携带该字段，只在密码实际变化时才更新；
+    // 首次展示（挂载恢复或本地生成）不弹提示，仅被消费后轮换时提示
     const nextPassword = event.payload?.invite_temporary_password
     if (nextPassword && nextPassword !== inviteForm.temporaryPassword) {
+      const rotated = Boolean(inviteForm.temporaryPassword)
       inviteForm.temporaryPassword = nextPassword
       passwordError.value = ''
-      ElMessage.success(t('remote.message.password_changed'))
+      if (rotated) {
+        ElMessage.success(t('remote.message.password_changed'))
+      }
     }
     updateActiveJobFromList(event.payload?.active_tunnel_jobs)
   }).then(fn => {
@@ -279,6 +283,11 @@ async function refreshLocalDevice() {
       ...deviceStore.devices.filter(device => device.device_id !== serviceDevice.device_id),
       serviceDevice,
     ])
+
+    // 服务端已生效的临时密码优先复用，避免每次进入页面重新生成、使已分享未使用的邀请失效
+    if (!inviteForm.temporaryPassword && serviceStatus.runtime?.invite_temporary_password) {
+      inviteForm.temporaryPassword = serviceStatus.runtime.invite_temporary_password
+    }
 
     if (localDevice.value) {
       await ensureInviteCode(false)

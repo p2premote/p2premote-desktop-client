@@ -472,10 +472,19 @@ pub(super) async fn handle_data(
                 Ok(c) => c,
                 Err(resp) => return Some(resp),
             };
-            Some(response_from_result(
-                set_device_password(&mut config, device_id, password).await,
-                |_| serde_json::Value::Null,
-            ))
+            let result = set_device_password(&mut config, device_id, password.clone()).await;
+            // 本机设备的密码即邀请页展示的临时密码：成功后回写运行时状态并持久化，
+            // 避免邀请页每次挂载（或 service 重启后）重新生成，使已分享未使用的邀请失效。
+            if result.is_ok() && config.device_id == Some(device_id) && !password.is_empty() {
+                config.invite_temporary_password = Some(password.clone());
+                if let Err(err) = save_machine_config(&config) {
+                    warn!("[ServiceControl] persist invite password failed: {}", err);
+                }
+                update_status(shared, |status| {
+                    status.invite_temporary_password = Some(password);
+                });
+            }
+            Some(response_from_result(result, |_| serde_json::Value::Null))
         }
         Data::GenerateConnectCode { device_id } => {
             let mut config = match load_config_or_err() {

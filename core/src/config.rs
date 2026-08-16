@@ -62,6 +62,10 @@ pub struct MachineConfig {
     pub cached_public_ip_location: Option<String>,
     #[serde(default)]
     pub cached_public_network_checked_at: i64,
+    /// 邀请协助的临时连接密码（当前服务器端生效值）。
+    /// 持久化以免邀请页每次挂载都重新生成、使已分享未使用的邀请失效。
+    #[serde(default)]
+    pub invite_temporary_password: Option<String>,
 }
 
 /// 不属于用户配置的持久化运行时状态。
@@ -83,6 +87,7 @@ struct MachineState {
     cached_public_ip: Option<String>,
     cached_public_ip_location: Option<String>,
     cached_public_network_checked_at: i64,
+    invite_temporary_password: Option<String>,
 }
 
 impl Default for MachineConfig {
@@ -112,6 +117,7 @@ impl Default for MachineConfig {
             cached_public_ip: None,
             cached_public_ip_location: None,
             cached_public_network_checked_at: 0,
+            invite_temporary_password: None,
         }
     }
 }
@@ -602,6 +608,7 @@ fn is_machine_state_field(key: &str) -> bool {
             | "cached_public_ip"
             | "cached_public_ip_location"
             | "cached_public_network_checked_at"
+            | "invite_temporary_password"
     )
 }
 
@@ -651,6 +658,7 @@ fn machine_state_from_config(config: &MachineConfig) -> MachineState {
         cached_public_ip: config.cached_public_ip.clone(),
         cached_public_ip_location: config.cached_public_ip_location.clone(),
         cached_public_network_checked_at: config.cached_public_network_checked_at,
+        invite_temporary_password: config.invite_temporary_password.clone(),
     }
 }
 
@@ -667,6 +675,7 @@ fn apply_machine_state(mut config: MachineConfig, state: MachineState) -> Machin
     config.cached_public_ip = state.cached_public_ip;
     config.cached_public_ip_location = state.cached_public_ip_location;
     config.cached_public_network_checked_at = state.cached_public_network_checked_at;
+    config.invite_temporary_password = state.invite_temporary_password;
     config
 }
 

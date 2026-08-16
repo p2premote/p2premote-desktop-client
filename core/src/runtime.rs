@@ -290,6 +290,11 @@ async fn rotate_invite_temporary_password(shared: &Arc<Mutex<SharedRuntimeState>
     let mut config = load_machine_config()?;
     let password = generate_temporary_password();
     set_connect_password(&mut config, &password).await?;
+    config.invite_temporary_password = Some(password.clone());
+    // 密码已在服务器端生效；持久化失败只影响重启后复用，不应视为轮换失败。
+    if let Err(err) = save_machine_config(&config) {
+        warn!("[ServiceRuntime] persist rotated invite password failed: {}", err);
+    }
     update_status(shared, |status| {
         status.invite_temporary_password = Some(password);
     });
@@ -343,6 +348,13 @@ pub async fn run_service_foreground() -> Result<()> {
     if let Ok(config) = crate::config::load_machine_config() {
         if let Some(locale) = config.locale {
             shared.lock().status.locale = Some(locale);
+        }
+        // 恢复邀请临时密码，邀请页挂载时优先复用而不是重新生成覆盖。
+        if let Some(password) = config
+            .invite_temporary_password
+            .filter(|value| !value.is_empty())
+        {
+            shared.lock().status.invite_temporary_password = Some(password);
         }
     }
     let wake = Arc::new(Notify::new());

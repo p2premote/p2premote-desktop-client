@@ -238,6 +238,20 @@ test.describe('远程协助', () => {
     await expect.poll(() => page.evaluate(() => (window as any).__lastClipboardText)).toContain('临时密码:')
   })
 
+  test('服务端已有临时密码时挂载直接复用，不重新生成', async ({ page }) => {
+    await installTauriMock(page)
+    await page.goto('/')
+    await page.evaluate(() => {
+      ;(window as any).__p2premoteMockState.tunnelRuntime = { invite_temporary_password: '654321' }
+    })
+    await page.getByRole('button', { name: '远程协助' }).click()
+
+    await expect(page.getByRole('heading', { name: '邀请对方远程协助' })).toBeVisible()
+    await expect(page.locator('.invite-card input').nth(1)).toHaveValue('654321')
+    const calls = await mockCalls(page)
+    expect(calls.some(call => call.cmd === 'set_device_password')).toBeFalsy()
+  })
+
   test('邀请信息格式错误时不请求匿名连接接口', async ({ page }) => {
     await openRemoteAssistance(page)
 
