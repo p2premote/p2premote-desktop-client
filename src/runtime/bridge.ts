@@ -2,9 +2,23 @@ import i18n from '../i18n'
 
 export type UnlistenFn = () => void
 
+export const SITE_ORIGIN = 'https://www.p2premote.top'
+export const CLIENT_DOWNLOAD_URL = `${SITE_ORIGIN}/#download`
+
 export interface WebAuthStatus {
   authenticated: boolean
   security_code_required: boolean
+}
+
+export interface UpdateCheckResponse {
+  mode: 'none' | 'optional' | 'force'
+  has_update: boolean
+  force_update: boolean
+  current: string
+  latest: string
+  min_supported: string
+  release_notes: string
+  error?: string | null
 }
 
 type EventHandler<T> = (event: { payload: T }) => void
@@ -165,14 +179,7 @@ export async function openExternal(url: string): Promise<void> {
 }
 
 export async function openClientDownloadPage(): Promise<void> {
-  const url = 'https://www.p2premote.top/#download'
-  if (isTauriRuntime()) {
-    const opener = await import('@tauri-apps/plugin-opener')
-    await opener.openUrl(url)
-    return
-  }
-
-  window.open(url, '_blank', 'noopener,noreferrer')
+  return openExternal(CLIENT_DOWNLOAD_URL)
 }
 
 export async function minimizeWindow(): Promise<void> {

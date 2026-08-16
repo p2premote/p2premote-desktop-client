@@ -22,7 +22,6 @@ export default {
     unknown_error: '未知错误',
     unknown_system: '未知系统',
     not_set: '未设置',
-    not_generated: '未生成',
     nothing_to_copy: '暂无可复制内容',
     copy_failed: '复制失败',
     got_it: '知道了',
@@ -232,15 +231,12 @@ export default {
         public_ip: '公网 IP',
         rdp_port: 'RDP 端口',
         device_uuid: '设备 UUID',
-        connect_code: '连接码',
       },
       empty_hint: '请选择一台设备查看详情',
     },
     // 下拉菜单
     menu: {
       set_alias: '设置别名',
-      generate_connect_code: '生成连接码',
-      set_password: '设置连接密码',
       delete_device: '删除设备',
     },
     // 隧道生命周期（与 tunnel.state 对齐）
@@ -263,21 +259,6 @@ export default {
       title: '设置设备别名',
       label: '设备别名',
       placeholder: '请输入设备别名',
-    },
-    // 密码弹窗
-    password_dialog: {
-      title: '设置连接密码',
-      label: '连接密码',
-      confirm_label: '确认密码',
-      placeholder: '请输入连接密码',
-      confirm_placeholder: '请再次输入密码',
-    },
-    // 连接码弹窗
-    connect_code_dialog: {
-      title: '设备连接码',
-      body: '设备"{name}"的连接码：',
-      hint: '其他人可以通过连接码和密码远程连接此设备',
-      copy: '复制连接码',
     },
     // 消息
     message: {
@@ -310,14 +291,6 @@ export default {
       connect_failed: '连接失败: {error}',
       alias_set_success: '别名设置成功',
       alias_set_failed: '设置失败: {error}',
-      password_too_short: '密码长度不能少于 4 个字符',
-      password_mismatch: '两次输入的密码不一致',
-      password_set_success: '密码设置成功',
-      password_set_failed: '设置失败: {error}',
-      generate_code_failed: '生成连接码失败: {error}',
-      code_copied: '连接码已复制到剪贴板',
-      no_code_to_copy: '当前还没有可复制的连接码',
-      copy_failed: '复制失败',
       delete_confirm_title: '删除设备',
       delete_confirm_body: '确定要删除设备"{name}"吗？删除后无法恢复。',
       delete_success: '设备已删除',

@@ -71,22 +71,12 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { invoke, openClientDownloadPage } from '../runtime/bridge'
+import type { UpdateCheckResponse } from '../runtime/bridge'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { useAuthStore } from '../stores/auth'
 import AppLogo from '../components/AppLogo.vue'
 const { t } = useI18n()
-
-interface UpdateCheckResponse {
-  mode: 'none' | 'optional' | 'force'
-  has_update: boolean
-  force_update: boolean
-  current: string
-  latest: string
-  min_supported: string
-  release_notes: string
-  error?: string | null
-}
 
 const router = useRouter()
 const authStore = useAuthStore()

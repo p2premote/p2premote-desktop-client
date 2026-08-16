@@ -428,6 +428,7 @@ body,
         --fluent-accent-hover: #7BD7FF;
         --fluent-accent-pressed: #4CC2F1;
         --fluent-accent-light: rgba(96, 205, 255, 0.12);
+        --fluent-accent-text: #60CDFF;
         --fluent-text-on-accent: #0B1F2A;
         --fluent-layer-hover: rgba(255, 255, 255, 0.06);
         --fluent-layer-pressed: rgba(255, 255, 255, 0.09);

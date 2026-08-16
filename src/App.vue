@@ -252,7 +252,9 @@ import {
   openClientDownloadPage,
   logoutWebAdmin,
   unlockWebAdmin,
+  SITE_ORIGIN,
 } from './runtime/bridge'
+import type { UpdateCheckResponse } from './runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { ElNotification } from 'element-plus/es/components/notification/index.mjs'
@@ -412,17 +414,6 @@ async function copyContextSelection() {
 interface WsEventPayload {
   msg_type: string
   data: Record<string, any>
-}
-
-interface UpdateCheckResponse {
-  mode: 'none' | 'optional' | 'force'
-  has_update: boolean
-  force_update: boolean
-  current: string
-  latest: string
-  min_supported: string
-  release_notes: string
-  error?: string | null
 }
 
 interface InviteInfo {
@@ -972,7 +963,7 @@ async function handleCloseWindow() {
 
 async function handleOpenWebsite() {
   try {
-    await openExternal('https://www.p2premote.top')
+    await openExternal(SITE_ORIGIN)
   } catch (e) {
     ElMessage.error(t('app.actions.open_website_failed', { error: e }))
   }
@@ -980,7 +971,7 @@ async function handleOpenWebsite() {
 
 async function handleOpenRecharge() {
   try {
-    await openExternal('https://www.p2premote.top/console/recharge')
+    await openExternal(`${SITE_ORIGIN}/console/recharge`)
   } catch (e) {
     ElMessage.error(t('app.actions.open_subscribe_failed', { error: e }))
   }

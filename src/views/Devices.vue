@@ -86,10 +86,6 @@
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="alias">{{ $t('devices.menu.set_alias') }}</el-dropdown-item>
-                  <!--
-                  <el-dropdown-item command="connect-code">{{ $t('devices.menu.generate_connect_code') }}</el-dropdown-item>
-                  <el-dropdown-item command="set-password">{{ $t('devices.menu.set_password') }}</el-dropdown-item>
-                  -->
                   <el-dropdown-item command="delete" divided>{{ $t('devices.menu.delete_device') }}</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -274,15 +270,6 @@
                   <span class="info-label">{{ $t('devices.detail.info.device_uuid') }}</span>
                   <span class="info-value uuid">{{ selectedDevice.device_uuid }}</span>
                 </div>
-                <!--
-                <div class="info-item wide">
-                  <span class="info-label">{{ $t('devices.detail.info.connect_code') }}</span>
-                  <div class="connect-code-inline">
-                    <span class="info-value code">{{ selectedDevice.connect_code || currentConnectCode || $t('common.not_generated') }}</span>
-                    <el-button size="small" @click="copyInlineConnectCode">{{ $t('common.copy') }}</el-button>
-                  </div>
-                </div>
-                -->
               </div>
             </div>
           </div>
@@ -305,35 +292,6 @@
         <el-button type="primary" @click="confirmSetAlias" :loading="aliasForm.loading">{{ $t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
-
-    <!--
-    <el-dialog v-model="passwordDialogVisible" :title="$t('devices.password_dialog.title')" width="420px">
-      <el-form :model="passwordForm" label-width="90px">
-        <el-form-item :label="$t('devices.password_dialog.label')">
-          <el-input v-model="passwordForm.password" type="password" :placeholder="$t('devices.password_dialog.placeholder')" show-password />
-        </el-form-item>
-        <el-form-item :label="$t('devices.password_dialog.confirm_label')">
-          <el-input v-model="passwordForm.confirmPassword" type="password" :placeholder="$t('devices.password_dialog.confirm_placeholder')" show-password />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="passwordDialogVisible = false">{{ $t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="confirmSetPassword" :loading="passwordForm.loading">{{ $t('common.confirm') }}</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="connectCodeDialogVisible" :title="$t('devices.connect_code_dialog.title')" width="420px">
-      <div class="connect-code-display">
-        <p>{{ $t('devices.connect_code_dialog.body', { name: selectedDevice?.device_alias || selectedDevice?.device_name }) }}</p>
-        <div class="code-box">{{ currentConnectCode }}</div>
-        <p class="code-hint">{{ $t('devices.connect_code_dialog.hint') }}</p>
-      </div>
-      <template #footer>
-        <el-button @click="connectCodeDialogVisible = false">{{ $t('common.close') }}</el-button>
-        <el-button type="primary" @click="copyConnectCode">{{ $t('devices.connect_code_dialog.copy') }}</el-button>
-      </template>
-    </el-dialog>
-    -->
 
   </div>
 </template>
@@ -423,15 +381,8 @@ const deviceStore = useDeviceStore()
 const authStore = useAuthStore()
 
 const aliasDialogVisible = ref(false)
-/*
-const passwordDialogVisible = ref(false)
-const connectCodeDialogVisible = ref(false)
-*/
 const selectedDevice = ref<DeviceInfo | null>(null)
 const detailExpanded = ref(false)
-/*
-const currentConnectCode = ref('')
-*/
 const currentDeviceUUID = ref('')
 const tunnelStatusMap = ref<Record<number, TunnelInfo>>({})
 const activeTunnelJobMap = ref<Record<number, ActiveTunnelJobStatus>>({})
@@ -448,9 +399,6 @@ const savedLanAccessConfig = reactive({
 })
 
 const aliasForm = reactive({ alias: '', loading: false })
-/*
-const passwordForm = reactive({ password: '', confirmPassword: '', loading: false })
-*/
 const FOREGROUND_REFRESH_THROTTLE_MS = 10_000
 let autoRefreshTimer: ReturnType<typeof window.setInterval> | null = null
 let lastForegroundRefreshAt = 0
@@ -952,15 +900,6 @@ function openAliasDialog(device: DeviceInfo) {
   aliasDialogVisible.value = true
 }
 
-/*
-function openPasswordDialog(device: DeviceInfo) {
-  selectedDevice.value = device
-  passwordForm.password = ''
-  passwordForm.confirmPassword = ''
-  passwordDialogVisible.value = true
-}
-*/
-
 function openTunnelAction(device: DeviceInfo) {
   const lifecycle = deviceTunnelLifecycle(device)
   // 宽限期耗尽后 lifecycle 已回到未建立，但 service 快照中可能短暂保留旧会话。
@@ -1113,14 +1052,6 @@ async function handleDeviceAction(command: string, device: DeviceInfo) {
     case 'alias':
       openAliasDialog(device)
       break
-    /*
-    case 'connect-code':
-      await generateConnectCode(device)
-      break
-    case 'set-password':
-      openPasswordDialog(device)
-      break
-    */
     case 'delete':
       await confirmDeleteDevice(device)
       break
@@ -1141,73 +1072,6 @@ async function confirmSetAlias() {
     aliasForm.loading = false
   }
 }
-
-/*
-async function confirmSetPassword() {
-  if (!selectedDevice.value) return
-  if (passwordForm.password.length < 4) {
-    ElMessage.warning(t('devices.message.password_too_short'))
-    return
-  }
-  if (passwordForm.password !== passwordForm.confirmPassword) {
-    ElMessage.warning(t('devices.message.password_mismatch'))
-    return
-  }
-
-  passwordForm.loading = true
-  try {
-    await invoke('set_device_password', {
-      deviceId: selectedDevice.value.device_id,
-      password: passwordForm.password,
-    })
-    ElMessage.success(t('devices.message.password_set_success'))
-    passwordDialogVisible.value = false
-  } catch (e) {
-    ElMessage.error(t('devices.message.password_set_failed', { error: e }))
-  } finally {
-    passwordForm.loading = false
-  }
-}
-
-async function generateConnectCode(device: DeviceInfo) {
-  selectedDevice.value = device
-  try {
-    const code = await invoke<string>('generate_connect_code', { deviceId: device.device_id })
-    currentConnectCode.value = code
-    const match = deviceStore.devices.find(item => item.device_id === device.device_id)
-    if (match) {
-      match.connect_code = code
-    }
-    connectCodeDialogVisible.value = true
-  } catch (e) {
-    ElMessage.error(t('devices.message.generate_code_failed', { error: e }))
-  }
-}
-
-async function copyConnectCode() {
-  try {
-    await navigator.clipboard.writeText(currentConnectCode.value)
-    ElMessage.success(t('devices.message.code_copied'))
-  } catch {
-    ElMessage.error(t('devices.message.copy_failed'))
-  }
-}
-
-async function copyInlineConnectCode() {
-  const code = selectedDevice.value?.connect_code || currentConnectCode.value
-  if (!code) {
-    ElMessage.warning(t('devices.message.no_code_to_copy'))
-    return
-  }
-
-  try {
-    await navigator.clipboard.writeText(code)
-    ElMessage.success(t('devices.message.code_copied'))
-  } catch {
-    ElMessage.error(t('devices.message.copy_failed'))
-  }
-}
-*/
 
 async function confirmDeleteDevice(device: DeviceInfo) {
   try {
@@ -1653,10 +1517,6 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   border-bottom: 1px solid var(--fluent-divider);
 }
 
-.info-item.wide {
-  grid-column: 1 / -1;
-}
-
 .info-label {
   font-size: 12px;
   color: var(--fluent-text-secondary);
@@ -1679,21 +1539,6 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 .info-value.uuid {
   font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
   font-size: 13px;
-}
-
-.info-value.code {
-  font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--fluent-accent);
-  letter-spacing: 0.08em;
-}
-
-.connect-code-inline {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 /* ===== 隧道生命周期条：Fluent InfoBar ===== */
@@ -1938,34 +1783,6 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   padding-top: 14px;
 }
 
-.connect-code-display {
-  text-align: center;
-  padding: 20px 0;
-}
-
-.connect-code-display p {
-  margin: 0 0 16px;
-  color: var(--fluent-text-secondary);
-}
-
-.code-box {
-  margin: 16px 0;
-  padding: 20px;
-  border-radius: var(--fluent-radius-md);
-  background: var(--fluent-accent-light);
-  color: var(--fluent-accent);
-  font-size: 32px;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
-}
-
-.code-hint,
-.address-hint {
-  font-size: 12px;
-  color: var(--fluent-text-tertiary);
-}
-
 .service-summary h3 {
   margin: 0 0 6px;
   font-size: 20px;
@@ -2030,11 +1847,6 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 
   .action-grid.single-tunnel-action {
     grid-template-columns: minmax(180px, 240px);
-  }
-
-  .connect-code-inline {
-    flex-direction: column;
-    align-items: flex-start;
   }
 }
 </style>

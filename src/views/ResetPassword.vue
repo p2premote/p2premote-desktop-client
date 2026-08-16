@@ -18,9 +18,10 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, onBeforeUnmount } from 'vue'
+import { reactive, ref, computed, onBeforeUnmount } from 'vue'
 import { invoke } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import type { FormRules } from 'element-plus/es/components/form/index.mjs'
 import { useRouter } from 'vue-router'
 import { errorMessage } from '../utils/errorMessage'
 import { useI18n } from 'vue-i18n'
@@ -33,7 +34,7 @@ const validateConfirmPassword = (_rule: unknown, value: string, callback: (error
   if (value !== form.password) callback(new Error(t('reset_password.password_mismatch')))
   else callback()
 }
-const rules = {
+const rules = computed<FormRules>(() => ({
   email: [{ required: true, type: 'email', message: t('reset_password.email_invalid'), trigger: 'blur' }],
   code: [{ required: true, pattern: /^\d{6}$/, message: t('reset_password.code_invalid'), trigger: 'blur' }],
   password: [{ required: true, min: 6, message: t('reset_password.password_invalid'), trigger: 'blur' }],
@@ -41,7 +42,7 @@ const rules = {
     { required: true, message: t('reset_password.confirm_required'), trigger: 'blur' },
     { validator: validateConfirmPassword, trigger: 'blur' },
   ],
-}
+}))
 async function send() {
   if (!await formRef.value.validateField('email').catch(() => false)) return
   sending.value = true

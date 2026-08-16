@@ -122,6 +122,12 @@ pub fn evaluate_version_policy(current: &str, policy: &VersionPolicyData) -> Ver
     }
 }
 
+/// Compares dotted version strings. Semantics must stay in sync with the
+/// Android client's ClientVersionPolicy.compare/numericParts
+/// (app/src/main/java/top/p2premote/android/ClientVersionPolicy.java): any
+/// number of segments, missing segments default to 0, and segments that
+/// fail to parse (or overflow) are treated as 0. Changing either side
+/// requires updating the other.
 pub fn is_version_less(current: &str, target: &str) -> bool {
     let current = version_parts(current);
     let target = version_parts(target);
@@ -135,6 +141,8 @@ pub fn is_version_less(current: &str, target: &str) -> bool {
     false
 }
 
+/// Splits a version into numeric segments; see is_version_less for the
+/// cross-platform contract with the Android client's ClientVersionPolicy.
 fn version_parts(version: &str) -> Vec<u64> {
     version
         .trim()
