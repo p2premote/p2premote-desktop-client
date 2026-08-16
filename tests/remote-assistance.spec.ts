@@ -124,12 +124,38 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
             return { code: 0, msg: 'ok' }
           case 'generate_connect_code':
             return localDevice.connect_code
+          case 'parse_invite_info': {
+            // 镜像 core/src/invite.rs 的解析语义：标签行优先，退回双 token
+            const input = String(args?.input || '')
+            let deviceCode: string | null = null
+            let temporaryPassword: string | null = null
+            for (const line of input.split('\n').map(l => l.trim()).filter(Boolean)) {
+              const idx = line.indexOf('：') >= 0 ? line.indexOf('：') : line.indexOf(':')
+              if (idx < 0) continue
+              const key = line.slice(0, idx).trim().toLowerCase()
+              const value = line.slice(idx + 1).replace(/[^0-9a-zA-Z]/g, '')
+              if (!value) continue
+              if (key.includes('设备代码') || key === 'code' || key === 'device code') {
+                deviceCode = value
+              } else if (key.includes('临时密码') || key === 'password' || key === 'temporary password') {
+                temporaryPassword = value
+              }
+            }
+            if (!deviceCode || !temporaryPassword) {
+              const tokens = input.split(/\s+/).map(t => t.replace(/[^0-9a-zA-Z]/g, '')).filter(Boolean)
+              if (tokens.length === 2) {
+                deviceCode = tokens[0]
+                temporaryPassword = tokens[1]
+              }
+            }
+            if (deviceCode && temporaryPassword && deviceCode.length >= 6 && temporaryPassword.length >= 4) {
+              return { deviceCode, temporaryPassword }
+            }
+            return null
+          }
           case 'start_service_anonymous_active_tunnel':
             if (!state.serviceAvailable) {
               return { success: false, message: '后台服务未运行，暂时无法发起远程协助' }
-            }
-            if (args?.connectCode === remoteDevice.connect_code && args?.password === '123456') {
-              return { success: true, message: 'ok', device: remoteDevice }
             }
             if (args?.connectCode === remoteDevice.connect_code && args?.temporaryPassword === '123456') {
               return { success: true, message: 'ok', device: remoteDevice }
@@ -216,7 +242,7 @@ test.describe('远程协助', () => {
     await openRemoteAssistance(page)
 
     await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill('只有一段错误内容')
-    await page.locator('.connect-card').getByRole('button', { name: /远程控制对方电脑/ }).click()
+    await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
 
     await expect(page.getByText('邀请信息格式不正确')).toBeVisible()
     const calls = await mockCalls(page)
@@ -235,7 +261,7 @@ test.describe('远程协助', () => {
 
     for (const input of inviteInputs) {
       await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill(input)
-      await page.locator('.connect-card').getByRole('button', { name: /远程控制对方电脑/ }).click()
+      await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
 
       await expect.poll(async () => {
         const calls = await mockCalls(page)
@@ -270,7 +296,7 @@ test.describe('远程协助', () => {
 
     const englishInvite = 'Device code: 428279225\nTemporary password: 123456'
     await page.getByPlaceholder(/Paste the invitation/).fill(englishInvite)
-    await page.locator('.connect-card').getByRole('button', { name: /Control remote computer/ }).click()
+    await page.locator('.connect-card').getByRole('button', { name: /Establish remote connection/ }).click()
 
     await expect.poll(async () => {
       const calls = await mockCalls(page)
@@ -285,8 +311,8 @@ test.describe('远程协助', () => {
     await page.locator('.settings-panel .language-select').click()
     await page.getByRole('option', { name: 'English' }).click()
 
-    await expect(page.getByRole('heading', { name: 'Control a remote computer' })).toBeVisible()
-    await page.locator('.connect-card').getByRole('button', { name: /Control remote computer/ }).click()
+    await expect(page.getByRole('heading', { name: 'Connect to a remote computer' })).toBeVisible()
+    await page.locator('.connect-card').getByRole('button', { name: /Establish remote connection/ }).click()
     await expect(page.getByText('Paste the invitation sent by the other person', { exact: true })).toBeVisible()
 
     const calls = await mockCalls(page)
@@ -477,7 +503,7 @@ test.describe('远程协助', () => {
     await setServiceAvailable(page, false)
 
     await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill('设备代码：428279225\n临时密码：123456')
-    await page.locator('.connect-card').getByRole('button', { name: /远程控制对方电脑/ }).click()
+    await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
 
     await expect(page.getByText('后台服务未运行，暂时无法发起远程协助')).toBeVisible()
     const calls = await mockCalls(page)
@@ -488,7 +514,7 @@ test.describe('远程协助', () => {
     await openRemoteAssistance(page)
 
     await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill('设备代码：428279225\n临时密码：123456')
-    await page.locator('.connect-card').getByRole('button', { name: /远程控制对方电脑/ }).click()
+    await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
     await expect(page.getByText('对方电脑', { exact: true })).toBeVisible()
     await page.evaluate(() => {
       window.dispatchEvent(new CustomEvent('p2p-active-tunnel-job-updated', {
@@ -506,7 +532,7 @@ test.describe('远程协助', () => {
     await expect(page.getByText('本次尝试失败，等待重试')).toBeVisible()
 
     await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill('设备代码：428279225\n临时密码：000000')
-    await page.locator('.connect-card').getByRole('button', { name: /远程控制对方电脑/ }).click()
+    await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
 
     await expect(page.getByText('设备代码或临时密码错误')).toBeVisible()
     await expect(page.getByText('本次尝试失败，等待重试')).not.toBeVisible()

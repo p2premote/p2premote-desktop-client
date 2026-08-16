@@ -243,8 +243,9 @@ const rules = computed<FormRules>(() => ({
 onMounted(() => {
   void refreshLocalDevice()
   listen<BackgroundServiceStatus['runtime']>('service-status-changed', (event) => {
+    // 状态广播每次心跳都会携带该字段，只在密码实际变化时才提示
     const nextPassword = event.payload?.invite_temporary_password
-    if (nextPassword) {
+    if (nextPassword && nextPassword !== inviteForm.temporaryPassword) {
       inviteForm.temporaryPassword = nextPassword
       passwordError.value = ''
       ElMessage.success(t('remote.message.password_changed'))
