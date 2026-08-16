@@ -160,7 +160,20 @@ fn handle_scm_command() -> anyhow::Result<()> {
                 })
             }),
         "uninstall" => run_scm_step("uninstall", || {
-            p2premote_core::service_control::direct::uninstall_service()
+            // 先停并等停止再删除：对运行中的服务 DeleteService 只会"标记删除"，
+            // 残留的标记状态会让紧随其后的 setup（重装场景）以
+            // ERROR_SERVICE_MARKED_FOR_DELETE 失败，装完后服务缺失。
+            if let Ok(status) = p2premote_core::service_control::direct::query_service_status() {
+                if status.installed && status.running {
+                    let _ = p2premote_core::service_control::direct::stop_service();
+                    wait_until_service_stopped(std::time::Duration::from_secs(10));
+                }
+            }
+            let result = p2premote_core::service_control::direct::uninstall_service();
+            if result.is_ok() {
+                wait_until_service_gone(std::time::Duration::from_secs(10));
+            }
+            result
         }),
         "start" => run_scm_step("start", || {
             p2premote_core::service_control::direct::start_service()
@@ -236,6 +249,44 @@ where
     let result = f();
     scm_trace(&format!("step end: {} => {:?}", name, result));
     result
+}
+
+/// 轮询等待服务进入 Stopped（或已不存在）；超时不视为错误，交由后续步骤兜底。
+#[cfg(windows)]
+fn wait_until_service_stopped(timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let stopped = p2premote_core::service_control::direct::query_service_status()
+            .map(|s| !s.installed || s.raw_state == "Stopped")
+            .unwrap_or(true);
+        if stopped {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            scm_trace("wait_until_service_stopped timed out");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// 轮询等待 DeleteService 真正生效（查询返回未安装）。
+#[cfg(windows)]
+fn wait_until_service_gone(timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let gone = p2premote_core::service_control::direct::query_service_status()
+            .map(|s| !s.installed)
+            .unwrap_or(true);
+        if gone {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            scm_trace("wait_until_service_gone timed out");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 #[cfg(windows)]

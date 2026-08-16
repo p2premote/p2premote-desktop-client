@@ -121,6 +121,117 @@ pub async fn get_settings() -> Result<SettingsResponse, String> {
     })
 }
 
+/// HKCU Run 自启动项的（名称, 命令行）期望值：主程序 + notifier。
+#[cfg(windows)]
+fn expected_run_entries(app: &AppHandle) -> Result<[(&'static str, String); 2], String> {
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let notifier = notifier_executable(app)?;
+    Ok([
+        ("p2premote", format!("\"{}\"", exe_path.display())),
+        (
+            "p2premote-notifier",
+            format!("\"{}\" --agent", notifier.display()),
+        ),
+    ])
+}
+
+/// 开机自启对账（应用启动时调用）：HKCU Run 注册表项 + Windows 服务启动类型。
+///
+/// 重装/升级的卸载阶段会删除 HKCU Run 自启动项（Tauri NSIS 模板删主程序项、
+/// installer.nsh 的 PREUNINSTALL 删 notifier 项），也可能让 SCM 里的服务缺失或
+/// 丢失 AutoStart；而 auto_start 状态持久化在 data/config.json，默认跨安装保留
+/// ——出现"开关显示开启、实际不自启"的漂移。安装器 POSTINSTALL 会恢复；这里
+/// 兜底其余场景（安装器运行账户与桌面用户不一致、安装路径变化等）。
+#[cfg(windows)]
+pub async fn reconcile_auto_start_registry(app: &AppHandle) {
+    // 服务未安装时读不到 machine config（data 目录仅 SYSTEM/Admins 可读，只能走
+    // service IPC），对账无从谈起；做一次不弹 UAC 的直接安装尝试后退出。
+    match p2premote_core::service_control::query_service_status() {
+        Ok(status) if !status.installed => {
+            warn!("[config] 服务未安装，尝试直接重装服务");
+            try_setup_service_direct(app);
+            return;
+        }
+        Err(err) => {
+            warn!("[config] 自启对账跳过：查询服务状态失败：{}", err);
+            return;
+        }
+        _ => {}
+    }
+
+    // service 可能尚未就绪（刚开机/刚装完），带重试查询，总计约 60s。
+    let mut enabled = None;
+    for _ in 0..12 {
+        match crate::commands::service::send_command_responsive(Data::GetLoginPreferences).await {
+            Ok(Data::CommandResponse {
+                data: Some(data), ..
+            }) => {
+                enabled = data.get("auto_start").and_then(|value| value.as_bool());
+                break;
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
+        }
+    }
+    if enabled != Some(true) {
+        debug!("[config] 自启对账跳过：auto_start 未开启或查询失败");
+        return;
+    }
+
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let run_key = match hkcu.open_subkey_with_flags(
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+        KEY_SET_VALUE | KEY_QUERY_VALUE,
+    ) {
+        Ok(key) => key,
+        Err(err) => {
+            warn!("[config] 自启对账失败：无法打开 HKCU Run 键：{}", err);
+            return;
+        }
+    };
+    let entries = match expected_run_entries(app) {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!("[config] 自启对账失败：{}", err);
+            return;
+        }
+    };
+    for (name, command) in &entries {
+        let current: String = run_key.get_value(name).unwrap_or_default();
+        if current != *command {
+            match run_key.set_value(name, command) {
+                Ok(()) => info!("[config] 已修复开机自启注册表项 {} -> {}", name, command),
+                Err(err) => warn!("[config] 修复开机自启注册表项 {} 失败：{}", name, err),
+            }
+        }
+    }
+
+    // auto_start 开启但服务非 AutoStart（重装把启动类型冲掉等）→ 直接修复。
+    // 仅尝试 direct 路径（不弹 UAC）：普通非提权进程通常无 SCM 权限，失败即记日志，
+    // 主修复责任在安装器 POSTINSTALL。
+    match p2premote_core::service_control::query_service_status() {
+        Ok(status) if status.installed && !status.enabled => {
+            info!("[config] 服务非 AutoStart 但 auto_start 已开启，尝试直接修复");
+            try_setup_service_direct(app);
+        }
+        _ => {}
+    }
+}
+
+/// 尝试 install + enable + start 服务（direct-only，不触发 UAC）。
+#[cfg(windows)]
+fn try_setup_service_direct(app: &AppHandle) {
+    match crate::commands::service::resolve_service_executable(app) {
+        Ok(service_exe) => match p2premote_core::service_control::try_setup_direct(&service_exe) {
+            Ok(()) => info!("[config] 服务直接修复成功"),
+            Err(err) => warn!("[config] 服务直接修复失败（非提权进程无 SCM 权限属预期）：{}", err),
+        },
+        Err(err) => warn!("[config] 服务直接修复失败：{}", err),
+    }
+}
+
 fn set_service_auto_start(app: &AppHandle, enabled: bool) -> Result<(), String> {
     if enabled {
         let service_exe = crate::commands::service::resolve_service_executable(app)?;
@@ -216,20 +327,16 @@ pub async fn set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String>
         let previous_notifier_value = run_key.get_value::<String, _>(notifier_name).ok();
 
         if enabled {
-            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-            let exe_str = format!("\"{}\"", exe_path.display());
-            run_key.set_value(app_name, &exe_str).map_err(|e| {
-                crate::commands::localized(
-                    "errors.write_registry_failed",
-                    &[("reason", &e.to_string())],
-                )
-            })?;
-            let notifier = notifier_executable(&app)?;
-            let notifier_command = format!("\"{}\" --agent", notifier.display());
-            run_key.set_value(notifier_name, &notifier_command).map_err(|e| {
-                crate::commands::localized("errors.write_registry_failed", &[("reason", &e.to_string())])
-            })?;
-            info!("[config] 已注册开机自启: {}", exe_str);
+            let entries = expected_run_entries(&app)?;
+            for (name, command) in &entries {
+                run_key.set_value(name, command).map_err(|e| {
+                    crate::commands::localized(
+                        "errors.write_registry_failed",
+                        &[("reason", &e.to_string())],
+                    )
+                })?;
+            }
+            info!("[config] 已注册开机自启: {}", entries[0].1);
         } else {
             let _ = run_key.delete_value(app_name); // 不存在时不报错
             let _ = run_key.delete_value(notifier_name);

@@ -280,6 +280,16 @@ pub fn run() {
                 warn!("[p2premote] Failed to start notifier: {}", err);
             }
 
+            // 后台对账开机自启注册表：重装/升级后注册表项可能被卸载阶段清掉，
+            // 而 machine config 仍记录 auto_start=true。不阻塞启动。
+            #[cfg(windows)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::config::reconcile_auto_start_registry(&handle).await;
+                });
+            }
+
             let logout_item = MenuItem::with_id(app, "logout", "退出登录", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "完全关闭", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&logout_item, &quit_item])?;

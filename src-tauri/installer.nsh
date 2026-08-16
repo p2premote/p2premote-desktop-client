@@ -23,9 +23,54 @@
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Speed Test"'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote WGVPN Speed Test" dir=in action=allow protocol=UDP localport=48082 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-service.exe" profile=any enable=yes'
 
-  ; Install + enable(AutoStart) + start the service
-  ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm setup "$INSTDIR\resources\p2premote-service.exe"' $0
-  DetailPrint "p2premote-service setup exit code: $0"
+  ; Probe the persisted auto_start flag before touching the service.
+  ; The uninstall phase of a reinstall deletes the HKCU Run autostart entries
+  ; and the service itself, while data\config.json survives by default and only
+  ; stores non-default values (the key is present only when the user enabled it).
+  StrCpy $1 "unknown"
+  IfFileExists "$INSTDIR\data\config.json" 0 autorun_probed
+  ; Note: the trailing space is required — NSIS does not expand a $\" escape
+  ; that directly precedes the closing quote of the string.
+  nsExec::ExecToLog 'findstr /C:$\"\$\"auto_start\$\": true$\" $\"$INSTDIR\data\config.json$\" '
+  Pop $0
+  ${If} $0 = 0
+    StrCpy $1 "on"
+  ${Else}
+    StrCpy $1 "off"
+  ${EndIf}
+  autorun_probed:
+
+  ; Restore the HKCU Run autostart entries removed by the uninstall phase
+  ; (Tauri's template deletes the app entry, PREUNINSTALL deletes the notifier's).
+  ${If} $1 == "on"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "p2premote" '"$INSTDIR\p2premote.exe"'
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "p2premote-notifier" '"$INSTDIR\resources\p2premote-notifier.exe" --agent'
+    DetailPrint "Restored autostart registry entries (auto_start enabled)"
+  ${EndIf}
+
+  ; Install + enable(AutoStart) + start the service. Retry to survive the SCM
+  ; marked-for-delete window that the uninstall phase can leave behind; a failed
+  ; setup would otherwise leave the machine without the service after a reboot.
+  StrCpy $2 0
+  scm_setup_retry:
+    ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm setup "$INSTDIR\resources\p2premote-service.exe"' $0
+    ${If} $0 = 0
+      Goto scm_setup_done
+    ${EndIf}
+    IntOp $2 $2 + 1
+    ${If} $2 < 3
+      Sleep 2000
+      Goto scm_setup_retry
+    ${EndIf}
+  scm_setup_done:
+  DetailPrint "p2premote-service setup exit code: $0 (attempts: $2)"
+
+  ; Respect a persisted auto_start=off: setup force-enables AutoStart, so drop
+  ; the boot autostart again — a reinstall must not silently revert the choice.
+  ${If} $1 == "off"
+    ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm disable' $0
+    DetailPrint "p2premote-service disable exit code: $0"
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
