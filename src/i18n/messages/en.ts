@@ -161,7 +161,7 @@ const en = {
       title: 'Invite a friend',
       code_label: 'Invite code',
       link_label: 'Invite link',
-      tip: 'Share the invite link to fill the invite code automatically during registration.',
+      tip: 'When a friend registers with your invite code and logs in from the client for the first time, you both get 1 month of Pro. You can earn up to 20 invite rewards.',
       copy_code: 'Copy invite code',
       copy_link: 'Copy invite link',
     },

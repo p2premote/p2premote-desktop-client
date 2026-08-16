@@ -176,7 +176,7 @@ export default {
       title: '邀请好友',
       code_label: '邀请码',
       link_label: '邀请链接',
-      tip: '分享邀请链接后，注册页会自动填充邀请码。',
+      tip: '好友使用你的邀请码注册并首次登录客户端后，你们各获得 1 个月 Pro 会员；你最多可获得 20 次邀请奖励。',
       copy_code: '复制邀请码',
       copy_link: '复制邀请链接',
     },
