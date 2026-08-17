@@ -679,17 +679,18 @@ fn apply_machine_state(mut config: MachineConfig, state: MachineState) -> Machin
     config
 }
 
-/// 清除所有凭据：token/refresh/expires/user_email/device + remember_me/auto_login。
+/// 清除凭据：token/refresh/expires/user_email/device 绑定。
 ///
-/// 用于登出——确保登出后下次启动不会自动登录，符合"登出即忘记此设备凭据"的安全预期。
+/// 用于登出——token 必须清除，否则"登出"后仍可凭 refresh token 免密恢复会话。
+/// remember_me/auto_login 是用户对登录方式的偏好而非凭据，保留：
+/// 结束会话和清除偏好是两件事，静默重置偏好会让"记住密码/自动登录"
+/// 在用户无感知时失效；取消偏好只能由用户在登录页手动取消勾选。
 pub fn clear_machine_credentials(config: &mut MachineConfig) {
     config.auth_token = None;
     config.refresh_token = None;
     config.access_token_expires_at = None;
     config.user_email = None;
     config.device_id = None;
-    config.remember_me = false;
-    config.auto_login = false;
 }
 
 pub fn ensure_machine_config() -> Result<MachineConfig> {

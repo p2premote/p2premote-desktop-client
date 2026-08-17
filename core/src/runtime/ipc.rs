@@ -538,12 +538,14 @@ pub(super) async fn handle_data(
             Err(err) => Some(cmd_response(false, &err.to_string(), None)),
         },
         Data::TryAutoLogin => {
-            // 仅在用户开启自动登录时，用保存的 refresh token 恢复会话。
+            // 仅在用户开启自动登录且有保存的 refresh token 时恢复会话。
+            // 登出会保留"记住密码/自动登录"偏好（仅清除 token），此处对
+            // 无 token 的情况按 skip 处理而不是报错。
             let config = match load_config_or_err() {
                 Ok(c) => c,
                 Err(resp) => return Some(resp),
             };
-            if !config.remember_me || !config.auto_login {
+            if !config.remember_me || !config.auto_login || config.refresh_token.is_none() {
                 return Some(cmd_response_with_data(
                     true,
                     "skip",
@@ -594,7 +596,11 @@ pub(super) async fn handle_data(
                 Ok(c) => c,
                 Err(resp) => return Some(resp),
             };
-            config.user_email = Some(identifier);
+            // 登录页在未登录时也会持久化勾选偏好，此时 identifier 为空，
+            // 不能用它覆盖已有的登录标识。
+            if !identifier.trim().is_empty() {
+                config.user_email = Some(identifier);
+            }
             config.remember_me = remember_me;
             config.auto_login = auto_login;
             Some(response_from_result(save_machine_config(&config), |_| {
@@ -854,8 +860,9 @@ pub(super) async fn handle_data(
             cancel_all_active_tunnel_jobs(shared);
             cancel_all_wgvpn_jobs(shared).await;
             let mut config = load_machine_config().ok()?;
-            // 登出：清除全部凭据（token + 记住密码/自动登录标志），
-            // 确保下次启动不会自动登录，符合"登出即忘记此设备凭据"的安全预期。
+            // 登出：清除凭据（token/登录标识/设备绑定），下次启动不会自动登录。
+            // "记住密码/自动登录"是登录偏好，保留——静默清除会让用户的
+            // 无人值守配置在登出后失效。
             clear_machine_credentials(&mut config);
             save_machine_config(&config).ok()?;
             {

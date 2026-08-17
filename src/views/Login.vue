@@ -115,27 +115,58 @@ function restoreSavedPasswordSentinel() {
   }
 }
 
+// 回填阶段不触发持久化，避免把刚读到的值原样写回
+let hydratingPreferences = true
+
 watch(() => loginForm.rememberMe, (rememberMe) => {
   if (!rememberMe && isSavedPasswordSentinel.value) {
     loginForm.password = ''
   }
+  persistLoginPreferences()
+})
+
+watch(() => loginForm.autoLogin, () => {
+  persistLoginPreferences()
 })
 
 async function loadSavedLogin() {
   try {
     const saved = await invoke<{ identifier: string; auto_login: boolean } | null>('get_saved_login')
-    if (!saved) {
-      return
+    if (saved) {
+      loginForm.identifier = saved.identifier
+      loginForm.rememberMe = true
+      loginForm.autoLogin = saved.auto_login
+      hasSavedCredential.value = true
+      loginForm.password = SAVED_PASSWORD_SENTINEL
+    } else {
+      // 无已保存凭据（如曾登出）：按持久化的偏好回填勾选状态。
+      // 偏好在勾选时就已落盘，用户不需要每次登录前重新勾选。
+      const prefs = await invoke<{ remember_me: boolean; auto_login: boolean }>('get_settings')
+      loginForm.rememberMe = prefs.remember_me
+      loginForm.autoLogin = prefs.remember_me && prefs.auto_login
     }
-
-    loginForm.identifier = saved.identifier
-    loginForm.rememberMe = true
-    loginForm.autoLogin = saved.auto_login
-    hasSavedCredential.value = true
-    loginForm.password = SAVED_PASSWORD_SENTINEL
   } catch (error) {
     console.error('Failed to load saved login settings:', error)
+  } finally {
+    hydratingPreferences = false
   }
+}
+
+// 勾选状态即改即存：开机自启动的无人值守校验读取的是持久化偏好，
+// 若只在登录成功后才保存，"勾选了但没登录"的配置永远不生效。
+function persistLoginPreferences() {
+  if (hydratingPreferences) {
+    return
+  }
+  const rememberMe = loginForm.rememberMe
+  const autoLogin = rememberMe && loginForm.autoLogin
+  invoke('save_login_settings', {
+    identifier: loginForm.identifier.trim(),
+    rememberMe,
+    autoLogin
+  }).catch(error => {
+    console.warn('[Login] 保存登录偏好失败:', error)
+  })
 }
 
 async function canLoginWithCurrentVersion() {
