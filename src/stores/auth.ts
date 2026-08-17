@@ -141,6 +141,16 @@ export const useAuthStore = defineStore('auth', () => {
     deviceStore.resetDevices()
   }
 
+  // 启动恢复失败时的本地登出：仅清除 GUI 会话状态，不触发 service 的
+  // Data::Logout——后者会连带清除"记住密码/自动登录"与 refresh token，
+  // 一次瞬时的网络/服务端故障就会把用户的无人值守登录配置抹掉。
+  function resetSession() {
+    token.value = ''
+    userInfo.value = null
+    currentDevice.value = null
+    deviceStore.resetDevices()
+  }
+
   function setToken(newToken: string) {
     token.value = newToken
   }
@@ -162,6 +172,7 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     resumeSavedSession,
     logout,
+    resetSession,
     setToken,
     fetchUserInfo,
   }

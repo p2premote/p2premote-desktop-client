@@ -1234,7 +1234,9 @@ async function bootstrapApp() {
         await restoreServiceSession(token, '自动登录')
       } catch (e) {
         console.warn('[App] 自动登录后刷新用户信息失败，token 可能已失效:', e)
-        await authStore.logout()
+        // 瞬时网络/服务端故障不应清除"记住密码/自动登录"，仅回登录页，
+        // 下次启动仍可自动登录；凭据只有在用户显式登出时才清除。
+        authStore.resetSession()
         router.push('/login')
       }
     } else {
@@ -1248,7 +1250,7 @@ async function bootstrapApp() {
           await restoreServiceSession('__service_session__', '后台 service 已登录状态')
         } catch (e) {
           console.warn('[App] 后台 service 已登录，但恢复前端会话失败:', e)
-          await authStore.logout()
+          authStore.resetSession()
           router.push('/login')
         }
       }
