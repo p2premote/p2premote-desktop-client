@@ -387,8 +387,8 @@ export default {
       no_address: '隧道已建立，但暂未返回连接地址。',
       copy_address: '复制连接地址',
       result_hint: '默认地址按 RDP 端口生成，可直接用于 Windows 远程桌面。',
-      other_tool_hint_prefix: '如果你使用 VNC、RustDesk 等其他远程工具，可复制地址后把',
-      other_tool_hint_infix: '中的 3389 改成对应服务端口，例如 RustDesk改端口为',
+      other_tool_hint_prefix: '如果你使用 VNC、RustDesk 等其他远程工具，可复制地址后把端口 ',
+      other_tool_hint_infix: ' 改成对应服务端口，例如 RustDesk 直连端口为 ',
       other_tool_hint_suffix: '。',
     },
     status: {

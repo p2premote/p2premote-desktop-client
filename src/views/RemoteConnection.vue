@@ -120,8 +120,9 @@
         <p class="result-hint">{{ $t('remote.connect.result_hint') }}</p>
         <p class="result-hint">
           {{ $t('remote.connect.other_tool_hint_prefix') }}
-          <strong>-3389.gonc.cc</strong>
-          {{ $t('remote.connect.other_tool_hint_infix') }}<strong>3389</strong>{{ $t('remote.connect.other_tool_hint_suffix') }}<strong>21118</strong>。
+          <strong>{{ activeTunnelPort }}</strong>
+          {{ $t('remote.connect.other_tool_hint_infix') }}
+          <strong>21118</strong>{{ $t('remote.connect.other_tool_hint_suffix') }}
         </p>
       </div>
     </section>
@@ -219,6 +220,8 @@ const activeJobMessage = computed(() => {
   return `${prefix}${job.message || t('remote.progress.waiting_service_default')}`
 })
 const activeTunnelAddress = computed(() => activeJob.value?.result?.rdp_address || '')
+// 其他工具提示引用地址中的实际端口（设备自定义 RDP 端口时提示仍然准确）
+const activeTunnelPort = computed(() => activeTunnelAddress.value.split(':').pop() || '3389')
 
 const inviteInfoPlaceholder = computed(() =>
   `${t('remote.connect.invite_info_placeholder')}\n${t('remote.connect.invite_info_example')}`

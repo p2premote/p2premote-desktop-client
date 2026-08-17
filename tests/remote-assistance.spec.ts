@@ -551,4 +551,32 @@ test.describe('远程协助', () => {
     await expect(page.getByText('设备代码或临时密码错误')).toBeVisible()
     await expect(page.getByText('本次尝试失败，等待重试')).not.toBeVisible()
   })
+
+  test('隧道建立成功后其他工具提示引用地址中的实际端口', async ({ page }) => {
+    await openRemoteAssistance(page)
+
+    await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill('设备代码：428279225\n临时密码：123456')
+    await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
+    await expect(page.getByText('对方电脑', { exact: true })).toBeVisible()
+
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('p2p-active-tunnel-job-updated', {
+        detail: {
+          target_device_id: 22,
+          target_device_uuid: 'remote-uuid',
+          state: 'succeeded',
+          attempt: 1,
+          max_attempts: 30,
+          message: '隧道已自动建立成功',
+          updated_at: Date.now(),
+          result: { success: true, local_port: 0, rdp_address: '100.99.71.43:3390' },
+        },
+      }))
+    })
+
+    await expect(page.locator('.tunnel-result-card code')).toHaveText('100.99.71.43:3390')
+    const hint = page.locator('.tunnel-result-card .result-hint').nth(1)
+    await expect(hint).toContainText('把端口 3390 改成对应服务端口，例如 RustDesk 直连端口为 21118')
+    await expect(hint).not.toContainText('gonc.cc')
+  })
 })

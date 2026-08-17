@@ -365,8 +365,8 @@ const en = {
       no_address: 'The tunnel is established, but no connection address is available yet.',
       copy_address: 'Copy address',
       result_hint: 'The default address uses the RDP port and can be used directly with Windows Remote Desktop.',
-      other_tool_hint_prefix: 'For VNC, RustDesk, or another remote tool, copy the address and replace',
-      other_tool_hint_infix: 'port 3389 with the service port. For example, use this port for RustDesk:',
+      other_tool_hint_prefix: 'For VNC, RustDesk, or another remote tool, copy the address and replace port ',
+      other_tool_hint_infix: ' with the service port. The direct IP access port for RustDesk is ',
       other_tool_hint_suffix: '.',
     },
     status: {
