@@ -802,8 +802,18 @@ async fn refresh_network_info(shared: &Arc<Mutex<SharedRuntimeState>>) -> Result
     let public_ip_location =
         (!public_network.location.is_empty()).then(|| public_network.location.clone());
     if config.auth_token.is_some() && config.device_id.is_some() {
-        let status = collect_device_status_report(&mut config).await?;
-        send_device_status_report(&mut config, &status).await?;
+        // 状态上报是尽力而为：本地保存的凭据已失效（如自动登录的账号密码被改）
+        // 时上报必然失败，不应阻断网络信息刷新——启动预检继续走完后由
+        // try_auto_login 自然回落到登录页，周期心跳（maybe_report_device_status）
+        // 也会自行重试上报。
+        let report = async {
+            let status = collect_device_status_report(&mut config).await?;
+            send_device_status_report(&mut config, &status).await
+        }
+        .await;
+        if let Err(err) = report {
+            warn!("[ServiceRuntime] device status report failed: {}", err);
+        }
     }
     update_status(shared, |s| {
         s.public_ip = public_ip.clone();
