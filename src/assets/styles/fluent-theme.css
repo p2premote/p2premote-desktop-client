@@ -713,13 +713,26 @@ body,
     margin-left: 8px;
 }
 
-/* ===== Tooltip：圆角小箭头风格 ===== */
+/* ===== Tooltip：跟随主题的浮层样式（与其他弹出层一致的 Fluent 风格） ===== */
+/* EP 默认 effect="dark" 的浮层底色取自 --el-text-color-primary（浅色主题下近黑），
+ * 与浅色界面冲突。这里改用 Fluent 图层令牌，浅/深主题均能正确跟随。 */
 
 .el-popper.is-dark,
 .el-tooltip__popper {
+    --el-popper-bg-color-dark: var(--fluent-layer);
+    background: var(--fluent-layer);
+    color: var(--fluent-text-secondary);
+    border: 1px solid var(--fluent-stroke);
+    box-shadow: var(--fluent-shadow-flyout);
     border-radius: var(--fluent-radius-sm);
     font-size: 12px;
     padding: 4px 8px;
+}
+
+.el-popper.is-dark > .el-popper__arrow::before,
+.el-tooltip__popper > .el-popper__arrow::before {
+    background: var(--fluent-layer);
+    border: 1px solid var(--fluent-stroke);
 }
 
 /* ===== el-input 输入框：圆角对齐 ===== */
