@@ -1,6 +1,44 @@
 ; NSIS installer hooks for p2premote-service
 ; perMachine install mode runs as admin, no UAC needed
 
+; Overwrite-install convenience: a bare double-click of the setup exe on a
+; machine that already has p2pRemote skips the wizard and reruns itself with
+; /S /UPDATE /R (silent update, no WebView2 download, restart app as the
+; logged-in user after install). Fresh installs and launches that already
+; carry /S or /P (service- or app-triggered updates) keep their behavior.
+; This file is included before the template defines PRODUCTNAME and its Vars,
+; so the function below must not reference them: the registry key and binary
+; name are spelled out and must match tauri.conf.json
+; (productName=p2pRemote, mainBinaryName=p2premote, manufacturer=p2premote).
+!define MUI_CUSTOMFUNCTION_GUIINIT P2PRemoteAutoSilentUpdateInit
+
+Function P2PRemoteAutoSilentUpdateInit
+  ; .onGUIInit never runs in silent mode; guard anyway for future template changes.
+  IfSilent p2pr_asu_done
+
+  ; An explicit /P (passive, progress-only) already avoids the wizard.
+  ${GetOptions} $CMDLINE "/P" $R9
+  IfErrors p2pr_asu_check p2pr_asu_done
+
+  p2pr_asu_check:
+  ; The template records the install dir as the default value of
+  ; HKLM\Software\<manufacturer>\<productName> on every install.
+  ReadRegStr $0 HKLM "Software\p2premote\p2pRemote" ""
+  StrCmp $0 "" p2pr_asu_done
+  IfFileExists "$0\p2premote.exe" 0 p2pr_asu_done
+
+  ; Relaunch as silent updater; the child inherits this process's elevated
+  ; token, so no second UAC prompt appears.
+  StrCpy $R8 $EXEPATH
+  StrCpy $R9 $R8 1
+  StrCmp $R9 '"' +2 0
+  StrCpy $R8 '"$EXEPATH"'
+  Exec '$R8 /S /UPDATE /R'
+  Quit
+
+  p2pr_asu_done:
+FunctionEnd
+
 !macro NSIS_HOOK_PREINSTALL
   ; Stop existing processes before overwriting installed files.
   DetailPrint "Stopping existing p2pRemote processes..."
