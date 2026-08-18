@@ -689,6 +689,11 @@ async fn handle_web_command(
             let _ = dispatch_web_data(Data::SetLocale { locale }, state).await?;
             Ok(serde_json::Value::Null)
         }
+        "set_auto_start" => {
+            let enabled = arg_bool(&args, &["enabled"])
+                .ok_or_else(|| "missing boolean argument: enabled".to_string())?;
+            set_web_auto_start(enabled, state).await
+        }
         "check_update" => check_update_for_web().await,
         "register_by_email_code" => register_by_email_code_for_web(args).await,
         "send_registration_verification_code" => send_registration_verification_code_for_web(args).await,
@@ -959,6 +964,44 @@ async fn web_settings_value(state: &WebAdminState) -> Result<serde_json::Value, 
         "auto_login": data.get("auto_login").and_then(|value| value.as_bool()).unwrap_or(false),
         "version": client_version(),
     }))
+}
+
+/// 浏览器端设置开机自启：只切换服务自身的启动类型（Windows SCM AutoStart /
+/// Linux systemctl enable/disable），不涉及 GUI/notifier 的 HKCU Run 用户级自启项。
+/// 服务进程以 LocalSystem/root 运行，direct 调用本身已有足够权限；不能走
+/// runas 提权回退——服务会话内 UAC 弹窗不可见，只会挂起等待。
+fn set_service_auto_start_type(enabled: bool) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        if enabled {
+            crate::service_control::direct::enable_service()
+        } else {
+            crate::service_control::direct::disable_service()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if enabled {
+            crate::service_control::enable_service()
+        } else {
+            crate::service_control::disable_service()
+        }
+    }
+}
+
+async fn set_web_auto_start(
+    enabled: bool,
+    state: &WebAdminState,
+) -> Result<serde_json::Value, String> {
+    set_service_auto_start_type(enabled).map_err(|err| err.to_string())?;
+    if let Err(err) = dispatch_web_data(Data::SetAutoStartConfig { enabled }, state).await {
+        // 状态持久化失败则回滚服务启动类型，避免开关与实际自启状态漂移
+        if let Err(rollback) = set_service_auto_start_type(!enabled) {
+            error!("[WebAdmin] auto start rollback failed: {}", rollback);
+        }
+        return Err(err);
+    }
+    Ok(serde_json::Value::Null)
 }
 
 fn web_service_info() -> WebServiceInfo {
