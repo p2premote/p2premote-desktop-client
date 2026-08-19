@@ -339,6 +339,10 @@ pub async fn run_service_foreground() -> Result<()> {
         .unwrap_or(false);
     let (status_tx, _) = tokio::sync::broadcast::channel(STATUS_BROADCAST_CAPACITY);
     let shared = Arc::new(Mutex::new(SharedRuntimeState {
+        status: RuntimeStatus {
+            service_session_id: uuid::Uuid::new_v4().to_string(),
+            ..Default::default()
+        },
         status_tx: Some(status_tx),
         login_session_enabled: startup_login_enabled,
         ..Default::default()

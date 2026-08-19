@@ -128,7 +128,7 @@
         </div>
       </el-header>
 
-      <div v-if="!startupReady" class="startup-preflight">
+      <div v-if="!startupReady && showStartupPreflight" class="startup-preflight">
         <div class="preflight-card fluent-card">
           <AppLogo :size="42" />
           <h2>{{ $t('app.startup.preparing') }}</h2>
@@ -155,7 +155,7 @@
         </div>
       </div>
 
-      <div v-else-if="authStore.isLoggedIn" class="app-workspace">
+      <div v-else-if="startupReady && authStore.isLoggedIn" class="app-workspace">
         <aside class="function-sidebar no-drag">
           <button
             type="button"
@@ -198,7 +198,7 @@
         </el-main>
       </div>
 
-      <el-main v-else class="login-main no-drag">
+      <el-main v-else-if="startupReady" class="login-main no-drag">
         <router-view />
       </el-main>
     </el-container>
@@ -429,6 +429,7 @@ interface BackgroundServiceStatus {
     raw_state: string
   }
   runtime?: {
+    service_session_id?: string
     logged_in: boolean
     device_id?: number | null
     device_uuid?: string | null
@@ -493,6 +494,9 @@ const deviceStore = useDeviceStore()
 
 const autoStart = ref(false)
 const backgroundServiceStatus = ref<BackgroundServiceStatus | null>(null)
+const SERVICE_SESSION_STORAGE_KEY = 'p2premote-service-session-id'
+const cachedServiceSessionId = sessionStorage.getItem(SERVICE_SESSION_STORAGE_KEY)
+const showStartupPreflight = ref(!cachedServiceSessionId)
 const startupReady = ref(false)
 const startupRunning = ref(false)
 const startupProgress = ref(0)
@@ -594,6 +598,27 @@ async function runStartupPreflight(): Promise<boolean> {
   startupRunning.value = true
   startupProgress.value = 0
   startupError.value = ''
+
+  if (cachedServiceSessionId) {
+    try {
+      const status = await withTimeout(
+        invoke<BackgroundServiceStatus>('get_service_status'),
+        5_000,
+        t('app.startup_status.service_timeout')
+      )
+      if (
+        isServiceReady(status)
+        && status.runtime?.service_session_id === cachedServiceSessionId
+      ) {
+        backgroundServiceStatus.value = status
+        return true
+      }
+    } catch (error) {
+      console.warn('[App] warm service session resume failed, running full preflight:', error)
+    }
+    showStartupPreflight.value = true
+  }
+
   await setStartupStep(t('app.startup_status.verifying_files'), 0)
 
   try {
@@ -625,6 +650,7 @@ async function runStartupPreflight(): Promise<boolean> {
     return true
   } catch (error) {
     const message = normalizeError(error)
+    showStartupPreflight.value = true
     startupError.value = message
     await setStartupStep(t('app.startup_status.failed'))
     return false
@@ -1257,9 +1283,16 @@ async function bootstrapApp() {
     }
     await setStartupStep(t('app.startup_status.startup_complete'), 100)
     appBootstrapped = true
+    const serviceSessionId = backgroundServiceStatus.value?.runtime?.service_session_id
+    if (serviceSessionId) {
+      sessionStorage.setItem(SERVICE_SESSION_STORAGE_KEY, serviceSessionId)
+    } else {
+      sessionStorage.removeItem(SERVICE_SESSION_STORAGE_KEY)
+    }
     startupReady.value = true
   } catch (e) {
     console.error('[App] 启动检查失败:', e)
+    showStartupPreflight.value = true
     startupError.value = normalizeError(e)
     await setStartupStep(t('app.startup_status.failed'))
   }

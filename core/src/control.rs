@@ -175,6 +175,11 @@ pub enum Data {
 /// 运行时状态
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuntimeStatus {
+    /// Identifies the current background-service process lifetime. A new value
+    /// is generated on every service start so UIs can distinguish a page reload
+    /// from a service restart without persisting credentials.
+    #[serde(default)]
+    pub service_session_id: String,
     pub logged_in: bool,
     pub device_id: Option<i64>,
     pub device_uuid: Option<String>,
@@ -748,6 +753,7 @@ mod tests {
             ok: true,
             message: "ok".to_string(),
             status: Some(RuntimeStatus {
+                service_session_id: "service-session-1".to_string(),
                 logged_in: true,
                 device_id: Some(42),
                 device_uuid: Some("abc-123".to_string()),
