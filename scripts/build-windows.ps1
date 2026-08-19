@@ -75,6 +75,11 @@ $env:P2PREMOTE_PUNCH_DIR = (Resolve-Path -LiteralPath $punchSource).Path
 
 Push-Location $projectRoot
 try {
+    # node_modules 可能被 WSL/容器内的 Linux 构建重装为 Linux 版本，每次构建前先恢复 Windows 版本
+    & npm ci
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm ci failed with exit code $LASTEXITCODE"
+    }
     & npx tauri build
     if ($LASTEXITCODE -ne 0) {
         throw "tauri build failed with exit code $LASTEXITCODE"
