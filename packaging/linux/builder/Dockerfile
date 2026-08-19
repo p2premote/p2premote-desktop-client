@@ -1,48 +1,52 @@
 #
-# Native Linux headless builder ABI baseline: Ubuntu 16.04 / glibc 2.23.
+# Native Linux headless builder ABI baseline: Debian 10 (buster) / glibc 2.28.
+# Node 22 official binaries require GLIBC_2.28+ (Ubuntu 18.04 / glibc 2.27 is
+# NOT enough — verified empirically), so buster is the lowest Debian/Ubuntu
+# base on which the whole toolchain (Node 22 + Rust + Go + musl) runs natively
+# and the complete client, including the web UI, builds inside the image.
 # Build each target platform natively or through Buildx QEMU; do not copy host
 # toolchains into this image, otherwise their glibc baseline leaks into output.
-FROM ubuntu:16.04
+FROM debian:10
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG http_proxy
 ARG https_proxy
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
-ARG GO_VERSION=1.24.4
+ARG GO_VERSION=1.25.13
+ARG NODE_VERSION=22.22.1
 
+# p2premote-punch 的 go.mod 要求 go 1.25，镜像必须内置 ≥1.25 的工具链，
+# 否则 go build 会在运行期临时下载 toolchain（网络不稳定时构建直接失败）。
 ENV http_proxy=${http_proxy} \
     https_proxy=${https_proxy} \
     HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
+    GOPROXY=https://goproxy.cn,direct \
     CARGO_HOME=/opt/rust/cargo \
     RUSTUP_HOME=/opt/rust/rustup \
     PATH=/opt/rust/cargo/bin:/usr/local/go/bin:${PATH}
 
+# buster left LTS support, so its packages live on the Debian archive
+# (mirrored by Aliyun for mainland China). The archive is frozen and its
+# Release metadata outdates, hence the relaxed Valid-Until check.
 COPY sources.list /tmp/sources.list
-
-# Xenial's base APT image has no HTTPS transport. Bootstrap it from the same
-# Aliyun mirror over HTTP, then restore the HTTPS-only source list above.
-# Aliyun hosts ARM64 packages under ubuntu-ports rather than ubuntu.
-RUN case "$(uname -m)" in \
-        x86_64) cp /tmp/sources.list /tmp/selected-sources.list ;; \
-        aarch64) sed 's|mirrors.aliyun.com/ubuntu/|mirrors.aliyun.com/ubuntu-ports/|g' \
-            /tmp/sources.list > /tmp/selected-sources.list ;; \
-        *) echo "Unsupported target architecture: $(uname -m)" >&2; exit 1 ;; \
-    esac \
-    && sed 's|https://|http://|g' /tmp/selected-sources.list > /etc/apt/sources.list \
+RUN cp /tmp/sources.list /etc/apt/sources.list \
+    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99-debian-archive \
     && apt-get -o Acquire::ForceIPv4=true update \
-    && apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
-        apt-transport-https \
-        ca-certificates \
-    && cp /tmp/selected-sources.list /etc/apt/sources.list
-
-RUN apt-get -o Acquire::ForceIPv4=true update \
     && apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
         build-essential \
         linux-libc-dev \
         musl-tools \
         pkg-config \
+        cmake \
+        curl \
+        file \
+        git \
+        make \
+        perl \
+        xz-utils \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # musl-tools exposes only the generic musl-gcc name. Publish an explicit
@@ -53,20 +57,11 @@ RUN case "$(uname -m)" in \
         *) echo "Unsupported target architecture: $(uname -m)" >&2; exit 1 ;; \
     esac
 
-RUN apt-get -o Acquire::ForceIPv4=true update \
-    && apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
-        cmake \
-        curl \
-        file \
-        git \
-        make \
-        perl \
-        xz-utils \
-    && rm -rf /var/lib/apt/lists/*
-
+# Go and Node.js come from upstream tarballs into /usr/local; the frozen
+# archive packages are far below the toolchain versions this project needs.
 RUN case "$(uname -m)" in \
-        x86_64) go_arch=amd64 ;; \
-        aarch64) go_arch=arm64 ;; \
+        x86_64) go_arch=amd64; node_arch=x64 ;; \
+        aarch64) go_arch=arm64; node_arch=arm64 ;; \
         *) echo "Unsupported target architecture: $(uname -m)" >&2; exit 1 ;; \
     esac \
     && curl --fail --location --retry 3 \
@@ -74,12 +69,23 @@ RUN case "$(uname -m)" in \
         -o /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz \
-    && go version
+    && curl --fail --location --retry 3 \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+        -o /tmp/node.tar.xz \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.xz \
+    && go version \
+    && node --version \
+    && npm --version
 
 RUN curl --fail --location --retry 3 https://sh.rustup.rs -o /tmp/rustup-init.sh \
     && sh /tmp/rustup-init.sh -y --profile minimal \
     && rm /tmp/rustup-init.sh \
     && rustc --version \
     && cargo --version
+
+# 构建期通过 --build-arg http_proxy 等传入的代理只用于下载工具链，
+# 不固化进运行期环境，保证镜像在任意网络下都可复用。
+ENV http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY=
 
 WORKDIR /workspace

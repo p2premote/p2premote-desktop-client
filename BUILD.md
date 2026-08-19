@@ -38,7 +38,7 @@ src-tauri\target\release\bundle\nsis\
 ./scripts/build-linux-headless.sh -v 1.6.4
 ```
 
-需要 Node.js 22 或更高版本、npm、Rust、Go、C/C++ 编译工具链和与主机架构匹配的 `x86_64-linux-musl-gcc` 或 `aarch64-linux-musl-gcc`。产物位于：
+本机只需要 Docker：脚本会自动在 Debian 10 / glibc 2.28 基线的 builder 容器（`p2premote-linux-builder:glibc2.28-<arch>`）内完成全部编译，产物 glibc 依赖固定为 GLIBC_2.28，不受宿主机环境影响；宿主机工具链不参与编译。首次运行会自动构建 builder 镜像，工具链下载较慢时可设置 `P2PREMOTE_BUILDER_PROXY=http://<proxy>` 加速。产物位于：
 
 ```text
 build/linux/dist/headless/p2premote-headless_<version>-<git-sha>_x86_64-linux-gnu.tar.gz
@@ -58,22 +58,15 @@ build/linux/dist/headless/p2premote-headless_<version>-<git-sha>_x86_64-linux-gn
 build/linux/dist/headless/p2premote-headless_<version>-<git-sha>_aarch64-linux-gnu.tar.gz
 ```
 
-当前脚本根据 `uname -m` 选择架构；它不会在 x86_64 主机上自动把完整 Headless 客户端交叉编译成 aarch64。`packaging/linux/builder/` 中的 Ubuntu 16/glibc 2.23 镜像可用于准备对应架构的编译环境，但完整打包仍应在对应架构环境中执行或先接入专用 Docker 构建流程。
+当前脚本根据 `uname -m` 选择架构；它不会在 x86_64 主机上自动把完整 Headless 客户端交叉编译成 aarch64。aarch64 包需在 aarch64 主机或环境上执行同一条命令，脚本会使用对应架构的 builder 容器（glibc2.28-arm64）。
+
+builder 镜像基于 Debian 10 (buster) / glibc 2.28，内置 Node 22、Rust、Go 1.25 与 musl 工具链，产物（包括浏览器管理 UI）全部在容器内编译。基线选择依据：Node 22 官方二进制要求 GLIBC_2.28+（Ubuntu 18.04 / glibc 2.27 无法运行），Debian 10 是能承载完整工具链的最低 Debian/Ubuntu 版本；buster 已过 LTS，apt 源指向阿里云 debian-archive 冻结仓库。
 
 Linux 构建脚本要求架构和编译器严格匹配；缺少目标架构工具链、产物不存在或产物架构不匹配时会直接失败，不会回退到宿主架构或其他 tar 包。
 
-在 Ubuntu 16/glibc 2.23 builder 中，官方 Node 22 二进制的 glibc 要求高于基线，因此前端需要先在 Node.js 22 环境构建一次，再在 builder 中复用 `dist` 完成 ARM 原生构建：
+脚本自动完成容器编排：宿主机缺少镜像时先自动 `docker build`（可用 `P2PREMOTE_BUILDER_PROXY=http://<proxy>` 加速工具链下载），然后把整个 p2premote-all 挂载到 `/workspace`，并用命名卷缓存 cargo target/registry、npm 与 Go 模块和构建缓存，重复构建只做增量编译。挂载仓库的属主与容器 root 不同时 git 会拒绝操作，脚本已在容器内自动执行 `git config --global --add safe.directory '*'` 放行。
 
-```bash
-# 在 Node.js 22 环境中执行
-npm ci
-npm run build
-
-# 切换到 Ubuntu 16/glibc 2.23 aarch64 builder 后执行
-P2PREMOTE_SKIP_WEB_BUILD=1 ./scripts/build-linux-headless.sh -v 1.6.4
-```
-
-`P2PREMOTE_SKIP_WEB_BUILD=1` 只跳过前端编译，仍会重新编译 punch、wireguard、Rust service/CLI，并把已有的 `dist` 打入包中。
+`P2PREMOTE_SKIP_WEB_BUILD=1 ./scripts/build-linux-headless.sh -v 1.6.4` 仍可用于复用已构建好的 `dist`（在容器内同样生效）：它只跳过前端编译，仍会重新编译 punch、wireguard、Rust service/CLI，并把已有的 `dist` 打入包中。
 
 ## 4. Linux Headless Docker x86_64
 

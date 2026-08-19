@@ -73,6 +73,56 @@ case "$(uname -m)" in
     ;;
 esac
 
+# Headless 产物必须携带固定的 glibc 基线（Debian 10 / GLIBC_2.28），
+# 因此编译一律在 builder 容器内完成；本机环境只提供源码和 Docker，
+# 不允许用宿主机工具链直接编译。已在容器内时跳过本段。
+if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker is required: the headless package must be built inside the" >&2
+    echo "p2premote-linux-builder container to pin its glibc baseline." >&2
+    exit 1
+  fi
+  if [[ "$(basename "$REPO_ROOT")" != "p2premote-desktop-client" ]]; then
+    echo "Repository directory must be named p2premote-desktop-client (found $(basename "$REPO_ROOT")) so it can be mounted into the builder container." >&2
+    exit 1
+  fi
+
+  BUILDER_IMAGE="p2premote-linux-builder:glibc2.28-${LINUX_ARCH}"
+  if ! docker image inspect "$BUILDER_IMAGE" >/dev/null 2>&1; then
+    echo "==> Builder image $BUILDER_IMAGE not found; building it first (one-time)"
+    PROXY_ARGS=()
+    if [[ -n "${P2PREMOTE_BUILDER_PROXY:-}" ]]; then
+      PROXY_ARGS=(--build-arg "http_proxy=${P2PREMOTE_BUILDER_PROXY}"
+        --build-arg "https_proxy=${P2PREMOTE_BUILDER_PROXY}"
+        --build-arg "HTTP_PROXY=${P2PREMOTE_BUILDER_PROXY}"
+        --build-arg "HTTPS_PROXY=${P2PREMOTE_BUILDER_PROXY}")
+    fi
+    docker build -t "$BUILDER_IMAGE" ${PROXY_ARGS+"${PROXY_ARGS[@]}"} "$APP_DIR/packaging/linux/builder"
+  fi
+
+  RUN_ENV=(-e "P2PREMOTE_IN_BUILDER_CONTAINER=1")
+  if [[ "${P2PREMOTE_SKIP_WEB_BUILD:-0}" == "1" ]]; then
+    RUN_ENV+=(-e "P2PREMOTE_SKIP_WEB_BUILD=1")
+  fi
+  if [[ -n "${P2PREMOTE_BUILDER_PROXY:-}" ]]; then
+    RUN_ENV+=(-e "http_proxy=${P2PREMOTE_BUILDER_PROXY}" -e "https_proxy=${P2PREMOTE_BUILDER_PROXY}")
+  fi
+
+  WORKSPACE_DIR="$(cd "$REPO_ROOT/.." && pwd)"
+  echo "==> Building inside $BUILDER_IMAGE (glibc 2.28 baseline, cached toolchains in volumes)"
+  exec docker run --rm \
+    -v "$WORKSPACE_DIR:/workspace" \
+    -v "p2p-cargo-target-${LINUX_ARCH}:/workspace/p2premote-desktop-client/target" \
+    -v p2p-cargo-registry:/opt/rust/cargo/registry \
+    -v p2p-npm-cache:/root/.npm \
+    -v p2p-go-mod:/root/go \
+    -v p2p-go-build:/root/.cache/go-build \
+    -w /workspace/p2premote-desktop-client \
+    "${RUN_ENV[@]}" \
+    "$BUILDER_IMAGE" \
+    bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}'"
+fi
+
 if [[ ! -d "$PUNCH_SOURCE_DIR" ]]; then
   echo "p2premote-punch source directory not found: $PUNCH_SOURCE_DIR" >&2
   exit 1
