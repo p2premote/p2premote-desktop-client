@@ -17,6 +17,23 @@ fi
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
+for required_file in \
+  p2premote-service \
+  p2premote-cli \
+  wireguard-go \
+  wg \
+  .p2premote_default.json; do
+  if [ ! -f "$SCRIPT_DIR/resources/$required_file" ]; then
+    echo "missing required file: $SCRIPT_DIR/resources/$required_file" >&2
+    exit 1
+  fi
+done
+
+if [ ! -d "$SCRIPT_DIR/resources/web" ]; then
+  echo "missing required directory: $SCRIPT_DIR/resources/web" >&2
+  exit 1
+fi
+
 mkdir -p "$INSTALL_ROOT/resources" "$INSTALL_ROOT/data" "$INSTALL_ROOT/logs" "$INSTALL_ROOT/run" "$INSTALL_ROOT/systemd"
 
 copy_file() {
@@ -30,6 +47,11 @@ copy_file() {
   cp "$src" "$dst"
   chmod "$mode" "$dst"
 }
+
+if systemctl is-active --quiet "$SERVICE_NAME"; then
+  echo "Stopping running ${SERVICE_NAME} before installation..."
+  systemctl stop "$SERVICE_NAME"
+fi
 
 copy_file "$SCRIPT_DIR/resources/p2premote-service" "$INSTALL_ROOT/resources/p2premote-service" 755
 copy_file "$SCRIPT_DIR/resources/p2premote-cli" "$INSTALL_ROOT/resources/p2premote-cli" 755
