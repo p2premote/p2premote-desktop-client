@@ -277,6 +277,13 @@ fn session_cookie(headers: &HeaderMap) -> Option<&str> {
         .find_map(|part| part.strip_prefix(&format!("{}=", WEB_SESSION_COOKIE)))
 }
 
+fn session_cookie_value(token: &str, max_age: u64) -> String {
+    format!(
+        "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+        WEB_SESSION_COOKIE, token, max_age
+    )
+}
+
 pub(super) fn spawn_web_admin_server(shared: Arc<Mutex<SharedRuntimeState>>, wake: Arc<Notify>) {
     tokio::spawn(async move {
         if !load_machine_config().unwrap_or_default().webui_enabled {
@@ -541,12 +548,12 @@ async fn web_auth_unlock(
         created_at: now,
         last_active_at: now,
     });
-    let cookie = format!(
-        "{}={}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={}",
-        WEB_SESSION_COOKIE,
-        token,
-        WEB_SESSION_MAX_AGE.as_secs()
-    );
+    // The Web UI is currently served over plain HTTP. A `Secure` cookie is
+    // rejected by browsers for remote HTTP origins, which makes a successful
+    // unlock immediately appear unauthenticated. Keep the cookie inaccessible
+    // to scripts and same-site only; remote deployments should remain on a
+    // trusted network or behind an encrypted tunnel as documented in the UI.
+    let cookie = session_cookie_value(&token, WEB_SESSION_MAX_AGE.as_secs());
     let mut response = Json(serde_json::json!({ "ok": true })).into_response();
     if let Ok(value) = cookie.parse() {
         response.headers_mut().insert(header::SET_COOKIE, value);
@@ -781,10 +788,7 @@ async fn web_auth_logout(
         state.security.remove_session(token);
     }
     let mut response = Json(serde_json::json!({ "ok": true })).into_response();
-    let cookie = format!(
-        "{}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
-        WEB_SESSION_COOKIE
-    );
+    let cookie = session_cookie_value("", 0);
     if let Ok(value) = cookie.parse() {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
@@ -1539,6 +1543,14 @@ mod tests {
             HeaderValue::from_str(uri.authority().unwrap().as_str()).unwrap(),
         );
         headers
+    }
+
+    #[test]
+    fn http_web_session_cookie_is_accepted_by_remote_browsers() {
+        let cookie = session_cookie_value("token", WEB_SESSION_MAX_AGE.as_secs());
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(!cookie.contains("Secure"));
     }
 
     #[test]
