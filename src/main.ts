@@ -17,6 +17,7 @@ import { ElLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElPopover } from 'element-plus/es/components/popover/index.mjs'
 import { ElProgress } from 'element-plus/es/components/progress/index.mjs'
+import { ElRadio, ElRadioGroup } from 'element-plus/es/components/radio/index.mjs'
 import { ElSwitch } from 'element-plus/es/components/switch/index.mjs'
 import { ElTag } from 'element-plus/es/components/tag/index.mjs'
 import { ElTooltip } from 'element-plus/es/components/tooltip/index.mjs'
@@ -53,6 +54,8 @@ for (const component of [
   ElOption,
   ElPopover,
   ElProgress,
+  ElRadio,
+  ElRadioGroup,
   ElSelect,
   ElSwitch,
   ElTag,
