@@ -16,6 +16,9 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CONFIG_PATH="$INSTALL_ROOT/data/config.json"
+SHOW_DEFAULT_SECURITY_CODE=0
+INITIALIZE_DEFAULT_SECURITY_CODE=0
 
 for required_file in \
   p2premote-service \
@@ -35,6 +38,19 @@ if [ ! -d "$SCRIPT_DIR/resources/web" ]; then
 fi
 
 mkdir -p "$INSTALL_ROOT/resources" "$INSTALL_ROOT/data" "$INSTALL_ROOT/logs" "$INSTALL_ROOT/run" "$INSTALL_ROOT/systemd"
+
+if [ ! -e "$CONFIG_PATH" ]; then
+  cat > "$CONFIG_PATH" <<'EOF'
+{
+  "web_admin_security_code": "0000",
+  "web_admin_security_code_must_change": true
+}
+EOF
+  chmod 600 "$CONFIG_PATH"
+  SHOW_DEFAULT_SECURITY_CODE=1
+elif ! grep -Eq '"web_admin_security_code"[[:space:]]*:[[:space:]]*"[^"]+"' "$CONFIG_PATH"; then
+  INITIALIZE_DEFAULT_SECURITY_CODE=1
+fi
 
 copy_file() {
   src="$1"
@@ -58,6 +74,12 @@ copy_file "$SCRIPT_DIR/resources/p2premote-cli" "$INSTALL_ROOT/resources/p2premo
 copy_file "$SCRIPT_DIR/resources/wireguard-go" "$INSTALL_ROOT/resources/wireguard-go" 755
 copy_file "$SCRIPT_DIR/resources/wg" "$INSTALL_ROOT/resources/wg" 755
 copy_file "$SCRIPT_DIR/resources/.p2premote_default.json" "$INSTALL_ROOT/resources/.p2premote_default.json" 644
+
+if [ "$INITIALIZE_DEFAULT_SECURITY_CODE" = "1" ]; then
+  "$INSTALL_ROOT/resources/p2premote-cli" config set web_admin_security_code 0000
+  "$INSTALL_ROOT/resources/p2premote-cli" config set web_admin_security_code_must_change true
+  SHOW_DEFAULT_SECURITY_CODE=1
+fi
 
 rm -rf "$INSTALL_ROOT/resources/web"
 mkdir -p "$INSTALL_ROOT/resources/web"
@@ -89,3 +111,6 @@ systemctl restart "$SERVICE_NAME"
 
 echo "p2pRemote service installed and started."
 echo "Web UI: http://127.0.0.1:48083/"
+if [ "$SHOW_DEFAULT_SECURITY_CODE" = "1" ]; then
+  echo "Default Web security code: 0000 (must be changed on first sign-in)"
+fi

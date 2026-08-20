@@ -1,7 +1,7 @@
 // ---- 浏览器管理服务（默认 http://127.0.0.1:48083）----
 
 use super::{handle_data, SharedRuntimeState};
-use crate::config::load_machine_config;
+use crate::config::{load_machine_config, save_machine_config};
 use crate::control::{Data, RuntimeStatus};
 use crate::service_control::query_service_status;
 use anyhow::{Context, Result};
@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
@@ -45,11 +46,13 @@ struct WebAdminState {
     shared: Arc<Mutex<SharedRuntimeState>>,
     wake: Arc<Notify>,
     security: Arc<WebSecurityState>,
+    listener_revision: watch::Sender<u64>,
 }
 
 struct WebSecurityState {
     allowed_remote_ip: Option<IpAddr>,
-    security_code_hash: Option<[u8; 32]>,
+    security_code_hash: Mutex<Option<[u8; 32]>>,
+    security_code_must_change: AtomicBool,
     session: Mutex<Option<WebSession>>,
     session_revision: watch::Sender<u64>,
     failures: Mutex<HashMap<IpAddr, UnlockFailure>>,
@@ -72,10 +75,26 @@ struct WebUnlockRequest {
     security_code: String,
 }
 
+#[derive(Deserialize)]
+struct WebChangeSecurityCodeRequest {
+    #[serde(default)]
+    current_security_code: Option<String>,
+    new_security_code: String,
+}
+
+#[derive(Deserialize)]
+struct WebAccessConfigRequest {
+    mode: String,
+    #[serde(default)]
+    allowed_ip: Option<String>,
+}
+
 #[derive(Serialize)]
 struct WebAuthStatus {
     authenticated: bool,
     security_code_required: bool,
+    security_code_change_required: bool,
+    source_ip: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,10 +130,15 @@ impl WebSecurityState {
         Self::from_values(
             config.web_admin_allowed_ip.as_deref(),
             config.web_admin_security_code.as_deref(),
+            config.web_admin_security_code_must_change,
         )
     }
 
-    fn from_values(allowed_remote_ip: Option<&str>, security_code: Option<&str>) -> Result<Self> {
+    fn from_values(
+        allowed_remote_ip: Option<&str>,
+        security_code: Option<&str>,
+        security_code_must_change: bool,
+    ) -> Result<Self> {
         let allowed_remote_ip = allowed_remote_ip
             .map(str::trim)
             .map(ToOwned::to_owned)
@@ -147,7 +171,10 @@ impl WebSecurityState {
         let (session_revision, _) = watch::channel(0);
         Ok(Self {
             allowed_remote_ip,
-            security_code_hash: security_code.as_deref().map(hash_security_code),
+            security_code_hash: Mutex::new(security_code.as_deref().map(hash_security_code)),
+            security_code_must_change: AtomicBool::new(
+                security_code.is_some() && security_code_must_change,
+            ),
             session: Mutex::new(None),
             session_revision,
             failures: Mutex::new(HashMap::new()),
@@ -158,7 +185,8 @@ impl WebSecurityState {
         let (session_revision, _) = watch::channel(0);
         Self {
             allowed_remote_ip: None,
-            security_code_hash: None,
+            security_code_hash: Mutex::new(None),
+            security_code_must_change: AtomicBool::new(false),
             session: Mutex::new(None),
             session_revision,
             failures: Mutex::new(HashMap::new()),
@@ -171,7 +199,7 @@ impl WebSecurityState {
     }
 
     fn session_valid(&self, headers: &HeaderMap, source_ip: IpAddr, refresh: bool) -> bool {
-        if self.security_code_hash.is_none() {
+        if self.security_code_hash.lock().is_none() {
             return source_ip.is_loopback();
         }
         let Some(token) = session_cookie(headers) else {
@@ -217,6 +245,12 @@ impl WebSecurityState {
                 .send_modify(|revision| *revision = revision.wrapping_add(1));
         }
     }
+
+    fn clear_session(&self) {
+        self.session.lock().take();
+        self.session_revision
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
 }
 
 fn hash_security_code(code: &str) -> [u8; 32] {
@@ -249,29 +283,42 @@ pub(super) fn spawn_web_admin_server(shared: Arc<Mutex<SharedRuntimeState>>, wak
             info!("[WebAdmin] listener disabled by webui_enabled=false");
             return;
         }
-        let security = match WebSecurityState::from_config() {
-            Ok(security) => Arc::new(security),
-            Err(err) => {
-                error!(
-                    "[WebAdmin] invalid security configuration: {}; remote access disabled",
-                    err
-                );
-                Arc::new(WebSecurityState::localhost_only())
+        let (listener_revision, _) = watch::channel(0_u64);
+        loop {
+            let security = match WebSecurityState::from_config() {
+                Ok(security) => Arc::new(security),
+                Err(err) => {
+                    error!(
+                        "[WebAdmin] invalid security configuration: {}; remote access disabled",
+                        err
+                    );
+                    Arc::new(WebSecurityState::localhost_only())
+                }
+            };
+            let revision_rx = listener_revision.subscribe();
+            if let Err(err) = web_admin_server_loop(
+                WebAdminState {
+                    shared: shared.clone(),
+                    wake: wake.clone(),
+                    security,
+                    listener_revision: listener_revision.clone(),
+                },
+                revision_rx,
+            )
+            .await
+            {
+                error!("[WebAdmin] {}", err);
+                return;
             }
-        };
-        if let Err(err) = web_admin_server_loop(WebAdminState {
-            shared,
-            wake,
-            security,
-        })
-        .await
-        {
-            error!("[WebAdmin] {}", err);
+            info!("[WebAdmin] listener configuration changed; rebinding");
         }
     });
 }
 
-async fn web_admin_server_loop(state: WebAdminState) -> Result<()> {
+async fn web_admin_server_loop(
+    state: WebAdminState,
+    mut revision_rx: watch::Receiver<u64>,
+) -> Result<()> {
     let web_dir = resolve_web_ui_dir();
     let index_file = web_dir.join("index.html");
     let app = Router::new()
@@ -282,6 +329,12 @@ async fn web_admin_server_loop(state: WebAdminState) -> Result<()> {
             post(web_auth_unlock).layer(DefaultBodyLimit::max(1024)),
         )
         .route("/api/web-auth/logout", post(web_auth_logout))
+        .route(
+            "/api/web-auth/change-security-code",
+            post(web_auth_change_security_code).layer(DefaultBodyLimit::max(1024)),
+        )
+        .route("/api/web-admin/settings", get(web_admin_settings))
+        .route("/api/web-admin/access", post(web_admin_update_access))
         .route("/api/events", get(web_events))
         .route("/api/invoke/{command}", post(web_invoke))
         .fallback_service(ServeDir::new(&web_dir).fallback(ServeFile::new(index_file)))
@@ -301,7 +354,7 @@ async fn web_admin_server_loop(state: WebAdminState) -> Result<()> {
             .allowed_remote_ip
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| "disabled".to_string()),
-        if state.security.security_code_hash.is_some() {
+        if state.security.security_code_hash.lock().is_some() {
             "enabled"
         } else {
             "disabled"
@@ -314,6 +367,9 @@ async fn web_admin_server_loop(state: WebAdminState) -> Result<()> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(async move {
+        let _ = revision_rx.changed().await;
+    })
     .await
     .context("web admin server failed")
 }
@@ -414,10 +470,15 @@ async fn web_auth_status(
     headers: HeaderMap,
     State(state): State<WebAdminState>,
 ) -> Json<WebAuthStatus> {
-    let required = state.security.security_code_hash.is_some();
+    let required = state.security.security_code_hash.lock().is_some();
     Json(WebAuthStatus {
         authenticated: !required || state.security.session_valid(&headers, peer.ip(), false),
         security_code_required: required,
+        security_code_change_required: state
+            .security
+            .security_code_must_change
+            .load(Ordering::Acquire),
+        source_ip: normalize_ip(peer.ip()).to_string(),
     })
 }
 
@@ -431,7 +492,7 @@ async fn web_auth_unlock(
         return StatusCode::FORBIDDEN.into_response();
     }
     let source_ip = normalize_ip(peer.ip());
-    let Some(expected) = state.security.security_code_hash else {
+    let Some(expected) = *state.security.security_code_hash.lock() else {
         return Json(serde_json::json!({ "ok": true })).into_response();
     };
     let now = Instant::now();
@@ -493,6 +554,221 @@ async fn web_auth_unlock(
     response
 }
 
+async fn web_auth_change_security_code(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    State(state): State<WebAdminState>,
+    Json(request): Json<WebChangeSecurityCodeRequest>,
+) -> Response {
+    if !web_origin_allowed(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !state.security.session_valid(&headers, peer.ip(), true) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let must_change = state
+        .security
+        .security_code_must_change
+        .load(Ordering::Acquire);
+    let current_hash = *state.security.security_code_hash.lock();
+    if !must_change {
+        let Some(current_security_code) = request.current_security_code.as_deref() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "ok": false, "error": "current_security_code_required" })),
+            )
+                .into_response();
+        };
+        let provided = hash_security_code(current_security_code.trim());
+        if !current_hash.is_some_and(|current| current.ct_eq(&provided).unwrap_u8() == 1) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "ok": false, "error": "invalid_current_security_code" })),
+            )
+                .into_response();
+        }
+    }
+
+    let security_code = request.new_security_code.trim();
+    if security_code.len() < 4 || security_code.len() > 256 || security_code == "0000" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": "invalid_new_security_code" })),
+        )
+            .into_response();
+    }
+    let new_hash = hash_security_code(security_code);
+    if current_hash.is_some_and(|current| current.ct_eq(&new_hash).unwrap_u8() == 1)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": "security_code_unchanged" })),
+        )
+            .into_response();
+    }
+
+    let mut config = match load_machine_config() {
+        Ok(config) => config,
+        Err(err) => {
+            error!("[WebAdmin] failed to load config while changing security code: {err}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    config.web_admin_security_code = Some(security_code.to_string());
+    config.web_admin_security_code_must_change = false;
+    if let Err(err) = save_machine_config(&config) {
+        error!("[WebAdmin] failed to save changed security code: {err}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    *state.security.security_code_hash.lock() = Some(new_hash);
+    state
+        .security
+        .security_code_must_change
+        .store(false, Ordering::Release);
+    state.security.clear_session();
+    info!(
+        "[WebAdmin] security code changed, source_ip={}",
+        normalize_ip(peer.ip())
+    );
+    Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+async fn web_admin_settings(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    State(state): State<WebAdminState>,
+) -> Response {
+    if !state.security.session_valid(&headers, peer.ip(), true) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let config = match load_machine_config() {
+        Ok(config) => config,
+        Err(err) => {
+            error!("[WebAdmin] failed to load Web access settings: {err}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let allowed_ip = config
+        .web_admin_allowed_ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    Json(serde_json::json!({
+        "mode": if allowed_ip.is_some() { "remote" } else { "local" },
+        "allowed_ip": allowed_ip,
+        "listen_addr": if allowed_ip.is_some() {
+            format!("0.0.0.0:{DEFAULT_WEB_ADMIN_PORT}")
+        } else {
+            DEFAULT_WEB_ADMIN_ADDR.to_string()
+        },
+        "source_ip": normalize_ip(peer.ip()).to_string(),
+    }))
+    .into_response()
+}
+
+async fn web_admin_update_access(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    State(state): State<WebAdminState>,
+    Json(request): Json<WebAccessConfigRequest>,
+) -> Response {
+    if !web_origin_allowed(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !state.security.session_valid(&headers, peer.ip(), true) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let requested_ip = match parse_web_access_config(&request.mode, request.allowed_ip.as_deref()) {
+        Ok(ip) => ip,
+        Err(error) => return web_access_error(error),
+    };
+
+    let mut config = match load_machine_config() {
+        Ok(config) => config,
+        Err(err) => {
+            error!("[WebAdmin] failed to load config while changing Web access: {err}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    if requested_ip.is_some()
+        && config
+            .web_admin_security_code
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    {
+        return web_access_error("security_code_required");
+    }
+    if config.web_admin_allowed_ip == requested_ip {
+        return Json(serde_json::json!({
+            "ok": true,
+            "changed": false,
+            "source_allowed": true,
+        }))
+        .into_response();
+    }
+
+    config.web_admin_allowed_ip = requested_ip.clone();
+    if let Err(err) = save_machine_config(&config) {
+        error!("[WebAdmin] failed to save Web access settings: {err}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    let source_ip = normalize_ip(peer.ip());
+    let source_allowed = source_ip.is_loopback()
+        || requested_ip
+            .as_deref()
+            .is_some_and(|value| value == source_ip.to_string());
+    state.security.clear_session();
+    state
+        .listener_revision
+        .send_modify(|revision| *revision = revision.wrapping_add(1));
+    Json(serde_json::json!({
+        "ok": true,
+        "changed": true,
+        "source_allowed": source_allowed,
+        "mode": if requested_ip.is_some() { "remote" } else { "local" },
+        "allowed_ip": requested_ip,
+        "listen_addr": if config.web_admin_allowed_ip.is_some() {
+            format!("0.0.0.0:{DEFAULT_WEB_ADMIN_PORT}")
+        } else {
+            DEFAULT_WEB_ADMIN_ADDR.to_string()
+        },
+        "config_path": crate::config::machine_config_path().to_string_lossy(),
+    }))
+    .into_response()
+}
+
+fn web_access_error(error: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "ok": false, "error": error })),
+    )
+        .into_response()
+}
+
+fn parse_web_access_config(
+    mode: &str,
+    allowed_ip: Option<&str>,
+) -> std::result::Result<Option<String>, &'static str> {
+    match mode {
+        "local" => Ok(None),
+        "remote" => {
+            let value = allowed_ip.map(str::trim).unwrap_or("");
+            let ip = value
+                .parse::<std::net::Ipv4Addr>()
+                .map_err(|_| "invalid_allowed_ip")?;
+            if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() || ip.is_broadcast() {
+                return Err("invalid_allowed_ip");
+            }
+            Ok(Some(ip.to_string()))
+        }
+        _ => Err("invalid_access_mode"),
+    }
+}
+
 async fn web_auth_logout(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
@@ -531,6 +807,13 @@ async fn web_events(
     if !state.security.session_valid(&headers, peer.ip(), true) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if state
+        .security
+        .security_code_must_change
+        .load(Ordering::Acquire)
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let session_token = session_cookie(&headers).map(ToOwned::to_owned);
     ws.on_upgrade(move |socket| web_events_socket(socket, state, peer.ip(), session_token))
         .into_response()
@@ -564,7 +847,7 @@ async fn web_events_socket(
 
     loop {
         tokio::select! {
-            changed = session_revision.changed(), if state.security.security_code_hash.is_some() => {
+            changed = session_revision.changed(), if state.security.security_code_hash.lock().is_some() => {
                 if changed.is_err() || !session_token.as_deref().is_some_and(|token| {
                     state.security.session_token_valid(token, source_ip, false)
                 }) {
@@ -576,7 +859,7 @@ async fn web_events_socket(
                 }
             }
             _ = auth_check.tick() => {
-                if state.security.security_code_hash.is_some()
+                if state.security.security_code_hash.lock().is_some()
                     && !session_token.as_deref().is_some_and(|token| {
                         state.security.session_token_valid(token, source_ip, false)
                     })
@@ -638,6 +921,20 @@ async fn web_invoke(
                 ok: false,
                 value: None,
                 error: Some("web_auth_required".to_string()),
+            }),
+        );
+    }
+    if state
+        .security
+        .security_code_must_change
+        .load(Ordering::Acquire)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(WebInvokeResponse {
+                ok: false,
+                value: None,
+                error: Some("security_code_change_required".to_string()),
             }),
         );
     }
@@ -1278,7 +1575,8 @@ mod tests {
 
     #[test]
     fn source_allowlist_accepts_loopback_mapped_loopback_and_configured_ip() {
-        let security = WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
+        let security =
+            WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).unwrap();
         assert!(security.source_allowed("127.0.0.1".parse().unwrap()));
         assert!(security.source_allowed("::ffff:127.0.0.1".parse().unwrap()));
         assert!(security.source_allowed("192.0.2.191".parse().unwrap()));
@@ -1287,7 +1585,8 @@ mod tests {
 
     #[test]
     fn session_is_bound_to_source_and_expires_when_idle() {
-        let security = WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
+        let security =
+            WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).unwrap();
         let now = Instant::now();
         security.replace_session(WebSession {
             token: "token".to_string(),
@@ -1304,7 +1603,8 @@ mod tests {
 
     #[test]
     fn a_new_web_session_replaces_the_previous_session() {
-        let security = WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
+        let security =
+            WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).unwrap();
         let now = Instant::now();
         for token in ["first", "second"] {
             security.replace_session(WebSession {
@@ -1320,10 +1620,50 @@ mod tests {
 
     #[test]
     fn remote_access_requires_valid_ip_and_non_empty_code() {
-        assert!(WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).is_ok());
-        assert!(WebSecurityState::from_values(Some("192.0.2.191"), None).is_err());
-        assert!(WebSecurityState::from_values(Some("0.0.0.0"), Some("1")).is_err());
-        assert!(WebSecurityState::from_values(Some("not-an-ip"), Some("1")).is_err());
-        assert!(WebSecurityState::from_values(None, Some("1")).is_ok());
+        assert!(WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).is_ok());
+        assert!(WebSecurityState::from_values(Some("192.0.2.191"), None, false).is_err());
+        assert!(WebSecurityState::from_values(Some("0.0.0.0"), Some("1"), false).is_err());
+        assert!(WebSecurityState::from_values(Some("not-an-ip"), Some("1"), false).is_err());
+        assert!(WebSecurityState::from_values(None, Some("1"), false).is_ok());
+    }
+
+    #[test]
+    fn initial_security_code_requires_change_only_when_code_exists() {
+        let security = WebSecurityState::from_values(None, Some("0000"), true).unwrap();
+        assert!(security.security_code_must_change.load(Ordering::Acquire));
+
+        let security = WebSecurityState::from_values(None, None, true).unwrap();
+        assert!(!security.security_code_must_change.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn web_access_config_accepts_local_and_unicast_ipv4() {
+        assert_eq!(parse_web_access_config("local", Some("10.0.0.8")), Ok(None));
+        assert_eq!(
+            parse_web_access_config("remote", Some(" 10.0.0.8 ")),
+            Ok(Some("10.0.0.8".to_string()))
+        );
+    }
+
+    #[test]
+    fn web_access_config_rejects_invalid_remote_addresses() {
+        for value in [
+            None,
+            Some(""),
+            Some("127.0.0.1"),
+            Some("0.0.0.0"),
+            Some("::1"),
+            Some("224.0.0.1"),
+            Some("255.255.255.255"),
+        ] {
+            assert_eq!(
+                parse_web_access_config("remote", value),
+                Err("invalid_allowed_ip")
+            );
+        }
+        assert_eq!(
+            parse_web_access_config("unknown", Some("10.0.0.8")),
+            Err("invalid_access_mode")
+        );
     }
 }

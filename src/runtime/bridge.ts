@@ -8,6 +8,25 @@ export const CLIENT_DOWNLOAD_URL = `${SITE_ORIGIN}/#download`
 export interface WebAuthStatus {
   authenticated: boolean
   security_code_required: boolean
+  security_code_change_required: boolean
+  source_ip: string
+}
+
+export interface WebAdminSettings {
+  mode: 'local' | 'remote'
+  allowed_ip: string | null
+  listen_addr: string
+  source_ip: string
+}
+
+export interface WebAccessUpdateResponse {
+  ok: boolean
+  changed: boolean
+  source_allowed: boolean
+  mode?: 'local' | 'remote'
+  allowed_ip?: string | null
+  listen_addr?: string
+  config_path?: string
 }
 
 export interface UpdateCheckResponse {
@@ -93,7 +112,12 @@ function flashWebPageTitle(message?: string): void {
 
 export async function getWebAuthStatus(): Promise<WebAuthStatus> {
   if (isTauriRuntime()) {
-    return { authenticated: true, security_code_required: false }
+    return {
+      authenticated: true,
+      security_code_required: false,
+      security_code_change_required: false,
+      source_ip: '127.0.0.1',
+    }
   }
   const response = await fetch('/api/web-auth/status', { credentials: 'same-origin' })
   const contentType = response.headers.get('content-type') || ''
@@ -118,7 +142,55 @@ export async function unlockWebAdmin(securityCode: string): Promise<void> {
     ;(error as Error & { code?: string }).code = payload?.error
     throw error
   }
-  resumeWebSocket()
+}
+
+export async function changeWebAdminSecurityCode(
+  currentSecurityCode: string | null,
+  newSecurityCode: string,
+): Promise<void> {
+  const response = await fetch('/api/web-auth/change-security-code', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      current_security_code: currentSecurityCode,
+      new_security_code: newSecurityCode,
+    }),
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || !payload?.ok) {
+    const error = new Error(payload?.error || `Changing Web security code failed: ${response.status}`)
+    ;(error as Error & { code?: string }).code = payload?.error
+    throw error
+  }
+  suspendWebSocket()
+  window.dispatchEvent(new CustomEvent('p2premote-web-auth-required'))
+}
+
+export async function getWebAdminSettings(): Promise<WebAdminSettings> {
+  const response = await fetch('/api/web-admin/settings', { credentials: 'same-origin' })
+  if (!response.ok) throw new Error(`Loading Web settings failed: ${response.status}`)
+  return response.json()
+}
+
+export async function updateWebAdminAccess(
+  mode: 'local' | 'remote',
+  allowedIp: string | null,
+): Promise<WebAccessUpdateResponse> {
+  const response = await fetch('/api/web-admin/access', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, allowed_ip: allowedIp }),
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || !payload?.ok) {
+    const error = new Error(payload?.error || `Updating Web access failed: ${response.status}`)
+    ;(error as Error & { code?: string }).code = payload?.error
+    throw error
+  }
+  if (payload.changed) suspendWebSocket()
+  return payload as WebAccessUpdateResponse
 }
 
 export async function logoutWebAdmin(): Promise<void> {

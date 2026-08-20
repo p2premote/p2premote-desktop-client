@@ -20,6 +20,7 @@
   "locale": null,
   "web_admin_allowed_ip": null,
   "web_admin_security_code": null,
+  "web_admin_security_code_must_change": false,
   "webui_enabled": true,
   "cached_public_ip": null,
   "cached_public_ip_location": null,

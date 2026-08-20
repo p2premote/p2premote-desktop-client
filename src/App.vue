@@ -1,11 +1,35 @@
 <template>
   <el-config-provider :locale="epLocale">
-    <div v-if="webAuthGateVisible" class="web-auth-shell">
+    <div v-if="webAccessDisconnected" class="web-auth-shell">
+      <div class="web-auth-card fluent-card">
+        <AppLogo :size="48" />
+        <h1>{{ $t('app.web_admin.access_applied_title') }}</h1>
+        <p>{{ webAccessReconnectMessage }}</p>
+      </div>
+    </div>
+    <div v-else-if="webAuthGateVisible" class="web-auth-shell">
       <div class="web-auth-card fluent-card">
         <AppLogo :size="48" />
         <h1>p2pRemote</h1>
-        <p>{{ $t('app.web_auth.prompt') }}</p>
+        <p>{{ $t(webSecurityCodeChangeRequired ? 'app.web_auth.change_prompt' : 'app.web_auth.prompt') }}</p>
+        <template v-if="webSecurityCodeChangeRequired">
+          <el-input
+            v-model="newWebSecurityCode"
+            type="password"
+            show-password
+            autofocus
+            :placeholder="$t('app.web_auth.new_placeholder')"
+          />
+          <el-input
+            v-model="confirmWebSecurityCode"
+            type="password"
+            show-password
+            :placeholder="$t('app.web_auth.confirm_placeholder')"
+            @keyup.enter="handleWebSecurityCodeChange"
+          />
+        </template>
         <el-input
+          v-else
           v-model="webSecurityCode"
           type="password"
           show-password
@@ -14,8 +38,13 @@
           @keyup.enter="handleWebUnlock"
         />
         <el-alert v-if="webAuthError" :title="webAuthError" type="error" :closable="false" />
-        <el-button type="primary" size="large" :loading="webAuthLoading" @click="handleWebUnlock">
-          {{ $t('app.web_auth.enter') }}
+        <el-button
+          type="primary"
+          size="large"
+          :loading="webAuthLoading"
+          @click="webSecurityCodeChangeRequired ? handleWebSecurityCodeChange() : handleWebUnlock()"
+        >
+          {{ $t(webSecurityCodeChangeRequired ? 'app.web_auth.change' : 'app.web_auth.enter') }}
         </el-button>
         <p class="web-auth-cert-note">{{ $t('app.web_auth.certificate_note') }}</p>
       </div>
@@ -83,6 +112,15 @@
                   </button>
                   <button type="button" class="settings-item clickable" @click="handleOpenRecharge">
                     <span>{{ $t('app.settings.subscribe') }}</span><el-icon><LinkIcon /></el-icon>
+                  </button>
+                </section>
+                <section v-if="!isTauriRuntime()" class="settings-group">
+                  <div class="settings-group-title">{{ $t('app.web_admin.group') }}</div>
+                  <button type="button" class="settings-item clickable" @click="openWebSecurityCodeDialog">
+                    <span>{{ $t('app.web_admin.change_security_code') }}</span>
+                  </button>
+                  <button type="button" class="settings-item clickable" @click="openWebAccessDialog">
+                    <span>{{ $t('app.web_admin.access_control') }}</span>
                   </button>
                 </section>
                 <section class="settings-group">
@@ -222,6 +260,78 @@
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-if="!isTauriRuntime()"
+      v-model="webSecurityDialogVisible"
+      :title="$t('app.web_admin.change_security_code')"
+      width="460px"
+    >
+      <el-form label-position="top">
+        <el-form-item :label="$t('app.web_admin.current_code')">
+          <el-input v-model="currentWebSecurityCode" type="password" show-password />
+        </el-form-item>
+        <el-form-item :label="$t('app.web_admin.new_code')">
+          <el-input v-model="settingsNewWebSecurityCode" type="password" show-password />
+        </el-form-item>
+        <el-form-item :label="$t('app.web_admin.confirm_code')">
+          <el-input
+            v-model="settingsConfirmWebSecurityCode"
+            type="password"
+            show-password
+            @keyup.enter="submitWebSecurityCodeChange"
+          />
+        </el-form-item>
+      </el-form>
+      <el-alert
+        v-if="webSecuritySettingsError"
+        :title="webSecuritySettingsError"
+        type="error"
+        :closable="false"
+      />
+      <template #footer>
+        <el-button @click="webSecurityDialogVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="webSecuritySettingsSaving" @click="submitWebSecurityCodeChange">
+          {{ $t('common.confirm') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-if="!isTauriRuntime()"
+      v-model="webAccessDialogVisible"
+      :title="$t('app.web_admin.access_control')"
+      width="500px"
+    >
+      <el-form label-position="top">
+        <el-form-item :label="$t('app.web_admin.access_mode')">
+          <el-radio-group v-model="webAccessMode">
+            <el-radio value="local">{{ $t('app.web_admin.local_only') }}</el-radio>
+            <el-radio value="remote">{{ $t('app.web_admin.specific_ip') }}</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="webAccessMode === 'remote'" :label="$t('app.web_admin.allowed_ip')">
+          <el-input v-model="webAllowedIp" placeholder="192.168.1.100" />
+        </el-form-item>
+        <div class="web-admin-status-list">
+          <div><span>{{ $t('app.web_admin.listen_addr') }}</span><code>{{ webListenAddr }}</code></div>
+          <div><span>{{ $t('app.web_admin.current_source_ip') }}</span><code>{{ webCurrentSourceIp }}</code></div>
+        </div>
+        <p class="settings-tip">{{ $t('app.web_admin.http_warning') }}</p>
+      </el-form>
+      <el-alert
+        v-if="webAccessSettingsError"
+        :title="webAccessSettingsError"
+        type="error"
+        :closable="false"
+      />
+      <template #footer>
+        <el-button @click="webAccessDialogVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="webAccessSettingsSaving" @click="submitWebAccessChange">
+          {{ $t('common.confirm') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <div
       v-if="textContextMenu.visible"
       class="text-context-menu no-drag"
@@ -241,6 +351,8 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 import {
   closeWindow,
+  changeWebAdminSecurityCode,
+  getWebAdminSettings,
   getWebAuthStatus,
   invoke,
   isTauriRuntime,
@@ -250,6 +362,8 @@ import {
   isWindowMaximized,
   openExternal,
   openClientDownloadPage,
+  resumeWebSocket,
+  updateWebAdminAccess,
   logoutWebAdmin,
   unlockWebAdmin,
   SITE_ORIGIN,
@@ -304,13 +418,35 @@ watch(themeMode, applyTheme, { immediate: true })
 const webAuthChecked = ref(isTauriRuntime())
 const webAuthRequired = ref(false)
 const webAuthenticated = ref(isTauriRuntime())
+const webSecurityCodeChangeRequired = ref(false)
 const webSecurityCode = ref('')
+const newWebSecurityCode = ref('')
+const confirmWebSecurityCode = ref('')
 const webAuthLoading = ref(false)
 const webAuthError = ref('')
+const webAccessDisconnected = ref(false)
+const webAccessReconnectMessage = ref('')
+const webSecurityDialogVisible = ref(false)
+const currentWebSecurityCode = ref('')
+const settingsNewWebSecurityCode = ref('')
+const settingsConfirmWebSecurityCode = ref('')
+const webSecuritySettingsError = ref('')
+const webSecuritySettingsSaving = ref(false)
+const webAccessDialogVisible = ref(false)
+const webAccessMode = ref<'local' | 'remote'>('local')
+const webAllowedIp = ref('')
+const webListenAddr = ref('127.0.0.1:48083')
+const webCurrentSourceIp = ref('')
+const webAccessSettingsError = ref('')
+const webAccessSettingsSaving = ref(false)
 let appBootstrapped = false
 let wsListenersInitialized = false
 const webAuthGateVisible = computed(
-  () => !isTauriRuntime() && (!webAuthChecked.value || (webAuthRequired.value && !webAuthenticated.value)),
+  () => !isTauriRuntime() && (
+    !webAuthChecked.value
+    || webSecurityCodeChangeRequired.value
+    || (webAuthRequired.value && !webAuthenticated.value)
+  ),
 )
 
 async function refreshWebAuthStatus() {
@@ -319,6 +455,7 @@ async function refreshWebAuthStatus() {
     const status = await getWebAuthStatus()
     webAuthRequired.value = status.security_code_required
     webAuthenticated.value = status.authenticated
+    webSecurityCodeChangeRequired.value = status.security_code_change_required && status.authenticated
     webAuthError.value = ''
   } catch (error) {
     webAuthRequired.value = true
@@ -330,6 +467,148 @@ async function refreshWebAuthStatus() {
   }
 }
 
+async function handleWebSecurityCodeChange() {
+  if (webAuthLoading.value) return
+  webAuthError.value = ''
+  if (newWebSecurityCode.value !== confirmWebSecurityCode.value) {
+    webAuthError.value = t('app.web_auth.code_mismatch')
+    return
+  }
+  webAuthLoading.value = true
+  try {
+    await changeWebAdminSecurityCode(null, newWebSecurityCode.value)
+    newWebSecurityCode.value = ''
+    confirmWebSecurityCode.value = ''
+    await refreshWebAuthStatus()
+  } catch (error) {
+    const code = (error as Error & { code?: string }).code
+    webAuthError.value = code === 'security_code_unchanged'
+      ? t('app.web_auth.code_unchanged')
+      : t('app.web_auth.invalid_new_code')
+  } finally {
+    webAuthLoading.value = false
+  }
+}
+
+function openWebSecurityCodeDialog() {
+  currentWebSecurityCode.value = ''
+  settingsNewWebSecurityCode.value = ''
+  settingsConfirmWebSecurityCode.value = ''
+  webSecuritySettingsError.value = ''
+  webSecurityDialogVisible.value = true
+}
+
+async function submitWebSecurityCodeChange() {
+  if (webSecuritySettingsSaving.value) return
+  webSecuritySettingsError.value = ''
+  if (settingsNewWebSecurityCode.value !== settingsConfirmWebSecurityCode.value) {
+    webSecuritySettingsError.value = t('app.web_auth.code_mismatch')
+    return
+  }
+  webSecuritySettingsSaving.value = true
+  try {
+    await changeWebAdminSecurityCode(
+      currentWebSecurityCode.value,
+      settingsNewWebSecurityCode.value,
+    )
+    webSecurityDialogVisible.value = false
+    ElMessage.success(t('app.web_admin.security_code_changed'))
+    await refreshWebAuthStatus()
+  } catch (error) {
+    const code = (error as Error & { code?: string }).code
+    if (code === 'invalid_current_security_code' || code === 'current_security_code_required') {
+      webSecuritySettingsError.value = t('app.web_admin.invalid_current_code')
+    } else if (code === 'security_code_unchanged') {
+      webSecuritySettingsError.value = t('app.web_auth.code_unchanged')
+    } else {
+      webSecuritySettingsError.value = t('app.web_auth.invalid_new_code')
+    }
+  } finally {
+    webSecuritySettingsSaving.value = false
+  }
+}
+
+async function openWebAccessDialog() {
+  webAccessSettingsError.value = ''
+  try {
+    const settings = await getWebAdminSettings()
+    webAccessMode.value = settings.mode
+    webAllowedIp.value = settings.allowed_ip || ''
+    webListenAddr.value = settings.listen_addr
+    webCurrentSourceIp.value = settings.source_ip
+    webAccessDialogVisible.value = true
+  } catch (error) {
+    ElMessage.error(t('app.web_admin.load_failed', { error: normalizeError(error) }))
+  }
+}
+
+async function submitWebAccessChange() {
+  if (webAccessSettingsSaving.value) return
+  webAccessSettingsError.value = ''
+  const allowedIp = webAccessMode.value === 'remote' ? webAllowedIp.value.trim() : null
+  const sourceWillBeAllowed = webAccessMode.value === 'local'
+    ? ['127.0.0.1', '::1'].includes(webCurrentSourceIp.value)
+    : allowedIp === webCurrentSourceIp.value
+  if (!sourceWillBeAllowed) {
+    try {
+      await ElMessageBox.confirm(
+        t('app.web_admin.disconnect_warning'),
+        t('app.web_admin.disconnect_title'),
+        { type: 'warning', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') },
+      )
+    } catch {
+      return
+    }
+  }
+
+  webAccessSettingsSaving.value = true
+  try {
+    const result = await updateWebAdminAccess(webAccessMode.value, allowedIp)
+    webAccessDialogVisible.value = false
+    if (!result.changed) {
+      ElMessage.success(t('app.web_admin.no_change'))
+      return
+    }
+    if (result.source_allowed) {
+      const listenerReady = await waitForWebAdminListener()
+      if (!listenerReady) {
+        webAccessReconnectMessage.value = t('app.web_admin.rebind_failed', {
+          path: result.config_path || '/opt/p2premote/data/config.json',
+        })
+        webAccessDisconnected.value = true
+        return
+      }
+      requireWebAuthentication()
+      ElMessage.success(t('app.web_admin.access_changed_relogin'))
+    } else {
+      webAccessReconnectMessage.value = result.mode === 'local'
+        ? t('app.web_admin.reconnect_local')
+        : t('app.web_admin.reconnect_remote', { ip: result.allowed_ip || '' })
+      webAccessDisconnected.value = true
+    }
+  } catch (error) {
+    const code = (error as Error & { code?: string }).code
+    webAccessSettingsError.value = code === 'security_code_required'
+      ? t('app.web_admin.security_code_required')
+      : t('app.web_admin.invalid_ip')
+  } finally {
+    webAccessSettingsSaving.value = false
+  }
+}
+
+async function waitForWebAdminListener(): Promise<boolean> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const response = await fetch('/api/health', { cache: 'no-store' })
+      if (response.ok) return true
+    } catch {
+      // The listener is expected to be briefly unavailable while rebinding.
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 250))
+  }
+  return false
+}
+
 async function handleWebUnlock() {
   if (webAuthLoading.value) return
   webAuthLoading.value = true
@@ -338,7 +617,8 @@ async function handleWebUnlock() {
     await unlockWebAdmin(webSecurityCode.value)
     webSecurityCode.value = ''
     await refreshWebAuthStatus()
-    if (webAuthenticated.value) {
+    if (webAuthenticated.value && !webSecurityCodeChangeRequired.value) {
+      resumeWebSocket()
       if (appBootstrapped) startupReady.value = true
       else await bootstrapApp()
     }
@@ -1879,6 +2159,24 @@ watch(
   color: var(--fluent-text-tertiary);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.web-admin-status-list {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.web-admin-status-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--fluent-text-secondary);
+}
+
+.web-admin-status-list code {
+  color: var(--fluent-text);
+  overflow-wrap: anywhere;
 }
 
 .version-info {
