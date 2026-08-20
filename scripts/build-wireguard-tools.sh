@@ -4,8 +4,10 @@ set -euo pipefail
 umask 022
 
 VERSION="1.0.20260223"
-SHA256="af459827b80bfd31b83b08077f4b5843acb7d18ad9a33a2ef532d3090f291fbf"
-SOURCE_URL="https://git.zx2c4.com/wireguard-tools/snapshot/wireguard-tools-${VERSION}.tar.xz"
+SHA256="859f8af03702db5e5c43f8ece77f5ebef40a2f4627c3e03997a031d4940ea9bc"
+SOURCE_URL="https://github.com/WireGuard/wireguard-tools/archive/refs/tags/v${VERSION}.tar.gz"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ARCHIVE="$SCRIPT_DIR/../third_party/wireguard-tools/wireguard-tools-${VERSION}.tar.gz"
 
 usage() {
   echo "Usage: $0 -o <output-path> -a <amd64|arm64>" >&2
@@ -86,7 +88,7 @@ case "$ARCH" in
     ;;
 esac
 
-for tool in curl sha256sum tar make readelf; do
+for tool in sha256sum tar make readelf; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Required build tool not found: $tool" >&2
     exit 1
@@ -98,13 +100,15 @@ mkdir -p "$OUT_DIR"
 OUT_PATH="$(cd "$OUT_DIR" && pwd)/$(basename "$OUT_PATH")"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
-ARCHIVE="$WORK_DIR/wireguard-tools.tar.xz"
-
-echo "==> Downloading wireguard-tools v${VERSION}"
-curl --fail --location --retry 3 --silent --show-error "$SOURCE_URL" -o "$ARCHIVE"
+if [[ ! -f "$ARCHIVE" ]]; then
+  echo "Vendored wireguard-tools archive not found: $ARCHIVE" >&2
+  echo "Expected upstream source: $SOURCE_URL" >&2
+  exit 1
+fi
+echo "==> Using vendored wireguard-tools v${VERSION}"
 echo "$SHA256  $ARCHIVE" | sha256sum --check --status
 mkdir -p "$WORK_DIR/source"
-tar -xJf "$ARCHIVE" -C "$WORK_DIR/source" --strip-components=1
+tar -xzf "$ARCHIVE" -C "$WORK_DIR/source" --strip-components=1
 
 # Debian's musl-gcc does not put Linux UAPI headers in its default include tree.
 # `-idirafter` keeps musl libc headers authoritative and only supplies missing
