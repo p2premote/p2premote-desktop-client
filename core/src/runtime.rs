@@ -293,7 +293,10 @@ async fn rotate_invite_temporary_password(shared: &Arc<Mutex<SharedRuntimeState>
     config.invite_temporary_password = Some(password.clone());
     // 密码已在服务器端生效；持久化失败只影响重启后复用，不应视为轮换失败。
     if let Err(err) = save_machine_config(&config) {
-        warn!("[ServiceRuntime] persist rotated invite password failed: {}", err);
+        warn!(
+            "[ServiceRuntime] persist rotated invite password failed: {}",
+            err
+        );
     }
     update_status(shared, |status| {
         status.invite_temporary_password = Some(password);
@@ -631,7 +634,9 @@ pub async fn run_service_foreground() -> Result<()> {
     if let Some(handle) = health_server {
         match Arc::try_unwrap(handle) {
             Ok(handle) => handle.stop(),
-            Err(_) => debug!("[ServiceRuntime] health server handle still shared, skip explicit stop"),
+            Err(_) => {
+                debug!("[ServiceRuntime] health server handle still shared, skip explicit stop")
+            }
         }
     }
     info!("[ServiceRuntime] stopped");
@@ -953,11 +958,8 @@ mod tests {
 
     #[test]
     fn passive_tunnel_popup_uses_runtime_username_or_explicit_unknown_user() {
-        let (title, body) = tunnel_jobs::passive_tunnel_popup_text(
-            Some("zh-CN"),
-            "alice",
-            "笔记本上虚拟机60",
-        );
+        let (title, body) =
+            tunnel_jobs::passive_tunnel_popup_text(Some("zh-CN"), "alice", "笔记本上虚拟机60");
         assert_eq!(title, "远程设备已连接");
         assert_eq!(body, "用户 alice 已使用设备 笔记本上虚拟机60 连接到本机。");
 

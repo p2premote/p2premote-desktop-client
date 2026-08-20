@@ -81,8 +81,15 @@ struct ResetPasswordRequest<'a> {
     new_password: &'a str,
 }
 
-pub async fn send_verification_code(server_url: &str, email: &str, code_type: &str) -> Result<ApiResponse<Option<serde_json::Value>>> {
-    let url = format!("{}/api/v1/auth/verification-code", server_url.trim_end_matches('/'));
+pub async fn send_verification_code(
+    server_url: &str,
+    email: &str,
+    code_type: &str,
+) -> Result<ApiResponse<Option<serde_json::Value>>> {
+    let url = format!(
+        "{}/api/v1/auth/verification-code",
+        server_url.trim_end_matches('/')
+    );
     let response = shared_client()
         .post(url)
         .json(&VerificationCodeRequest { email, code_type })
@@ -97,10 +104,17 @@ pub async fn reset_password_by_email_code(
     verification_code: &str,
     new_password: &str,
 ) -> Result<ApiResponse<Option<serde_json::Value>>> {
-    let url = format!("{}/api/v1/auth/reset-password", server_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/v1/auth/reset-password",
+        server_url.trim_end_matches('/')
+    );
     let response = shared_client()
         .post(url)
-        .json(&ResetPasswordRequest { email, verification_code, new_password })
+        .json(&ResetPasswordRequest {
+            email,
+            verification_code,
+            new_password,
+        })
         .send()
         .await?;
     Ok(response.json().await?)

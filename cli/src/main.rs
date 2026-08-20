@@ -70,14 +70,21 @@ enum DeviceCommands {
     Register,
     Info,
     List,
-    UpdateAlias { device_id: i64, alias: String },
-    Delete { device_id: i64 },
+    UpdateAlias {
+        device_id: i64,
+        alias: String,
+    },
+    Delete {
+        device_id: i64,
+    },
     SetPassword {
         device_id: i64,
         #[arg(long)]
         password: Option<String>,
     },
-    GenerateConnectCode { device_id: i64 },
+    GenerateConnectCode {
+        device_id: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -225,15 +232,14 @@ async fn main() -> Result<()> {
         Commands::Device {
             command: DeviceCommands::Delete { device_id },
         } => {
-            print_command_response(
-                send_service_command(Data::DeleteDevice { device_id }).await?,
-            )?;
+            print_command_response(send_service_command(Data::DeleteDevice { device_id }).await?)?;
         }
         Commands::Device {
-            command: DeviceCommands::SetPassword {
-                device_id,
-                password,
-            },
+            command:
+                DeviceCommands::SetPassword {
+                    device_id,
+                    password,
+                },
         } => {
             let password = match password {
                 Some(password) => password,
@@ -301,8 +307,8 @@ async fn main() -> Result<()> {
                 )?;
             }
             (None, Some(invite)) => {
-                let parsed = parse_invite_info(&invite)
-                    .ok_or_else(|| anyhow!("invalid invite text"))?;
+                let parsed =
+                    parse_invite_info(&invite).ok_or_else(|| anyhow!("invalid invite text"))?;
                 print_command_response(
                     send_service_command(Data::StartAnonymousActiveTunnelJob {
                         connect_code: parsed.device_code,
@@ -424,9 +430,10 @@ async fn main() -> Result<()> {
                     cfg.web_admin_security_code_must_change = false;
                 }
                 "web_admin_security_code_must_change" => {
-                    cfg.web_admin_security_code_must_change = value.parse::<bool>().map_err(|_| {
-                        anyhow!("web_admin_security_code_must_change must be true or false")
-                    })?
+                    cfg.web_admin_security_code_must_change =
+                        value.parse::<bool>().map_err(|_| {
+                            anyhow!("web_admin_security_code_must_change must be true or false")
+                        })?
                 }
                 "webui_enabled" => {
                     cfg.webui_enabled = value
@@ -440,9 +447,9 @@ async fn main() -> Result<()> {
                 restart_service()?;
                 println!("config updated; service restarted");
             } else if service_was_running {
-                let response = send_command(Data::ReloadConfig)
-                    .await
-                    .map_err(|err| anyhow!("config saved, but running service reload failed: {err}"))?;
+                let response = send_command(Data::ReloadConfig).await.map_err(|err| {
+                    anyhow!("config saved, but running service reload failed: {err}")
+                })?;
                 command_data_value(response).map_err(|err| {
                     anyhow!("config saved, but running service rejected reload: {err}")
                 })?;
@@ -479,7 +486,9 @@ async fn ensure_service_running() -> Result<()> {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(anyhow!("service IPC did not become ready within 10 seconds"));
+            return Err(anyhow!(
+                "service IPC did not become ready within 10 seconds"
+            ));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -516,10 +525,7 @@ fn default_service_executable() -> Result<PathBuf> {
 fn print_command_response(resp: Data) -> Result<()> {
     match resp {
         Data::CommandResponse {
-            ok,
-            data,
-            status,
-            ..
+            ok, data, status, ..
         } => {
             let mut output = serde_json::json!({
                 "ok": ok,
@@ -543,18 +549,13 @@ fn print_command_response(resp: Data) -> Result<()> {
 
 fn print_command_data(resp: Data) -> Result<()> {
     match resp {
-        Data::CommandResponse {
-            ok, data, ..
-        } => {
+        Data::CommandResponse { ok, data, .. } => {
             if !ok {
                 return Err(anyhow!("service command failed"));
             }
             let mut data = data.unwrap_or(Value::Null);
             sanitize_cli_value(&mut data);
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&data)?
-            );
+            println!("{}", serde_json::to_string_pretty(&data)?);
             Ok(())
         }
         other => {
@@ -566,9 +567,7 @@ fn print_command_data(resp: Data) -> Result<()> {
 
 fn command_data_value(resp: Data) -> Result<Value> {
     match resp {
-        Data::CommandResponse {
-            ok, data, ..
-        } => {
+        Data::CommandResponse { ok, data, .. } => {
             if ok {
                 Ok(data.unwrap_or(Value::Null))
             } else {
@@ -595,11 +594,7 @@ async fn refreshed_tunnel_status() -> Result<RuntimeStatus> {
 
 async fn command_runtime_status(command: Data) -> Result<RuntimeStatus> {
     match send_service_command(command).await? {
-        Data::CommandResponse {
-            ok,
-            status,
-            ..
-        } => {
+        Data::CommandResponse { ok, status, .. } => {
             if !ok {
                 return Err(anyhow!("service command failed"));
             }
@@ -614,9 +609,7 @@ async fn command_runtime_status(command: Data) -> Result<RuntimeStatus> {
 
 async fn find_device_uuid(target_device_id: i64) -> Result<String> {
     let devices = match send_service_command(Data::GetDeviceList).await? {
-        Data::CommandResponse {
-            ok, data, ..
-        } => {
+        Data::CommandResponse { ok, data, .. } => {
             if !ok {
                 return Err(anyhow!("service command failed"));
             }

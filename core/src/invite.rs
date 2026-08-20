@@ -18,10 +18,7 @@ pub fn parse_invite_info(input: &str) -> Option<ParsedInviteInfo> {
         let key = key.trim().to_ascii_lowercase();
         if key.contains("设备代码") || key == "code" || key == "device code" {
             device_code = normalize_token(value);
-        } else if key.contains("临时密码")
-            || key == "password"
-            || key == "temporary password"
-        {
+        } else if key.contains("临时密码") || key == "password" || key == "temporary password" {
             temporary_password = normalize_token(value);
         }
     }
@@ -59,8 +56,8 @@ mod tests {
 
     #[test]
     fn parses_gui_invites_in_both_languages() {
-        let english = parse_invite_info("Device code: AB12-CD34\nTemporary password: xy 9876")
-            .unwrap();
+        let english =
+            parse_invite_info("Device code: AB12-CD34\nTemporary password: xy 9876").unwrap();
         assert_eq!(english.device_code, "AB12CD34");
         assert_eq!(english.temporary_password, "xy9876");
 

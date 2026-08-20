@@ -105,7 +105,10 @@ pub async fn register_by_email_code(
     debug!("RegisterByEmailCode request for: {}", email);
 
     let config = p2premote_core::config::load_machine_config().unwrap_or_default();
-    debug!("[RegisterByEmailCode] server base_url: {}", config.server_url);
+    debug!(
+        "[RegisterByEmailCode] server base_url: {}",
+        config.server_url
+    );
     let response = p2premote_core::auth::register_by_email_code(
         &config.server_url,
         &username,
@@ -114,8 +117,8 @@ pub async fn register_by_email_code(
         &verification_code,
         invite_code.as_deref(),
     )
-        .await
-        .map_err(|e| e.to_string())?;
+    .await
+    .map_err(|e| e.to_string())?;
 
     let message = if response.code == 0 {
         response.msg.clone()
@@ -129,11 +132,14 @@ pub async fn register_by_email_code(
 }
 
 #[tauri::command]
-pub async fn send_registration_verification_code(email: String) -> Result<serde_json::Value, String> {
+pub async fn send_registration_verification_code(
+    email: String,
+) -> Result<serde_json::Value, String> {
     let config = p2premote_core::config::load_machine_config().unwrap_or_default();
-    let response = p2premote_core::auth::send_verification_code(&config.server_url, &email, "register")
-        .await
-        .map_err(|e| e.to_string())?;
+    let response =
+        p2premote_core::auth::send_verification_code(&config.server_url, &email, "register")
+            .await
+            .map_err(|e| e.to_string())?;
     if response.code != 0 {
         return Err(response.localized_error_message(config.locale.as_deref()));
     }
@@ -141,20 +147,38 @@ pub async fn send_registration_verification_code(email: String) -> Result<serde_
 }
 
 #[tauri::command]
-pub async fn send_reset_password_verification_code(email: String) -> Result<serde_json::Value, String> {
+pub async fn send_reset_password_verification_code(
+    email: String,
+) -> Result<serde_json::Value, String> {
     let config = p2premote_core::config::load_machine_config().unwrap_or_default();
-    let response = p2premote_core::auth::send_verification_code(&config.server_url, &email, "reset_password")
-        .await.map_err(|e| e.to_string())?;
-    if response.code != 0 { return Err(response.localized_error_message(config.locale.as_deref())); }
+    let response =
+        p2premote_core::auth::send_verification_code(&config.server_url, &email, "reset_password")
+            .await
+            .map_err(|e| e.to_string())?;
+    if response.code != 0 {
+        return Err(response.localized_error_message(config.locale.as_deref()));
+    }
     Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
 }
 
 #[tauri::command]
-pub async fn reset_password_by_email_code(email: String, verification_code: String, new_password: String) -> Result<serde_json::Value, String> {
+pub async fn reset_password_by_email_code(
+    email: String,
+    verification_code: String,
+    new_password: String,
+) -> Result<serde_json::Value, String> {
     let config = p2premote_core::config::load_machine_config().unwrap_or_default();
-    let response = p2premote_core::auth::reset_password_by_email_code(&config.server_url, &email, &verification_code, &new_password)
-        .await.map_err(|e| e.to_string())?;
-    if response.code != 0 { return Err(response.localized_error_message(config.locale.as_deref())); }
+    let response = p2premote_core::auth::reset_password_by_email_code(
+        &config.server_url,
+        &email,
+        &verification_code,
+        &new_password,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    if response.code != 0 {
+        return Err(response.localized_error_message(config.locale.as_deref()));
+    }
     Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
 }
 

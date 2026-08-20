@@ -1184,16 +1184,6 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   background: var(--fluent-accent-light);
 }
 
-.device-list-item.tunnel-connected:not(.active) {
-  background: color-mix(in srgb, var(--fluent-success) 8%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fluent-success) 22%, transparent);
-}
-
-.device-list-item.tunnel-connected.active {
-  background: color-mix(in srgb, var(--fluent-accent-light) 86%, var(--fluent-success) 14%);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fluent-success) 32%, transparent);
-}
-
 .device-state-mark {
   width: 20px;
   height: 20px;

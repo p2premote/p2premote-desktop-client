@@ -701,15 +701,18 @@ pub(super) fn update_wgvpn_job_status(
                     }
                 })
                 .or_else(|| {
-                    state.passive_peer_infos.get(&status.peer_device_id).and_then(|peer| {
-                        let alias = peer.source_device_alias.trim();
-                        if !alias.is_empty() {
-                            Some(alias.to_string())
-                        } else {
-                            let name = peer.source_device_name.trim();
-                            (!name.is_empty()).then(|| name.to_string())
-                        }
-                    })
+                    state
+                        .passive_peer_infos
+                        .get(&status.peer_device_id)
+                        .and_then(|peer| {
+                            let alias = peer.source_device_alias.trim();
+                            if !alias.is_empty() {
+                                Some(alias.to_string())
+                            } else {
+                                let name = peer.source_device_name.trim();
+                                (!name.is_empty()).then(|| name.to_string())
+                            }
+                        })
                 })
                 .unwrap_or(fallback_device_name);
             passive_popup = Some((state.status.locale.clone(), username, device_name));
@@ -745,8 +748,14 @@ fn show_passive_tunnel_popup(locale: Option<&str>, username: &str, device_name: 
     )
     .and_then(|mut stream| std::io::Write::write_all(&mut stream, payload.as_bytes()));
     match result {
-        Ok(_) => info!("[ServiceRuntime] passive tunnel notification delivered: device={}", device_name),
-        Err(err) => info!("[ServiceRuntime] notifier unavailable: device={}, error={}", device_name, err),
+        Ok(_) => info!(
+            "[ServiceRuntime] passive tunnel notification delivered: device={}",
+            device_name
+        ),
+        Err(err) => info!(
+            "[ServiceRuntime] notifier unavailable: device={}, error={}",
+            device_name, err
+        ),
     }
 }
 
@@ -762,9 +771,15 @@ pub(super) fn passive_tunnel_popup_text(
     let username = username.trim();
     if locale == Some("en") {
         let body = if username.is_empty() {
-            format!("Unknown user connected to this device using {}.", device_name)
+            format!(
+                "Unknown user connected to this device using {}.",
+                device_name
+            )
         } else {
-            format!("User {} connected to this device using {}.", username, device_name)
+            format!(
+                "User {} connected to this device using {}.",
+                username, device_name
+            )
         };
         ("Remote device connected", body)
     } else {

@@ -29,21 +29,15 @@ impl VersionPolicyError {
                 "errors.server_status_code",
                 &[("status", status.as_str())],
             ),
-            Self::Decode(_) => crate::i18n::localized_message(
-                locale,
-                "errors.parse_version_failed",
-                &[],
-            ),
-            Self::Empty => crate::i18n::localized_message(
-                locale,
-                "errors.version_policy_empty",
-                &[],
-            ),
-            Self::Request(_) => crate::i18n::localized_message(
-                locale,
-                "errors.cannot_connect_update_server",
-                &[],
-            ),
+            Self::Decode(_) => {
+                crate::i18n::localized_message(locale, "errors.parse_version_failed", &[])
+            }
+            Self::Empty => {
+                crate::i18n::localized_message(locale, "errors.version_policy_empty", &[])
+            }
+            Self::Request(_) => {
+                crate::i18n::localized_message(locale, "errors.cannot_connect_update_server", &[])
+            }
         }
     }
 }

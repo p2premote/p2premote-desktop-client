@@ -51,7 +51,10 @@ fn notifier_executable_in(resource_dir: &std::path::Path) -> std::path::PathBuf 
 pub fn ensure_notifier_running(app: &AppHandle) -> Result<(), String> {
     let executable = notifier_executable(app)?;
     if !executable.exists() {
-        return Err(format!("notifier executable missing: {}", executable.display()));
+        return Err(format!(
+            "notifier executable missing: {}",
+            executable.display()
+        ));
     }
     std::process::Command::new(executable)
         .arg("--agent")
@@ -226,7 +229,10 @@ fn try_setup_service_direct(app: &AppHandle) {
     match crate::commands::service::resolve_service_executable(app) {
         Ok(service_exe) => match p2premote_core::service_control::try_setup_direct(&service_exe) {
             Ok(()) => info!("[config] 服务直接修复成功"),
-            Err(err) => warn!("[config] 服务直接修复失败（非提权进程无 SCM 权限属预期）：{}", err),
+            Err(err) => warn!(
+                "[config] 服务直接修复失败（非提权进程无 SCM 权限属预期）：{}",
+                err
+            ),
         },
         Err(err) => warn!("[config] 服务直接修复失败：{}", err),
     }

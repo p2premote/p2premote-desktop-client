@@ -269,8 +269,7 @@ pub(super) fn record_wgvpn_health_success(
         let recovered = health.state != WgvpnHealthState::Connected
             || health.consecutive_failures != 0
             || health.grace_deadline.is_some();
-        let changed = recovered
-            || latency_ms.is_some_and(|value| health.latency_ms != Some(value));
+        let changed = recovered || latency_ms.is_some_and(|value| health.latency_ms != Some(value));
         health.state = WgvpnHealthState::Connected;
         health.consecutive_failures = 0;
         health.grace_deadline = None;
