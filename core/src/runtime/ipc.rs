@@ -596,8 +596,7 @@ pub(super) async fn handle_data(
                 Ok(c) => c,
                 Err(resp) => return Some(resp),
             };
-            // 登录页在未登录时也会持久化勾选偏好，此时 identifier 为空，
-            // 不能用它覆盖已有的登录标识。
+            // identifier 为空时保留已有登录标识，兼容不修改账号的设置更新。
             if !identifier.trim().is_empty() {
                 config.user_email = Some(identifier);
             }

@@ -115,7 +115,7 @@ function restoreSavedPasswordSentinel() {
   }
 }
 
-// 回填阶段不触发持久化，避免把刚读到的值原样写回
+// 加载已有设置时不重复写回；仅响应用户主动修改勾选状态。
 let hydratingPreferences = true
 
 watch(() => loginForm.rememberMe, (rememberMe) => {
@@ -139,8 +139,7 @@ async function loadSavedLogin() {
       hasSavedCredential.value = true
       loginForm.password = SAVED_PASSWORD_SENTINEL
     } else {
-      // 无已保存凭据（如曾登出）：按持久化的偏好回填勾选状态。
-      // 偏好在勾选时就已落盘，用户不需要每次登录前重新勾选。
+      // 无已保存凭据（如曾登出）：按已持久化的偏好回填勾选状态。
       const prefs = await invoke<{ remember_me: boolean; auto_login: boolean }>('get_settings')
       loginForm.rememberMe = prefs.remember_me
       loginForm.autoLogin = prefs.remember_me && prefs.auto_login
@@ -152,8 +151,8 @@ async function loadSavedLogin() {
   }
 }
 
-// 勾选状态即改即存：开机自启动的无人值守校验读取的是持久化偏好，
-// 若只在登录成功后才保存，"勾选了但没登录"的配置永远不生效。
+// 勾选项属于偏好设置，用户修改后立即持久化。这里刻意不传表单中的账号或
+// 密码；密码从未进入此命令，登录凭据只会在服务端确认登录成功后更新。
 function persistLoginPreferences() {
   if (hydratingPreferences) {
     return
@@ -161,7 +160,7 @@ function persistLoginPreferences() {
   const rememberMe = loginForm.rememberMe
   const autoLogin = rememberMe && loginForm.autoLogin
   invoke('save_login_settings', {
-    identifier: loginForm.identifier.trim(),
+    identifier: '',
     rememberMe,
     autoLogin
   }).catch(error => {
@@ -213,15 +212,18 @@ async function handleLogin() {
         return
       }
 
-      await invoke('save_login_settings', {
-        identifier: loginSettings.identifier,
-        rememberMe: loginSettings.rememberMe,
-        autoLogin: loginSettings.autoLogin
-      })
-      const saved = await invoke<{ remember_me: boolean; auto_login: boolean }>('get_settings')
-      if (saved.remember_me !== loginSettings.rememberMe || saved.auto_login !== loginSettings.autoLogin) {
-        throw new Error(t('login.message.settings_save_mismatch'))
-      }
+    }
+
+    // 勾选状态已即时保存；只有服务端确认登录或会话恢复成功后，才把账号
+    // 标识与本次设置关联。密码不会传给登录设置保存命令。
+    await invoke('save_login_settings', {
+      identifier: loginSettings.identifier,
+      rememberMe: loginSettings.rememberMe,
+      autoLogin: loginSettings.autoLogin
+    })
+    const saved = await invoke<{ remember_me: boolean; auto_login: boolean }>('get_settings')
+    if (saved.remember_me !== loginSettings.rememberMe || saved.auto_login !== loginSettings.autoLogin) {
+      throw new Error(t('login.message.settings_save_mismatch'))
     }
     if (alive.value) {
       ElMessage.success(t('login.message.success'))
