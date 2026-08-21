@@ -5,6 +5,7 @@ Summary:        p2pRemote headless remote access service
 License:        Proprietary
 BuildArch:      %{pkg_arch}
 Requires:       systemd
+Requires:       xdg-utils
 
 %description
 p2pRemote service, command-line tools, WireGuard userspace components,
@@ -17,6 +18,7 @@ cp -a %{payload_root}/. %{buildroot}/
 %files
 /opt/p2premote/resources
 /usr/lib/systemd/system/p2premote-service.service
+/usr/share/applications/p2premote.desktop
 
 %pre
 if command -v systemctl >/dev/null 2>&1; then
