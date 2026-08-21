@@ -606,8 +606,7 @@ async fn web_auth_change_security_code(
             .into_response();
     }
     let new_hash = hash_security_code(security_code);
-    if current_hash.is_some_and(|current| current.ct_eq(&new_hash).unwrap_u8() == 1)
-    {
+    if current_hash.is_some_and(|current| current.ct_eq(&new_hash).unwrap_u8() == 1) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "ok": false, "error": "security_code_unchanged" })),
@@ -998,8 +997,12 @@ async fn handle_web_command(
         }
         "check_update" => check_update_for_web().await,
         "register_by_email_code" => register_by_email_code_for_web(args).await,
-        "send_registration_verification_code" => send_registration_verification_code_for_web(args).await,
-        "send_reset_password_verification_code" => send_reset_password_verification_code_for_web(args).await,
+        "send_registration_verification_code" => {
+            send_registration_verification_code_for_web(args).await
+        }
+        "send_reset_password_verification_code" => {
+            send_reset_password_verification_code_for_web(args).await
+        }
         "reset_password_by_email_code" => reset_password_by_email_code_for_web(args).await,
         "login" => {
             let identifier = arg_string(&args, &["identifier"])?;
@@ -1094,8 +1097,10 @@ async fn handle_web_command(
         }
         "parse_invite_info" => {
             let input = arg_string(&args, &["input"])?;
-            Ok(serde_json::to_value(crate::invite::parse_invite_info(&input))
-                .unwrap_or(serde_json::Value::Null))
+            Ok(
+                serde_json::to_value(crate::invite::parse_invite_info(&input))
+                    .unwrap_or(serde_json::Value::Null),
+            )
         }
         "register_current_device_auto" => {
             let resp = dispatch_web_data(Data::RegisterDevice, state).await?;
@@ -1325,7 +1330,9 @@ fn web_service_info() -> WebServiceInfo {
     }
 }
 
-async fn register_by_email_code_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn register_by_email_code_for_web(
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let username = arg_string(&args, &["username"])?;
     let email = arg_string(&args, &["email"])?;
     let password = arg_string(&args, &["password"])?;
@@ -1340,8 +1347,8 @@ async fn register_by_email_code_for_web(args: serde_json::Value) -> Result<serde
         &verification_code,
         invite_code.as_deref(),
     )
-        .await
-        .map_err(|e| e.to_string())?;
+    .await
+    .map_err(|e| e.to_string())?;
     let message = if response.code == 0 {
         response.msg.clone()
     } else {
@@ -1354,7 +1361,9 @@ async fn register_by_email_code_for_web(args: serde_json::Value) -> Result<serde
     }))
 }
 
-async fn send_registration_verification_code_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn send_registration_verification_code_for_web(
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let email = arg_string(&args, &["email"])?;
     let config = load_machine_config().unwrap_or_default();
     let response = crate::auth::send_verification_code(&config.server_url, &email, "register")
@@ -1366,21 +1375,39 @@ async fn send_registration_verification_code_for_web(args: serde_json::Value) ->
     Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
 }
 
-async fn send_reset_password_verification_code_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn send_reset_password_verification_code_for_web(
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let email = arg_string(&args, &["email"])?;
     let config = load_machine_config().unwrap_or_default();
-    let response = crate::auth::send_verification_code(&config.server_url, &email, "reset_password").await.map_err(|e| e.to_string())?;
-    if response.code != 0 { return Err(response.localized_error_message(config.locale.as_deref())); }
+    let response =
+        crate::auth::send_verification_code(&config.server_url, &email, "reset_password")
+            .await
+            .map_err(|e| e.to_string())?;
+    if response.code != 0 {
+        return Err(response.localized_error_message(config.locale.as_deref()));
+    }
     Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
 }
 
-async fn reset_password_by_email_code_for_web(args: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn reset_password_by_email_code_for_web(
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let email = arg_string(&args, &["email"])?;
     let verification_code = arg_string(&args, &["verificationCode", "verification_code"])?;
     let new_password = arg_string(&args, &["newPassword", "new_password"])?;
     let config = load_machine_config().unwrap_or_default();
-    let response = crate::auth::reset_password_by_email_code(&config.server_url, &email, &verification_code, &new_password).await.map_err(|e| e.to_string())?;
-    if response.code != 0 { return Err(response.localized_error_message(config.locale.as_deref())); }
+    let response = crate::auth::reset_password_by_email_code(
+        &config.server_url,
+        &email,
+        &verification_code,
+        &new_password,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    if response.code != 0 {
+        return Err(response.localized_error_message(config.locale.as_deref()));
+    }
     Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
 }
 
