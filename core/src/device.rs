@@ -213,7 +213,7 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
     let rdp_port = get_rdp_port_from_registry();
     let rdp_enabled = is_rdp_enabled();
     let public_network = refresh_public_network_info(config, false).await;
-    let system_version = get_windows_version();
+    let system_version = get_system_version();
 
     let url = server_url(config, "/api/v1/devices");
     let request = RegisterRequest {
@@ -924,7 +924,7 @@ pub async fn refresh_public_network_info(
 }
 
 #[cfg(windows)]
-fn get_windows_version() -> String {
+fn get_system_version() -> String {
     let product_name = match run_hidden_cmd(&[
         "/C",
         "reg",
@@ -1029,9 +1029,47 @@ fn parse_reg_output(output: &str) -> String {
     String::new()
 }
 
-#[cfg(not(windows))]
-fn get_windows_version() -> String {
+#[cfg(target_os = "linux")]
+fn get_system_version() -> String {
+    std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|contents| parse_linux_system_version(&contents))
+        .unwrap_or_else(|| "Linux".to_string())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn get_system_version() -> String {
     std::env::consts::OS.to_string()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_system_version(os_release: &str) -> Option<String> {
+    fn value_for<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
+        contents.lines().find_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (candidate, value) = line.split_once('=')?;
+            (candidate == key).then(|| value.trim().trim_matches(|c| c == '\"' || c == '\''))
+        })
+    }
+
+    let name = value_for(os_release, "NAME")
+        .or_else(|| value_for(os_release, "ID"))?
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let version = value_for(os_release, "VERSION_ID")
+        .map(str::trim)
+        .filter(|version| !version.is_empty());
+
+    Some(match version {
+        Some(version) => format!("{} {}", name, version),
+        None => name.to_string(),
+    })
 }
 
 #[cfg(windows)]
@@ -1174,5 +1212,37 @@ mod tests {
             resolve_client_version(None, Some(" ".to_string())),
             "unknown"
         );
+    }
+
+    #[test]
+    fn linux_system_version_preserves_full_distribution_version() {
+        let cases = [
+            ("NAME=\"Ubuntu\"\nVERSION_ID=\"20.04\"", "Ubuntu 20.04"),
+            (
+                "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"",
+                "Debian GNU/Linux 12",
+            ),
+            (
+                "NAME=\"CentOS Linux\"\nVERSION_ID=\"7.9.2009\"",
+                "CentOS Linux 7.9.2009",
+            ),
+            ("NAME=\"Deepin\"\nVERSION_ID=\"20.9\"", "Deepin 20.9"),
+        ];
+
+        for (os_release, expected) in cases {
+            assert_eq!(
+                parse_linux_system_version(os_release).as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn linux_system_version_falls_back_when_version_is_missing() {
+        assert_eq!(
+            parse_linux_system_version("NAME=Ubuntu\n"),
+            Some("Ubuntu".to_string())
+        );
+        assert_eq!(parse_linux_system_version("VERSION_ID=20.04\n"), None);
     }
 }
