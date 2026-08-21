@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=安装 p2pRemote
+Name[en]=Install p2pRemote
+Comment=点击后输入管理员密码并自动完成安装
+Comment[en]=Enter the administrator password and install automatically
+Icon=system-software-install
+Terminal=false
+StartupNotify=true
+Exec=sh -c "cd \"$(dirname \"$1\")\" && exec ./install-gui.sh" launcher %k
+Categories=System;

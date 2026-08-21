@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "upgrade" ] || [ "$1" = "deconfigure" ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop p2premote-service.service >/dev/null 2>&1 || true
+    if [ "$1" = "remove" ]; then
+      systemctl disable p2premote-service.service >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
+exit 0

@@ -1,0 +1,14 @@
+[Unit]
+Description=p2pRemote Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/p2premote/resources/p2premote-service --foreground
+WorkingDirectory=/opt/p2premote
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

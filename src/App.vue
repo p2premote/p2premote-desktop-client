@@ -12,6 +12,13 @@
         <AppLogo :size="48" />
         <h1>p2pRemote</h1>
         <p>{{ $t(webSecurityCodeChangeRequired ? 'app.web_auth.change_prompt' : 'app.web_auth.prompt') }}</p>
+        <el-alert
+          v-if="webDefaultSecurityCodeActive && !webAuthenticated"
+          :title="$t('app.web_auth.initial_code_hint')"
+          type="info"
+          :closable="false"
+          show-icon
+        />
         <template v-if="webSecurityCodeChangeRequired">
           <el-input
             v-model="newWebSecurityCode"
@@ -311,6 +318,7 @@
         </el-form-item>
         <el-form-item v-if="webAccessMode === 'remote'" :label="$t('app.web_admin.allowed_ip')">
           <el-input v-model="webAllowedIp" placeholder="192.168.1.100" />
+          <p class="settings-tip">{{ $t('app.web_admin.allowed_ip_hint') }}</p>
         </el-form-item>
         <div class="web-admin-status-list">
           <div><span>{{ $t('app.web_admin.listen_addr') }}</span><code>{{ webListenAddr }}</code></div>
@@ -419,6 +427,7 @@ const webAuthChecked = ref(isTauriRuntime())
 const webAuthRequired = ref(false)
 const webAuthenticated = ref(isTauriRuntime())
 const webSecurityCodeChangeRequired = ref(false)
+const webDefaultSecurityCodeActive = ref(false)
 const webSecurityCode = ref('')
 const newWebSecurityCode = ref('')
 const confirmWebSecurityCode = ref('')
@@ -455,6 +464,7 @@ async function refreshWebAuthStatus() {
     const status = await getWebAuthStatus()
     webAuthRequired.value = status.security_code_required
     webAuthenticated.value = status.authenticated
+    webDefaultSecurityCodeActive.value = status.security_code_change_required
     webSecurityCodeChangeRequired.value = status.security_code_change_required && status.authenticated
     webAuthError.value = ''
   } catch (error) {
@@ -548,7 +558,7 @@ async function submitWebAccessChange() {
   const allowedIp = webAccessMode.value === 'remote' ? webAllowedIp.value.trim() : null
   const sourceWillBeAllowed = webAccessMode.value === 'local'
     ? ['127.0.0.1', '::1'].includes(webCurrentSourceIp.value)
-    : allowedIp === webCurrentSourceIp.value
+    : allowedIp === '0.0.0.0' || allowedIp === webCurrentSourceIp.value
   if (!sourceWillBeAllowed) {
     try {
       await ElMessageBox.confirm(

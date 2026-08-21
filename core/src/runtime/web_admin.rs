@@ -144,13 +144,9 @@ impl WebSecurityState {
             .map(ToOwned::to_owned)
             .filter(|value| !value.is_empty())
             .map(|value| {
-                let ip: IpAddr = value
-                    .parse()
-                    .with_context(|| format!("invalid web_admin_allowed_ip: {value}"))?;
-                if ip.is_unspecified() {
-                    anyhow::bail!("web_admin_allowed_ip cannot be an unspecified address");
-                }
-                Ok(ip)
+                value
+                    .parse::<IpAddr>()
+                    .with_context(|| format!("invalid web_admin_allowed_ip: {value}"))
             })
             .transpose()?;
         let security_code = security_code
@@ -195,7 +191,12 @@ impl WebSecurityState {
 
     fn source_allowed(&self, ip: IpAddr) -> bool {
         let ip = normalize_ip(ip);
-        ip.is_loopback() || self.allowed_remote_ip == Some(ip)
+        ip.is_loopback()
+            || self.allowed_remote_ip.is_some_and(|allowed| {
+                allowed == ip
+                    || matches!(allowed, IpAddr::V4(value) if value.is_unspecified())
+                        && matches!(ip, IpAddr::V4(_))
+            })
     }
 
     fn session_valid(&self, headers: &HeaderMap, source_ip: IpAddr, refresh: bool) -> bool {
@@ -727,7 +728,7 @@ async fn web_admin_update_access(
     let source_allowed = source_ip.is_loopback()
         || requested_ip
             .as_deref()
-            .is_some_and(|value| value == source_ip.to_string());
+            .is_some_and(|value| value == "0.0.0.0" || value == source_ip.to_string());
     state.security.clear_session();
     state
         .listener_revision
@@ -767,7 +768,7 @@ fn parse_web_access_config(
             let ip = value
                 .parse::<std::net::Ipv4Addr>()
                 .map_err(|_| "invalid_allowed_ip")?;
-            if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() || ip.is_broadcast() {
+            if ip.is_loopback() || ip.is_multicast() || ip.is_broadcast() {
                 return Err("invalid_allowed_ip");
             }
             Ok(Some(ip.to_string()))
@@ -1634,7 +1635,9 @@ mod tests {
     fn remote_access_requires_valid_ip_and_non_empty_code() {
         assert!(WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).is_ok());
         assert!(WebSecurityState::from_values(Some("192.0.2.191"), None, false).is_err());
-        assert!(WebSecurityState::from_values(Some("0.0.0.0"), Some("1"), false).is_err());
+        let wildcard = WebSecurityState::from_values(Some("0.0.0.0"), Some("1"), false).unwrap();
+        assert!(wildcard.source_allowed("192.0.2.191".parse().unwrap()));
+        assert!(!wildcard.source_allowed("2001:db8::1".parse().unwrap()));
         assert!(WebSecurityState::from_values(Some("not-an-ip"), Some("1"), false).is_err());
         assert!(WebSecurityState::from_values(None, Some("1"), false).is_ok());
     }
@@ -1655,6 +1658,10 @@ mod tests {
             parse_web_access_config("remote", Some(" 10.0.0.8 ")),
             Ok(Some("10.0.0.8".to_string()))
         );
+        assert_eq!(
+            parse_web_access_config("remote", Some("0.0.0.0")),
+            Ok(Some("0.0.0.0".to_string()))
+        );
     }
 
     #[test]
@@ -1663,7 +1670,6 @@ mod tests {
             None,
             Some(""),
             Some("127.0.0.1"),
-            Some("0.0.0.0"),
             Some("::1"),
             Some("224.0.0.1"),
             Some("255.255.255.255"),

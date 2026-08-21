@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+  /opt/p2premote/resources/configure-installation
+  if [ -f /etc/systemd/system/p2premote-service.service ] && \
+     cmp -s /etc/systemd/system/p2premote-service.service \
+       /usr/lib/systemd/system/p2premote-service.service; then
+    rm -f /etc/systemd/system/p2premote-service.service
+  fi
+  systemctl daemon-reload
+  systemctl enable p2premote-service.service >/dev/null
+  systemctl restart p2premote-service.service
+fi
+
+exit 0

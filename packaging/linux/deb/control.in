@@ -1,0 +1,10 @@
+Package: p2premote-headless
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: @ARCH@
+Maintainer: p2pRemote Team <noreply@p2premote.invalid>
+Depends: systemd
+Description: p2pRemote headless remote access service
+ p2pRemote service, command-line tools, WireGuard userspace components,
+ and browser-based management interface.

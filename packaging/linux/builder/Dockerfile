@@ -15,6 +15,8 @@ ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG GO_VERSION=1.25.13
 ARG NODE_VERSION=22.22.1
+ARG GO_DOWNLOAD_BASE=https://go.dev/dl
+ARG NODE_DOWNLOAD_BASE=https://nodejs.org/dist
 
 # p2premote-punch 的 go.mod 要求 go 1.25，镜像必须内置 ≥1.25 的工具链，
 # 否则 go build 会在运行期临时下载 toolchain（网络不稳定时构建直接失败）。
@@ -45,6 +47,7 @@ RUN cp /tmp/sources.list /etc/apt/sources.list \
         git \
         make \
         perl \
+        rpm \
         xz-utils \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -64,13 +67,17 @@ RUN case "$(uname -m)" in \
         aarch64) go_arch=arm64; node_arch=arm64 ;; \
         *) echo "Unsupported target architecture: $(uname -m)" >&2; exit 1 ;; \
     esac \
-    && curl --fail --location --retry 3 \
-        "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" \
+    && curl --http1.1 --fail --location --retry 10 --retry-delay 5 \
+        --retry-connrefused --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+        --continue-at - \
+        "${GO_DOWNLOAD_BASE}/go${GO_VERSION}.linux-${go_arch}.tar.gz" \
         -o /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz \
-    && curl --fail --location --retry 3 \
-        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+    && curl --http1.1 --fail --location --retry 10 --retry-delay 5 \
+        --retry-connrefused --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+        --continue-at - \
+        "${NODE_DOWNLOAD_BASE}/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
         -o /tmp/node.tar.xz \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
@@ -78,7 +85,9 @@ RUN case "$(uname -m)" in \
     && node --version \
     && npm --version
 
-RUN curl --fail --location --retry 3 https://sh.rustup.rs -o /tmp/rustup-init.sh \
+RUN curl --http1.1 --fail --location --retry 10 --retry-delay 5 \
+        --retry-connrefused --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+        https://sh.rustup.rs -o /tmp/rustup-init.sh \
     && sh /tmp/rustup-init.sh -y --profile minimal \
     && rm /tmp/rustup-init.sh \
     && rustc --version \
