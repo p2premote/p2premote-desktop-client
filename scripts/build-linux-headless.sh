@@ -190,7 +190,11 @@ fi
 PACKAGE_STAGE_DIR=$(mktemp -d "/tmp/p2premote-package.XXXXXX")
 PKG_ROOT="$PACKAGE_STAGE_DIR/tar/p2premote-headless"
 
-rm -rf "$OUT_DIR" "$DIST_DIR"
+CURRENT_TAR="$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz"
+CURRENT_DEB="$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${DEB_ARCH}.deb"
+CURRENT_RPM="$DIST_DIR/p2premote-headless-${VERSION}-1.${GIT_COMMIT}.${RPM_ARCH}.rpm"
+rm -rf "$OUT_DIR"
+rm -f "$CURRENT_TAR" "$CURRENT_DEB" "$CURRENT_RPM"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
 
 echo "==> Building static p2premote-punch"

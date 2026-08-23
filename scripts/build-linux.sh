@@ -192,8 +192,8 @@ else
   echo "==> Reusing an existing headless tgz"
 fi
 
-# The headless script cleans this directory before compiling, so a normal run
-# can only produce one matching archive. Requiring exactly one also prevents a
+# The headless script replaces only the package files for the selected version
+# and architecture. Requiring exactly one matching archive also prevents a
 # stale or wrong-architecture package from silently entering the image.
 if [[ -n "$EXPLICIT_TGZ" ]]; then
   TGZ_PATH="$EXPLICIT_TGZ"

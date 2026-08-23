@@ -92,4 +92,4 @@ file build/linux/dist/headless/*
 docker image inspect p2premote/client:1.6.4
 ```
 
-Linux 脚本会清理并重建 `build/linux/headless`、`build/linux/dist/headless` 和 `build/linux/dist/docker`，请不要把这些目录中的临时文件当作源码提交。
+Linux 脚本只会替换当前版本和目标架构的构建产物，并保留其他版本及架构的包；请不要把这些目录中的生成文件当作源码提交。
