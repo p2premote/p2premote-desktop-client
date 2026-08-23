@@ -4,10 +4,11 @@ set -euo pipefail
 umask 022
 
 usage() {
-  echo "Usage: $0 -v <version> [--proxy <http-proxy-url>]" >&2
+  echo "Usage: $0 -v <version> [--arch <x86_64|aarch64>] [--proxy <http-proxy-url>]" >&2
 }
 
 VERSION=""
+TARGET_ARCH="${P2PREMOTE_LINUX_ARCH:-}"
 BUILDER_PROXY="${P2PREMOTE_BUILDER_PROXY:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -17,6 +18,21 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       VERSION="$2"
+      shift 2
+      ;;
+    --arch)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "--arch requires x86_64 or aarch64" >&2
+        exit 1
+      fi
+      case "$2" in
+        x86_64|amd64) TARGET_ARCH="x86_64" ;;
+        aarch64|arm64) TARGET_ARCH="aarch64" ;;
+        *)
+          echo "unsupported --arch value: $2 (expected x86_64 or aarch64)" >&2
+          exit 1
+          ;;
+      esac
       shift 2
       ;;
     --proxy)
@@ -79,14 +95,17 @@ PUNCH_LIB="$APP_DIR/src-tauri/resources/libp2premote-punch.a"
 PUNCH_SOURCE_DIR="$REPO_ROOT/../p2premote-punch"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
 WG_CLI="$OUT_DIR/wg"
-case "$(uname -m)" in
-  aarch64)
+if [[ -z "$TARGET_ARCH" ]]; then
+  TARGET_ARCH="$(uname -m)"
+fi
+case "$TARGET_ARCH" in
+  aarch64|arm64)
     LINUX_ARCH="arm64"
     TARGET_LABEL="aarch64-linux-gnu"
     DEB_ARCH="arm64"
     RPM_ARCH="aarch64"
     ;;
-  x86_64)
+  x86_64|amd64)
     LINUX_ARCH="amd64"
     TARGET_LABEL="x86_64-linux-gnu"
     DEB_ARCH="amd64"
@@ -97,6 +116,7 @@ case "$(uname -m)" in
     exit 1
     ;;
 esac
+DOCKER_PLATFORM="linux/${LINUX_ARCH}"
 
 # Headless 产物必须携带固定的 glibc 基线（Debian 10 / GLIBC_2.28），
 # 因此编译一律在 builder 容器内完成；本机环境只提供源码和 Docker，
@@ -129,7 +149,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     if [[ -n "${P2PREMOTE_NODE_DOWNLOAD_BASE:-}" ]]; then
       PROXY_ARGS+=(--build-arg "NODE_DOWNLOAD_BASE=${P2PREMOTE_NODE_DOWNLOAD_BASE}")
     fi
-    docker build -t "$BUILDER_IMAGE" "${DOCKER_HOST_ARGS[@]}" ${PROXY_ARGS+"${PROXY_ARGS[@]}"} "$APP_DIR/packaging/linux/builder"
+    docker build --platform "$DOCKER_PLATFORM" -t "$BUILDER_IMAGE" "${DOCKER_HOST_ARGS[@]}" ${PROXY_ARGS+"${PROXY_ARGS[@]}"} "$APP_DIR/packaging/linux/builder"
   fi
 
   RUN_ENV=(-e "P2PREMOTE_IN_BUILDER_CONTAINER=1")
@@ -144,6 +164,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
   WORKSPACE_DIR="$(cd "$REPO_ROOT/.." && pwd)"
   echo "==> Building inside $BUILDER_IMAGE (glibc 2.28 baseline, cached toolchains in volumes)"
   exec docker run --rm \
+    --platform "$DOCKER_PLATFORM" \
     "${DOCKER_HOST_ARGS[@]}" \
     -v "$WORKSPACE_DIR:/workspace" \
     -v "p2p-cargo-target-${LINUX_ARCH}:/workspace/p2premote-desktop-client/target" \
@@ -154,7 +175,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     -w /workspace/p2premote-desktop-client \
     "${RUN_ENV[@]}" \
     "$BUILDER_IMAGE" \
-    bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}'"
+    bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}'"
 fi
 
 if [[ ! -d "$PUNCH_SOURCE_DIR" ]]; then

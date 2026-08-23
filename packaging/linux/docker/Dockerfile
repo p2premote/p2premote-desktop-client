@@ -7,9 +7,18 @@
 #
 # 构建上下文需放置 tgz 产物，默认文件名 p2premote-headless.tar.gz，
 # 可通过 --build-arg P2P_HEADLESS_TGZ=<文件名> 覆盖。建议使用
-# scripts/build-docker.sh 自动完成 tgz 构建与上下文准备。
+# scripts/build-linux.sh 自动完成编译、四格式打包与上下文准备。
 
 FROM ubuntu:22.04
+
+ARG http_proxy
+ARG https_proxy
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ENV http_proxy=${http_proxy} \
+    https_proxy=${https_proxy} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY}
 
 # 运行时依赖：
 #   iproute2  提供 `ip` 命令，service 在创建/删除 WireGuard 接口时依赖
@@ -21,6 +30,11 @@ RUN apt-get update \
         ca-certificates \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY=
 
 ENV TZ=Asia/Shanghai
 
