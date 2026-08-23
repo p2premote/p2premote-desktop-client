@@ -8,6 +8,9 @@ if [ "$1" = "remove" ] || [ "$1" = "upgrade" ] || [ "$1" = "deconfigure" ]; then
       systemctl disable p2premote-service.service >/dev/null 2>&1 || true
     fi
   fi
+  if [ "$1" = "remove" ] && [ -x /opt/p2premote/resources/configure-kysec ]; then
+    /opt/p2premote/resources/configure-kysec remove || true
+  fi
 fi
 
 exit 0

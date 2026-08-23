@@ -16,6 +16,10 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
 fi
 
+if [ -x "$INSTALL_ROOT/resources/configure-kysec" ]; then
+  "$INSTALL_ROOT/resources/configure-kysec" remove || true
+fi
+
 rm -f "$UNIT_PATH"
 rm -f "$PACKAGE_UNIT_PATH"
 rm -rf "$INSTALL_ROOT"

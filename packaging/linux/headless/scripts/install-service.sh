@@ -23,6 +23,7 @@ for required_file in \
   wireguard-go \
   wg \
   configure-installation \
+  configure-kysec \
   .p2premote_default.json; do
   if [ ! -f "$SCRIPT_DIR/resources/$required_file" ]; then
     echo "missing required file: $SCRIPT_DIR/resources/$required_file" >&2
@@ -64,9 +65,11 @@ copy_file "$SCRIPT_DIR/resources/p2premote-cli" "$INSTALL_ROOT/resources/p2premo
 copy_file "$SCRIPT_DIR/resources/wireguard-go" "$INSTALL_ROOT/resources/wireguard-go" 755
 copy_file "$SCRIPT_DIR/resources/wg" "$INSTALL_ROOT/resources/wg" 755
 copy_file "$SCRIPT_DIR/resources/configure-installation" "$INSTALL_ROOT/resources/configure-installation" 755
+copy_file "$SCRIPT_DIR/resources/configure-kysec" "$INSTALL_ROOT/resources/configure-kysec" 755
 copy_file "$SCRIPT_DIR/resources/.p2premote_default.json" "$INSTALL_ROOT/resources/.p2premote_default.json" 644
 
 CONFIGURE_OUTPUT=$("$INSTALL_ROOT/resources/configure-installation")
+"$INSTALL_ROOT/resources/configure-kysec" configure || true
 
 rm -rf "$INSTALL_ROOT/resources/web"
 mkdir -p "$INSTALL_ROOT/resources/web"

@@ -8,6 +8,9 @@ if [ "$1" = "configure" ]; then
        /usr/lib/systemd/system/p2premote-service.service; then
     rm -f /etc/systemd/system/p2premote-service.service
   fi
+  if [ -x /opt/p2premote/resources/configure-kysec ]; then
+    /opt/p2premote/resources/configure-kysec configure || true
+  fi
   systemctl daemon-reload
   systemctl enable p2premote-service.service >/dev/null
   systemctl restart p2premote-service.service
