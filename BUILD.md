@@ -61,7 +61,7 @@ build/linux/dist/docker/p2premote-client_<version>-<git-sha>_x86_64-linux-gnu.ta
   --tgz-path build/linux/dist/headless/p2premote-headless_1.6.4-<git-sha>_x86_64-linux-gnu.tar.gz
 ```
 
-`build-linux-headless.sh` 仍保留为只生成 tar.gz、deb、rpm 的底层兼容入口；`build-docker.sh` 也保留为转发入口。新发布流程统一使用 `build-linux.sh`。
+`build-linux-headless.sh` 仍保留为只生成 tar.gz、deb、rpm 的底层构建入口；新发布流程统一使用 `build-linux.sh`。
 
 ### aarch64
 

@@ -39,5 +39,5 @@ src-tauri/resources/p2premote-service.exe
 *.sln
 *.sw?
 
-# Docker 构建临时产物：build-docker.sh 会把 headless tgz 拷贝到这里
+# Docker 构建临时产物：build-linux.sh 会把 headless tgz 拷贝到这里
 packaging/linux/docker/p2premote-headless.tar.gz
