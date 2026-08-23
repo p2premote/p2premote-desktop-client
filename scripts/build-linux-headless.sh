@@ -112,7 +112,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     exit 1
   fi
 
-  BUILDER_IMAGE="p2premote-linux-builder:glibc2.28-packages-v2-${LINUX_ARCH}"
+  BUILDER_IMAGE="p2premote-linux-builder:glibc2.28-packages-v3-${LINUX_ARCH}"
   if ! docker image inspect "$BUILDER_IMAGE" >/dev/null 2>&1; then
     echo "==> Builder image $BUILDER_IMAGE not found; building it first (one-time)"
     PROXY_ARGS=()

@@ -15,6 +15,7 @@ ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG GO_VERSION=1.25.13
 ARG NODE_VERSION=22.22.1
+ARG RUST_VERSION=1.94.1
 ARG GO_DOWNLOAD_BASE=https://go.dev/dl
 ARG NODE_DOWNLOAD_BASE=https://nodejs.org/dist
 
@@ -89,9 +90,12 @@ RUN curl --http1.1 --fail --location --retry 10 --retry-delay 5 \
         --retry-connrefused --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
         https://sh.rustup.rs -o /tmp/rustup-init.sh \
     && sh /tmp/rustup-init.sh -y --profile minimal \
+        --default-toolchain "${RUST_VERSION}" \
+        --component rustfmt \
     && rm /tmp/rustup-init.sh \
     && rustc --version \
-    && cargo --version
+    && cargo --version \
+    && rustfmt --version
 
 # 构建期通过 --build-arg http_proxy 等传入的代理只用于下载工具链，
 # 不固化进运行期环境，保证镜像在任意网络下都可复用。
