@@ -103,13 +103,14 @@ fn log_gonc_udp_punch_established(
     tunnel: &gonc_ffi::UdpTunnelResult,
 ) {
     tracing::info!(
-        "[wgvpn] gonc UDP punch established: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, selected_traversal={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}",
+        "[wgvpn] gonc UDP punch established: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, selected_traversal={}, transport_mode={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}",
         role,
         peer_device_id,
         tunnel.attempts,
         elapsed.as_millis(),
         diagnostic_value(&tunnel.network),
         diagnostic_value(&tunnel.selected_traversal),
+        diagnostic_value(&tunnel.transport_mode),
         if tunnel.is_client { "client" } else { "server" },
         tunnel.local_forward_addr,
         tunnel.local_forward_port,
@@ -133,13 +134,14 @@ fn log_gonc_udp_punch_failed(
         .downcast_ref::<gonc_ffi::UdpTunnelFailure>()
         .map(|failure| &failure.result);
     tracing::warn!(
-        "[wgvpn] gonc UDP punch failed: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, selected_traversal={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}, error={:#}",
+        "[wgvpn] gonc UDP punch failed: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, selected_traversal={}, transport_mode={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}, error={:#}",
         role,
         peer_device_id,
         failure.map_or(0, |result| result.attempts),
         elapsed.as_millis(),
         failure.map_or("unknown", |result| diagnostic_value(&result.network)),
         failure.map_or("unknown", |result| diagnostic_value(&result.selected_traversal)),
+        failure.map_or("unknown", |result| diagnostic_value(&result.transport_mode)),
         failure.map_or("unknown", |result| if result.network.is_empty() { "unknown" } else if result.is_client { "client" } else { "server" }),
         failure.map_or("", |result| result.local_forward_addr.as_str()),
         failure.map_or(0, |result| result.local_forward_port),

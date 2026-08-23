@@ -12,6 +12,7 @@ pub struct UdpTunnelRequest {
     pub token: String,
     pub role_hint: String,
     pub traversal_mode: String,
+    pub plain_transport: bool,
     pub network: String,
     pub timeout_secs: u64,
     pub bind_ip: String,
@@ -32,6 +33,7 @@ impl UdpTunnelRequest {
             token: token.into(),
             role_hint: role_hint.into(),
             traversal_mode: "auto".to_string(),
+            plain_transport: true,
             network: "udp4".to_string(),
             // NAT mapping behavior can vary by source port. Give gonc enough
             // time to cycle through its candidate ports before declaring the
@@ -67,6 +69,8 @@ pub struct UdpTunnelResult {
     pub network: String,
     #[serde(default)]
     pub selected_traversal: String,
+    #[serde(default)]
+    pub transport_mode: String,
     #[serde(default)]
     pub local_lan_addr: String,
     #[serde(default)]
@@ -655,6 +659,7 @@ mod tests {
             "remote_nat_type": "hard",
             "network": "udp4",
             "selected_traversal": "lan",
+            "transport_mode": "plain",
             "local_lan_addr": "192.168.1.10:32001",
             "local_nat_addr": "198.51.100.20:41000",
             "remote_lan_addr": "192.168.2.10:32002",
@@ -665,6 +670,7 @@ mod tests {
         assert_eq!(parsed.handle_id, "udp-1");
         assert_eq!(parsed.local_forward_port, 32000);
         assert_eq!(parsed.selected_traversal, "lan");
+        assert_eq!(parsed.transport_mode, "plain");
     }
 
     #[test]
@@ -695,6 +701,7 @@ mod tests {
         let req = UdpTunnelRequest::wgvpn("tok", "active", 51820);
         assert_eq!(req.network, "udp4");
         assert_eq!(req.traversal_mode, "auto");
+        assert!(req.plain_transport);
         assert_eq!(req.timeout_secs, 100);
         assert_eq!(req.remote_target_ip, "127.0.0.1");
         assert_eq!(req.remote_target_port, 51820);
