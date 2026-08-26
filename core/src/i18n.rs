@@ -207,7 +207,7 @@ fn zh_message(key: &str) -> &str {
         // ---- 被动隧道生命周期（TunnelLifecycleStatus.message）----
         "tunnel.lifecycle.recovering" => "网络异常重连中",
         "tunnel.lifecycle.connected" => "隧道已连接",
-        "tunnel.lifecycle.awaiting_approval" => "等待被动端确认，业务数据暂未放行",
+        "tunnel.lifecycle.awaiting_approval" => "连接请求已发送，请等待对方同意",
         "tunnel.lifecycle.health_grace_expired" => {
             "网络持续异常，隧道已自动断开。请点击“建立隧道”重新连接"
         }
@@ -360,7 +360,7 @@ fn en_message(key: &str) -> &str {
         // ---- 被动隧道生命周期 ----
         "tunnel.lifecycle.recovering" => "Recovering from network issues",
         "tunnel.lifecycle.connected" => "Tunnel connected",
-        "tunnel.lifecycle.awaiting_approval" => "Waiting for passive approval; business traffic is blocked",
+        "tunnel.lifecycle.awaiting_approval" => "Request sent. Waiting for the other person to allow the connection",
         "tunnel.lifecycle.health_grace_expired" => "The network did not recover, so the tunnel was closed. Click Establish tunnel to reconnect",
         "tunnel.lifecycle.disconnected" => "Tunnel disconnected",
         "tunnel.lifecycle.passive_disconnected" => "Tunnel disconnected by user",
