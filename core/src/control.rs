@@ -63,6 +63,12 @@ pub enum Data {
     StopActiveTunnelJob {
         target_device_id: i64,
     },
+    ApproveInboundTunnel {
+        attempt_id: String,
+    },
+    RejectInboundTunnel {
+        attempt_id: String,
+    },
     RefreshTunnelStatus,
     RefreshNetworkInfo,
     ReloadConfig,
@@ -208,6 +214,10 @@ pub struct RuntimeStatus {
     pub wgvpn_jobs: Vec<WgvpnJobStatus>,
     #[serde(default)]
     pub tunnel_lifecycles: Vec<TunnelLifecycleStatus>,
+    /// Cross-account passive requests that have completed WG handshake and
+    /// are waiting for an explicit local approval.
+    #[serde(default)]
+    pub pending_inbound_approvals: Vec<InboundApprovalStatus>,
     /// 当前 UI 语言（"zh-CN" | "en"）。None 表示尚未设置，前端兜底探测系统语言。
     #[serde(default)]
     pub locale: Option<String>,
@@ -220,6 +230,26 @@ pub enum TunnelLifecycleState {
     Connecting,
     Connected,
     Recovering,
+    AwaitingApproval,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboundApprovalStatus {
+    pub attempt_id: String,
+    pub source_user_id: i64,
+    #[serde(default)]
+    pub source_username: String,
+    #[serde(default)]
+    pub source_email: String,
+    pub source_device_id: i64,
+    #[serde(default)]
+    pub source_device_name: String,
+    #[serde(default)]
+    pub source_device_alias: String,
+    pub requested_at: i64,
+    pub expires_at: i64,
+    #[serde(default)]
+    pub lan_cidrs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -321,6 +351,8 @@ pub struct WgvpnSessionStatus {
     pub is_active: bool,
     pub virtual_ip: String,
     pub peer_virtual_ip: String,
+    #[serde(default)]
+    pub approval_pending: bool,
     pub peer_pubkey: String,
     pub tunnel_name: String,
     #[serde(default)]
@@ -770,6 +802,7 @@ mod tests {
                 wgvpn_sessions: vec![],
                 wgvpn_jobs: vec![],
                 tunnel_lifecycles: vec![],
+                pending_inbound_approvals: vec![],
                 locale: Some("zh-CN".to_string()),
             }),
             request_id: None,

@@ -285,6 +285,7 @@ unsafe extern "C" {
     fn StartWindowsWgPeer(input: *const c_char) -> *mut c_char;
     fn StopWindowsWgPeer(input: *const c_char) -> *mut c_char;
     fn GetWindowsWgPeerStatus(input: *const c_char) -> *mut c_char;
+    fn SetWindowsWgPeerAllowed(input: *const c_char) -> *mut c_char;
     fn StopWindowsWgEngine(input: *const c_char) -> *mut c_char;
     fn CleanupWindowsWgPlatform(input: *const c_char) -> *mut c_char;
     fn Exchange(input: *const c_char) -> *mut c_char;
@@ -369,6 +370,25 @@ pub fn get_windows_wg_peer_status(
         )?
     };
     decode_windows_wg_peer_result(&output, "status")
+}
+
+/// Toggle a passive userspace WireGuard peer's AllowedIPs without rebuilding
+/// the peer or touching the packet hot path.
+pub fn set_windows_wg_peer_allowed(
+    library_path: &Path,
+    handle_id: &str,
+    allowed: bool,
+) -> Result<WindowsWgPeerResult> {
+    validate_punch_library_available(library_path)?;
+    let input = serde_json::json!({ "handle_id": handle_id, "allowed": allowed }).to_string();
+    let output = unsafe {
+        ffi_call(
+            &input,
+            |ptr| SetWindowsWgPeerAllowed(ptr),
+            "SetWindowsWgPeerAllowed",
+        )?
+    };
+    decode_windows_wg_peer_result(&output, "set allowed")
 }
 
 pub fn stop_windows_wg_engine(library_path: &Path) -> Result<()> {

@@ -852,6 +852,30 @@ pub async fn stop_active_tunnel_job(target_device_id: i64) -> Result<String, Str
 }
 
 #[tauri::command]
+pub async fn approve_inbound_tunnel(attempt_id: String) -> Result<String, String> {
+    match send_command_responsive(Data::ApproveInboundTunnel { attempt_id }).await {
+        Ok(Data::CommandResponse {
+            ok: true, message, ..
+        }) => Ok(message),
+        Ok(Data::CommandResponse { message, .. }) => Err(message),
+        Ok(other) => Err(format!("unexpected service response: {:?}", other)),
+        Err(err) => Err(err),
+    }
+}
+
+#[tauri::command]
+pub async fn reject_inbound_tunnel(attempt_id: String) -> Result<String, String> {
+    match send_command_responsive(Data::RejectInboundTunnel { attempt_id }).await {
+        Ok(Data::CommandResponse {
+            ok: true, message, ..
+        }) => Ok(message),
+        Ok(Data::CommandResponse { message, .. }) => Err(message),
+        Ok(other) => Err(format!("unexpected service response: {:?}", other)),
+        Err(err) => Err(err),
+    }
+}
+
+#[tauri::command]
 pub async fn refresh_service_network_info() -> Result<ServiceStatusResponse, String> {
     let service = query_service_status().map_err(|e| e.to_string())?;
     if !service.running {

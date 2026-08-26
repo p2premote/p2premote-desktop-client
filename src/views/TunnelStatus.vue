@@ -139,7 +139,7 @@ interface TunnelItem {
   latency_ms?: number | null
   received_bytes: number
   transmitted_bytes: number
-  lifecycle_state: 'not_established' | 'connecting' | 'connected' | 'recovering'
+  lifecycle_state: 'not_established' | 'connecting' | 'awaiting_approval' | 'connected' | 'recovering'
   lifecycle_message?: string
   attempt?: number
   max_attempts?: number
@@ -147,8 +147,9 @@ interface TunnelItem {
 
 interface WgvpnSessionStatus {
   peer_device_id: number
-  /** true=主动发起端，false=被连接的被动端；会话列表中的记录均为已建立会话。 */
+  /** true=主动发起端，false=被连接的被动端；被动会话可能仍等待本地审批。 */
   is_active: boolean
+  approval_pending?: boolean
   virtual_ip: string
   peer_virtual_ip: string
   health_state: 'connected' | 'degraded'
@@ -168,7 +169,7 @@ interface TunnelLifecycleStatus {
   peer_device_alias?: string
   peer_public_ip?: string
   role: 'active' | 'passive'
-  state: 'not_established' | 'connecting' | 'connected' | 'recovering'
+  state: 'not_established' | 'connecting' | 'awaiting_approval' | 'connected' | 'recovering'
   attempt: number
   max_attempts: number
   message?: string | null
@@ -219,7 +220,9 @@ const tunnels = computed(() => {
       latency_ms: session.latency_ms,
       received_bytes: session.received_bytes || 0,
       transmitted_bytes: session.transmitted_bytes || 0,
-      lifecycle_state: session.health_state === 'degraded' ? 'recovering' : 'connected',
+      lifecycle_state: session.approval_pending
+        ? 'awaiting_approval'
+        : session.health_state === 'degraded' ? 'recovering' : 'connected',
     })
   }
   for (const lifecycle of runtimeStatus.value?.tunnel_lifecycles || []) {
@@ -373,6 +376,7 @@ function lifecycleLabel(tunnel: TunnelItem): string {
 
 function lifecycleTagType(tunnel: TunnelItem): 'success' | 'warning' | 'info' | 'primary' {
   if (tunnel.lifecycle_state === 'connected') return 'success'
+  if (tunnel.lifecycle_state === 'awaiting_approval') return 'warning'
   if (tunnel.lifecycle_state === 'recovering') return 'warning'
   if (tunnel.lifecycle_state === 'connecting') return 'primary'
   return 'info'

@@ -559,8 +559,11 @@ pub(super) async fn start_wgvpn_active_with_notify(
     }
 
     let ready = tokio::time::timeout(Duration::from_secs(30), event_rx.recv()).await;
-    let rdp_port = match ready {
-        Ok(Some(P2PAttemptEvent::Ready { rdp_port })) => rdp_port,
+    let (rdp_port, approval_required) = match ready {
+        Ok(Some(P2PAttemptEvent::Ready {
+            rdp_port,
+            approval_required,
+        })) => (rdp_port, approval_required),
         Ok(Some(P2PAttemptEvent::Failed {
             error_code,
             message,
@@ -600,6 +603,8 @@ pub(super) async fn start_wgvpn_active_with_notify(
             Vec::new(),
         ))
     });
+    let mut approval_signal_received = false;
+    let mut early_approval_result: Option<Result<()>> = None;
     let result = tokio::select! {
         result = &mut start_handle => match result {
             Ok(result) => result,
@@ -616,14 +621,49 @@ pub(super) async fn start_wgvpn_active_with_notify(
                 let _ = wgvpn_flow::stop_wgvpn(config, target_device_id).await;
                 Err(anyhow!("peer_cancelled"))
             },
+            Some(P2PAttemptEvent::ApprovalRequired) => {
+                approval_signal_received = true;
+                match start_handle.await {
+                    Ok(result) => result,
+                    Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                }
+            },
+            Some(P2PAttemptEvent::ApprovalGranted) => {
+                early_approval_result = Some(Ok(()));
+                match start_handle.await {
+                    Ok(result) => result,
+                    Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                }
+            },
+            Some(P2PAttemptEvent::ApprovalDenied) => {
+                early_approval_result = Some(Err(anyhow!("approval_denied")));
+                match start_handle.await {
+                    Ok(result) => result,
+                    Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                }
+            },
+            Some(P2PAttemptEvent::ApprovalTimeout) => {
+                early_approval_result = Some(Err(anyhow!("approval_timeout")));
+                match start_handle.await {
+                    Ok(result) => result,
+                    Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                }
+            },
             _ => match start_handle.await {
                 Ok(result) => result,
                 Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
             },
         }
     };
-    shared.lock().p2p_attempt_waiters.remove(&attempt_id);
     let started = result?;
+    if approval_required {
+        if let Some(approval_result) = early_approval_result {
+            approval_result?;
+        } else {
+            await_active_inbound_approval(&mut event_rx, approval_signal_received).await?;
+        }
+    }
+    shared.lock().p2p_attempt_waiters.remove(&attempt_id);
     let target_rdp_port = if rdp_port == 0 {
         opened.target_rdp_port.max(3389)
     } else {
@@ -639,6 +679,32 @@ pub(super) async fn start_wgvpn_active_with_notify(
         message: started.message,
         warning: started.warning,
     })
+}
+
+async fn await_active_inbound_approval(
+    event_rx: &mut mpsc::UnboundedReceiver<P2PAttemptEvent>,
+    approval_signal_received: bool,
+) -> Result<()> {
+    let result = tokio::time::timeout(Duration::from_secs(65), async {
+        let mut required = approval_signal_received;
+        loop {
+            match event_rx.recv().await {
+                Some(P2PAttemptEvent::ApprovalRequired) => required = true,
+                Some(P2PAttemptEvent::ApprovalGranted) if required => return Ok(()),
+                Some(P2PAttemptEvent::ApprovalDenied) => return Err(anyhow!("approval_denied")),
+                Some(P2PAttemptEvent::ApprovalTimeout) => return Err(anyhow!("approval_timeout")),
+                Some(P2PAttemptEvent::Failed {
+                    error_code,
+                    message,
+                }) => return Err(anyhow!("{}: {}", error_code, message)),
+                Some(P2PAttemptEvent::Cancelled) => return Err(anyhow!("peer_cancelled")),
+                Some(_) => {}
+                None => return Err(anyhow!("approval_channel_closed")),
+            }
+        }
+    })
+    .await;
+    result.map_err(|_| anyhow!("approval_timeout"))?
 }
 
 pub(super) fn publish_active_tunnel_job_failed(

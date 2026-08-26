@@ -9,6 +9,19 @@ pub(super) async fn handle_p2p_start(
     punch_token: String,
     peer_info: PassivePeerInfo,
 ) -> Result<()> {
+    let legacy_same_account = shared
+        .lock()
+        .current_user_id
+        .zip(Some(peer_info.source_user_id))
+        .is_some_and(|(local_user_id, source_user_id)| local_user_id == source_user_id);
+    if !legacy_same_account {
+        // The legacy p2p_start envelope has no attempt_id/approval channel. Do
+        // not silently create an unguarded cross-account tunnel; upgraded
+        // peers must use attempt_start so the approval gate can be enforced.
+        return Err(anyhow!(
+            "legacy passive request requires the approval-capable attempt protocol"
+        ));
+    }
     shared
         .lock()
         .passive_peer_infos
@@ -54,6 +67,8 @@ pub(super) async fn handle_p2p_start(
         punch_token.clone(),
         false,
         lan_cidrs,
+        false,
+        None,
     ) {
         if let Data::CommandResponse {
             ok: false, message, ..
@@ -111,6 +126,32 @@ pub(super) async fn handle_p2p_notify(
                 !source_username.trim().is_empty(),
                 !source_email.trim().is_empty(),
             );
+            let approval_required = {
+                let state = shared.lock();
+                state
+                    .current_user_id
+                    .map(|current_user_id| current_user_id != source_user_id)
+                    .unwrap_or(true)
+            };
+            if approval_required && shared.lock().pending_inbound_approval.is_some() {
+                send_p2p_attempt_message(
+                    ws_client,
+                    connection_id,
+                    source_device_id,
+                    access_grant,
+                    P2PAttemptMessage::AttemptFailed {
+                        protocol_version: 1,
+                        attempt_id,
+                        stage: "passive_preflight".to_string(),
+                        error: P2PAttemptErrorPayload::new(
+                            "approval_busy",
+                            "another inbound approval is already pending",
+                        ),
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
             if wgvpn_flow::snapshot_sessions()
                 .iter()
                 .any(|session| session.peer_device_id == source_device_id && !session.is_active)
@@ -137,17 +178,17 @@ pub(super) async fn handle_p2p_notify(
                     TunnelLifecycleStatus {
                         peer_device_id: source_device_id,
                         source_user_id,
-                        source_username,
-                        source_email,
+                        source_username: source_username.clone(),
+                        source_email: source_email.clone(),
                         peer_device_name: if source_device_name.trim().is_empty() {
                             peer_info.source_device_name
                         } else {
-                            source_device_name
+                            source_device_name.clone()
                         },
                         peer_device_alias: if source_device_alias.trim().is_empty() {
                             peer_info.source_device_alias
                         } else {
-                            source_device_alias
+                            source_device_alias.clone()
                         },
                         peer_public_ip: peer_info.source_public_ip,
                         role: TunnelLifecycleRole::Passive,
@@ -171,10 +212,63 @@ pub(super) async fn handle_p2p_notify(
                     },
                 );
             }
+            if approval_required {
+                let peer_info = shared
+                    .lock()
+                    .passive_peer_infos
+                    .get(&source_device_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let requested_at = now_ts();
+                let (decision_tx, _decision_rx) = watch::channel(PassiveApprovalDecision::Pending);
+                let approval = PendingInboundApprovalRuntime {
+                    status: crate::control::InboundApprovalStatus {
+                        attempt_id: attempt_id.clone(),
+                        source_user_id,
+                        source_username: source_username.clone(),
+                        source_email: source_email.clone(),
+                        source_device_id,
+                        source_device_name: if source_device_name.trim().is_empty() {
+                            peer_info.source_device_name.clone()
+                        } else {
+                            source_device_name.clone()
+                        },
+                        source_device_alias: if source_device_alias.trim().is_empty() {
+                            peer_info.source_device_alias.clone()
+                        } else {
+                            source_device_alias.clone()
+                        },
+                        requested_at,
+                        expires_at: requested_at + 60,
+                        // Filled with the actual CIDRs immediately before the job starts.
+                        lan_cidrs: Vec::new(),
+                    },
+                    decision_tx,
+                    connection_id: connection_id.clone(),
+                    source_device_id,
+                    access_grant: access_grant.clone(),
+                    ws_client: ws_client.clone(),
+                };
+                let mut state = shared.lock();
+                state.pending_inbound_approval = Some(approval);
+                drop(state);
+            }
             let config = match load_machine_config() {
                 Ok(config) => config,
                 Err(err) => {
                     shared.lock().passive_p2p_attempts.remove(&source_device_id);
+                    if approval_required {
+                        let mut state = shared.lock();
+                        if state
+                            .pending_inbound_approval
+                            .as_ref()
+                            .is_some_and(|pending| pending.status.attempt_id == attempt_id)
+                        {
+                            state.pending_inbound_approval = None;
+                        }
+                        drop(state);
+                        refresh_pending_inbound_approvals(shared);
+                    }
                     send_p2p_attempt_message(
                         ws_client,
                         connection_id,
@@ -182,7 +276,7 @@ pub(super) async fn handle_p2p_notify(
                         access_grant,
                         P2PAttemptMessage::AttemptFailed {
                             protocol_version: 1,
-                            attempt_id,
+                            attempt_id: attempt_id.clone(),
                             stage: "passive_preflight".to_string(),
                             error: P2PAttemptErrorPayload::new(
                                 "config_load_failed",
@@ -199,13 +293,43 @@ pub(super) async fn handle_p2p_notify(
             } else {
                 Vec::new()
             };
-            let start_result =
-                start_wgvpn_job(shared, source_device_id, punch_token, false, lan_cidrs);
+            if approval_required {
+                let mut state = shared.lock();
+                if let Some(pending) = state
+                    .pending_inbound_approval
+                    .as_mut()
+                    .filter(|pending| pending.status.attempt_id == attempt_id)
+                {
+                    pending.status.lan_cidrs = lan_cidrs.clone();
+                }
+                drop(state);
+            }
+            let start_result = start_wgvpn_job(
+                shared,
+                source_device_id,
+                punch_token,
+                false,
+                lan_cidrs,
+                approval_required,
+                approval_required.then_some(attempt_id.clone()),
+            );
             if let Some(Data::CommandResponse {
                 ok: false, message, ..
             }) = start_result
             {
                 shared.lock().passive_p2p_attempts.remove(&source_device_id);
+                if approval_required {
+                    let mut state = shared.lock();
+                    if state
+                        .pending_inbound_approval
+                        .as_ref()
+                        .is_some_and(|pending| pending.status.attempt_id == attempt_id)
+                    {
+                        state.pending_inbound_approval = None;
+                    }
+                    drop(state);
+                    refresh_pending_inbound_approvals(shared);
+                }
                 send_p2p_attempt_message(
                     ws_client,
                     connection_id,
@@ -233,11 +357,24 @@ pub(super) async fn handle_p2p_notify(
                     stage: "hole_punch_wait".to_string(),
                     rdp_enabled: is_rdp_enabled(),
                     rdp_port: get_rdp_port_from_registry(),
+                    approval_required,
                 },
             )
             .await
             {
                 shared.lock().passive_p2p_attempts.remove(&source_device_id);
+                if approval_required {
+                    let mut state = shared.lock();
+                    if state
+                        .pending_inbound_approval
+                        .as_ref()
+                        .is_some_and(|pending| pending.status.attempt_id == ready_attempt_id)
+                    {
+                        state.pending_inbound_approval = None;
+                    }
+                    drop(state);
+                    refresh_pending_inbound_approvals(shared);
+                }
                 let _ = stop_wgvpn_job(shared, source_device_id).await;
                 return Err(err);
             }
@@ -254,10 +391,34 @@ pub(super) async fn handle_p2p_notify(
         P2PAttemptMessage::AttemptReady {
             attempt_id,
             rdp_port,
+            approval_required,
             ..
         } => {
             if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
-                let _ = waiter.send(P2PAttemptEvent::Ready { rdp_port });
+                let _ = waiter.send(P2PAttemptEvent::Ready {
+                    rdp_port,
+                    approval_required,
+                });
+            }
+        }
+        P2PAttemptMessage::ApprovalRequired { attempt_id, .. } => {
+            if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
+                let _ = waiter.send(P2PAttemptEvent::ApprovalRequired);
+            }
+        }
+        P2PAttemptMessage::ApprovalGranted { attempt_id, .. } => {
+            if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
+                let _ = waiter.send(P2PAttemptEvent::ApprovalGranted);
+            }
+        }
+        P2PAttemptMessage::ApprovalDenied { attempt_id, .. } => {
+            if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
+                let _ = waiter.send(P2PAttemptEvent::ApprovalDenied);
+            }
+        }
+        P2PAttemptMessage::ApprovalTimeout { attempt_id, .. } => {
+            if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
+                let _ = waiter.send(P2PAttemptEvent::ApprovalTimeout);
             }
         }
         P2PAttemptMessage::AttemptFailed {
@@ -282,7 +443,18 @@ pub(super) async fn handle_p2p_notify(
                 })
                 .unwrap_or(false);
             if is_current_passive_attempt {
-                shared.lock().passive_p2p_attempts.remove(&source_device_id);
+                {
+                    let mut state = shared.lock();
+                    state.passive_p2p_attempts.remove(&source_device_id);
+                    if state
+                        .pending_inbound_approval
+                        .as_ref()
+                        .is_some_and(|pending| pending.status.attempt_id == attempt_id)
+                    {
+                        state.pending_inbound_approval = None;
+                    }
+                }
+                refresh_pending_inbound_approvals(shared);
                 let _ = stop_wgvpn_job(shared, source_device_id).await;
             } else {
                 tracing::debug!(
@@ -360,7 +532,7 @@ pub(super) fn spawn_passive_attempt_failure_reporter(
                         access_grant,
                         P2PAttemptMessage::AttemptFailed {
                             protocol_version: 1,
-                            attempt_id,
+                            attempt_id: attempt_id.clone(),
                             stage: "passive_attempt".to_string(),
                             error: P2PAttemptErrorPayload::new(
                                 classify_tunnel_error_code(&job.message),
@@ -369,11 +541,40 @@ pub(super) fn spawn_passive_attempt_failure_reporter(
                         },
                     )
                     .await;
-                    shared.lock().passive_p2p_attempts.remove(&source_device_id);
+                    {
+                        let mut state = shared.lock();
+                        state.passive_p2p_attempts.remove(&source_device_id);
+                        if state
+                            .pending_inbound_approval
+                            .as_ref()
+                            .is_some_and(|pending| pending.status.attempt_id == attempt_id)
+                        {
+                            state.pending_inbound_approval = None;
+                        }
+                    }
+                    refresh_pending_inbound_approvals(&shared);
                     return;
                 }
                 Some(job) if job.state == WgvpnJobState::Succeeded => return,
-                None => return,
+                None => {
+                    let removed = {
+                        let mut state = shared.lock();
+                        if state
+                            .pending_inbound_approval
+                            .as_ref()
+                            .is_some_and(|pending| pending.status.attempt_id == attempt_id)
+                        {
+                            state.pending_inbound_approval = None;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if removed {
+                        refresh_pending_inbound_approvals(&shared);
+                    }
+                    return;
+                }
                 _ => {}
             }
         }

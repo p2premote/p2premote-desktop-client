@@ -207,6 +207,7 @@ fn zh_message(key: &str) -> &str {
         // ---- 被动隧道生命周期（TunnelLifecycleStatus.message）----
         "tunnel.lifecycle.recovering" => "网络异常重连中",
         "tunnel.lifecycle.connected" => "隧道已连接",
+        "tunnel.lifecycle.awaiting_approval" => "等待被动端确认，业务数据暂未放行",
         "tunnel.lifecycle.health_grace_expired" => {
             "网络持续异常，隧道已自动断开。请点击“建立隧道”重新连接"
         }
@@ -322,6 +323,7 @@ fn zh_message(key: &str) -> &str {
         "p2p.attempt.user_cancelled" => "对端已取消建立隧道",
         "p2p.attempt.wireguard_handshake_failed" => "WireGuard 握手失败",
         "p2p.attempt.wireguard_config_failed" => "WireGuard 配置失败",
+        "p2p.attempt.approval_busy" => "本机已有待处理的入站审批请求",
         "p2p.attempt.internal_error" => "对端建立隧道失败",
 
         // ---- start_service_active_tunnel 的进度 message（service.rs）----
@@ -358,6 +360,7 @@ fn en_message(key: &str) -> &str {
         // ---- 被动隧道生命周期 ----
         "tunnel.lifecycle.recovering" => "Recovering from network issues",
         "tunnel.lifecycle.connected" => "Tunnel connected",
+        "tunnel.lifecycle.awaiting_approval" => "Waiting for passive approval; business traffic is blocked",
         "tunnel.lifecycle.health_grace_expired" => "The network did not recover, so the tunnel was closed. Click Establish tunnel to reconnect",
         "tunnel.lifecycle.disconnected" => "Tunnel disconnected",
         "tunnel.lifecycle.passive_disconnected" => "Tunnel disconnected by user",
@@ -469,6 +472,7 @@ fn en_message(key: &str) -> &str {
         "p2p.attempt.user_cancelled" => "The peer cancelled tunnel establishment",
         "p2p.attempt.wireguard_handshake_failed" => "WireGuard handshake failed",
         "p2p.attempt.wireguard_config_failed" => "WireGuard configuration failed",
+        "p2p.attempt.approval_busy" => "This device already has a pending inbound approval",
         "p2p.attempt.internal_error" => "The peer failed to establish the tunnel",
 
         // ---- start_service_active_tunnel 进度 ----

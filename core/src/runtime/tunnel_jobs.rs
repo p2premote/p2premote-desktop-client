@@ -9,6 +9,8 @@ pub(super) fn start_wgvpn_job(
     token: String,
     is_active: bool,
     lan_cidrs: Vec<String>,
+    approval_required: bool,
+    approval_attempt_id: Option<String>,
 ) -> Option<Data> {
     if wgvpn_flow::snapshot_sessions()
         .iter()
@@ -53,6 +55,8 @@ pub(super) fn start_wgvpn_job(
             token,
             is_active,
             lan_cidrs,
+            approval_required,
+            approval_attempt_id,
         );
     }
     Some(cmd_response(
@@ -71,6 +75,8 @@ pub(super) fn spawn_wgvpn_job_task(
     token: String,
     is_active: bool,
     lan_cidrs: Vec<String>,
+    approval_required: bool,
+    approval_attempt_id: Option<String>,
 ) {
     tokio::spawn(async move {
         // A passive attempt is coordinated by one p2p_notify attempt_id and must
@@ -206,6 +212,51 @@ pub(super) fn spawn_wgvpn_job_task(
 
             match attempt_result {
                 Some(Ok(result)) if result.success => {
+                    if !is_active && approval_required {
+                        if let Err(err) = await_passive_inbound_approval(
+                            &shared,
+                            &config,
+                            peer_device_id,
+                            approval_attempt_id.as_deref(),
+                            generation,
+                            attempt,
+                            max_attempts,
+                        )
+                        .await
+                        {
+                            if let Some(attempt_id) = approval_attempt_id.as_deref() {
+                                let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
+                                let mut state = shared.lock();
+                                if state
+                                    .pending_inbound_approval
+                                    .as_ref()
+                                    .is_some_and(|pending| pending.status.attempt_id == attempt_id)
+                                {
+                                    state.pending_inbound_approval = None;
+                                }
+                                state
+                                    .passive_p2p_attempts
+                                    .retain(|_, current| current.attempt_id != attempt_id);
+                                drop(state);
+                                refresh_pending_inbound_approvals(&shared);
+                            }
+                            update_wgvpn_job_status(
+                                &shared,
+                                WgvpnJobStatus {
+                                    peer_device_id,
+                                    is_active,
+                                    state: WgvpnJobState::Failed,
+                                    attempt,
+                                    max_attempts,
+                                    message: err.to_string(),
+                                    updated_at: now_ts(),
+                                },
+                                Some(generation),
+                            );
+                            remove_wgvpn_job_if_current(&shared, peer_device_id, generation);
+                            return;
+                        }
+                    }
                     let peer_virtual_ip = result.peer_virtual_ip.clone();
                     shared
                         .lock()
@@ -333,11 +384,178 @@ pub(super) fn spawn_wgvpn_job_task(
     });
 }
 
+async fn await_passive_inbound_approval(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    config: &crate::config::MachineConfig,
+    peer_device_id: i64,
+    attempt_id: Option<&str>,
+    generation: u64,
+    attempt: u8,
+    max_attempts: u8,
+) -> Result<()> {
+    let attempt_id = attempt_id.ok_or_else(|| anyhow!("approval_request_missing"))?;
+    let requested_at = now_ts();
+    let expires_at = requested_at + 60;
+    {
+        let mut state = shared.lock();
+        let pending = state
+            .pending_inbound_approval
+            .as_mut()
+            .filter(|pending| pending.status.attempt_id == attempt_id)
+            .ok_or_else(|| anyhow!("approval_request_missing"))?;
+        pending.status.requested_at = requested_at;
+        pending.status.expires_at = expires_at;
+    }
+    let context = {
+        let state = shared.lock();
+        state
+            .pending_inbound_approval
+            .as_ref()
+            .filter(|pending| pending.status.attempt_id == attempt_id)
+            .map(|pending| {
+                (
+                    pending.decision_tx.subscribe(),
+                    pending.connection_id.clone(),
+                    pending.source_device_id,
+                    pending.access_grant.clone(),
+                    pending.ws_client.clone(),
+                )
+            })
+    }
+    .ok_or_else(|| anyhow!("approval_request_missing"))?;
+
+    wgvpn_flow::set_wgvpn_allowed(config, peer_device_id, false).await?;
+    refresh_pending_inbound_approvals(shared);
+    update_wgvpn_job_status(
+        shared,
+        WgvpnJobStatus {
+            peer_device_id,
+            is_active: false,
+            state: WgvpnJobState::Waiting,
+            attempt,
+            max_attempts,
+            message: localized_message(
+                current_locale(shared).as_deref(),
+                "tunnel.lifecycle.awaiting_approval",
+                &[],
+            ),
+            updated_at: now_ts(),
+        },
+        Some(generation),
+    );
+    refresh_wgvpn_sessions(shared);
+    send_p2p_attempt_message(
+        &context.4,
+        context.1.clone(),
+        context.2,
+        context.3.clone(),
+        P2PAttemptMessage::ApprovalRequired {
+            protocol_version: 1,
+            attempt_id: attempt_id.to_string(),
+            expires_at,
+        },
+    )
+    .await?;
+
+    let mut decision_rx = context.0;
+    let decision = tokio::time::timeout(Duration::from_secs(60), async {
+        let decision = loop {
+            if *decision_rx.borrow() != PassiveApprovalDecision::Pending {
+                break *decision_rx.borrow();
+            }
+            decision_rx.changed().await?;
+        };
+        Ok::<PassiveApprovalDecision, tokio::sync::watch::error::RecvError>(decision)
+    })
+    .await
+    .unwrap_or(Ok(PassiveApprovalDecision::Pending))
+    .unwrap_or(PassiveApprovalDecision::Pending);
+
+    let result = match decision {
+        PassiveApprovalDecision::Granted => {
+            wgvpn_flow::set_wgvpn_allowed(config, peer_device_id, true).await?;
+            send_p2p_attempt_message(
+                &context.4,
+                context.1.clone(),
+                context.2,
+                context.3.clone(),
+                P2PAttemptMessage::ApprovalGranted {
+                    protocol_version: 1,
+                    attempt_id: attempt_id.to_string(),
+                },
+            )
+            .await?;
+            Ok(())
+        }
+        PassiveApprovalDecision::Denied => {
+            let _ = send_p2p_attempt_message(
+                &context.4,
+                context.1.clone(),
+                context.2,
+                context.3.clone(),
+                P2PAttemptMessage::ApprovalDenied {
+                    protocol_version: 1,
+                    attempt_id: attempt_id.to_string(),
+                },
+            )
+            .await;
+            let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
+            Err(anyhow!("approval_denied"))
+        }
+        PassiveApprovalDecision::Pending => {
+            let _ = send_p2p_attempt_message(
+                &context.4,
+                context.1.clone(),
+                context.2,
+                context.3.clone(),
+                P2PAttemptMessage::ApprovalTimeout {
+                    protocol_version: 1,
+                    attempt_id: attempt_id.to_string(),
+                },
+            )
+            .await;
+            let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
+            Err(anyhow!("approval_timeout"))
+        }
+    };
+    {
+        let mut state = shared.lock();
+        if state
+            .pending_inbound_approval
+            .as_ref()
+            .is_some_and(|pending| pending.status.attempt_id == attempt_id)
+        {
+            state.pending_inbound_approval = None;
+        }
+        state
+            .passive_p2p_attempts
+            .retain(|_, current| current.attempt_id != attempt_id);
+    }
+    refresh_pending_inbound_approvals(shared);
+    result
+}
+
 /// 停止 wgvpn：发 cancel 信号 + 调 stop_wgvpn 清理隧道/peer。
 pub(super) async fn stop_wgvpn_job(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
 ) -> Option<Data> {
+    let removed_pending = {
+        let mut state = shared.lock();
+        if state
+            .pending_inbound_approval
+            .as_ref()
+            .is_some_and(|pending| pending.source_device_id == peer_device_id)
+        {
+            state.pending_inbound_approval = None;
+            true
+        } else {
+            false
+        }
+    };
+    if removed_pending {
+        refresh_pending_inbound_approvals(shared);
+    }
     let stopped_role = wgvpn_flow::snapshot_sessions()
         .into_iter()
         .find(|session| session.peer_device_id == peer_device_id)
@@ -513,7 +731,9 @@ pub(super) async fn cancel_all_wgvpn_jobs(shared: &Arc<Mutex<SharedRuntimeState>
     {
         let mut state = shared.lock();
         state.status.wgvpn_jobs.clear();
+        state.pending_inbound_approval = None;
     }
+    refresh_pending_inbound_approvals(shared);
     refresh_wgvpn_sessions(shared);
 }
 
@@ -953,6 +1173,7 @@ pub(super) fn refresh_wgvpn_sessions_locked(state: &mut SharedRuntimeState) {
                 is_active: s.is_active,
                 virtual_ip: s.virtual_ip,
                 peer_virtual_ip: s.peer_virtual_ip,
+                approval_pending: s.approval_pending,
                 peer_pubkey: s.peer_pubkey,
                 tunnel_name: s.tunnel_name,
                 health_state: health.state,
@@ -989,7 +1210,9 @@ pub(super) fn refresh_wgvpn_sessions_locked(state: &mut SharedRuntimeState) {
         } else {
             TunnelLifecycleRole::Passive
         };
-        let lifecycle_state = if session.health_state == WgvpnHealthState::Degraded {
+        let lifecycle_state = if !session.is_active && session.approval_pending {
+            TunnelLifecycleState::AwaitingApproval
+        } else if session.health_state == WgvpnHealthState::Degraded {
             TunnelLifecycleState::Recovering
         } else {
             TunnelLifecycleState::Connected
@@ -1042,11 +1265,19 @@ pub(super) fn refresh_wgvpn_sessions_locked(state: &mut SharedRuntimeState) {
                 peer_virtual_ip: Some(session.peer_virtual_ip),
                 last_result: TunnelLastResult::None,
                 error_code: None,
-                message: Some(if lifecycle_state == TunnelLifecycleState::Recovering {
-                    localized_message(locale.as_deref(), "tunnel.lifecycle.recovering", &[])
-                } else {
-                    localized_message(locale.as_deref(), "tunnel.lifecycle.connected", &[])
-                }),
+                message: Some(
+                    if lifecycle_state == TunnelLifecycleState::AwaitingApproval {
+                        localized_message(
+                            locale.as_deref(),
+                            "tunnel.lifecycle.awaiting_approval",
+                            &[],
+                        )
+                    } else if lifecycle_state == TunnelLifecycleState::Recovering {
+                        localized_message(locale.as_deref(), "tunnel.lifecycle.recovering", &[])
+                    } else {
+                        localized_message(locale.as_deref(), "tunnel.lifecycle.connected", &[])
+                    },
+                ),
                 health_failures: session.consecutive_failures,
                 health_grace_deadline: session.health_grace_deadline,
                 connected_at: None,

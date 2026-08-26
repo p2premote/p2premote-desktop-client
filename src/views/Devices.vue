@@ -366,7 +366,7 @@ interface WgvpnLanAccessConfig {
 interface TunnelLifecycleStatus {
   peer_device_id: number
   role: 'active' | 'passive'
-  state: 'not_established' | 'connecting' | 'connected' | 'recovering'
+  state: 'not_established' | 'connecting' | 'awaiting_approval' | 'connected' | 'recovering'
   attempt: number
   max_attempts: number
   stage?: string | null
@@ -620,7 +620,7 @@ function deviceConnectionState(device: DeviceInfo | null): 'offline' | 'online' 
   if (!device || device.status !== 'online') return 'offline'
   const state = deviceTunnelLifecycle(device).state
   if (state === 'connected') return 'connected'
-  if (state === 'connecting' || state === 'recovering') return 'connecting'
+  if (state === 'connecting' || state === 'awaiting_approval' || state === 'recovering') return 'connecting'
   return 'online'
 }
 
@@ -654,6 +654,7 @@ function tunnelLifecycleDescription(device: DeviceInfo | null): string {
     const ip = lifecycle.peer_virtual_ip || tunnelVirtualIp(device)
     return ip ? t('devices.lifecycle.desc_connected_with_ip', { ip }) : t('devices.lifecycle.desc_connected_plain')
   }
+  if (lifecycle.state === 'awaiting_approval') return lifecycle.message || t('devices.lifecycle.desc_awaiting_approval')
   if (lifecycle.state === 'recovering') return lifecycle.message || t('devices.lifecycle.desc_recovering_default')
   if (lifecycle.last_result !== 'none' && lifecycle.message) return lifecycle.message
   return t('devices.lifecycle.desc_none')
@@ -883,8 +884,8 @@ function applyTunnelRuntimeStatus(runtime: any) {
         const liveRole = liveRoleMap.get(lifecycle.peer_device_id)
         if (liveRole && lifecycle.role !== liveRole) continue
         const existing = newLifecycleMap[lifecycle.peer_device_id]
-        const priority = lifecycle.state === 'connected' ? 3 : lifecycle.state === 'recovering' ? 2 : lifecycle.state === 'connecting' ? 1 : 0
-        const existingPriority = existing?.state === 'connected' ? 3 : existing?.state === 'recovering' ? 2 : existing?.state === 'connecting' ? 1 : 0
+        const priority = lifecycle.state === 'connected' ? 3 : lifecycle.state === 'recovering' ? 2 : lifecycle.state === 'awaiting_approval' ? 1 : lifecycle.state === 'connecting' ? 1 : 0
+        const existingPriority = existing?.state === 'connected' ? 3 : existing?.state === 'recovering' ? 2 : existing?.state === 'awaiting_approval' ? 1 : existing?.state === 'connecting' ? 1 : 0
         if (!existing || priority > existingPriority || lifecycle.role === liveRole) {
           newLifecycleMap[lifecycle.peer_device_id] = lifecycle
         }
@@ -920,7 +921,7 @@ function openTunnelAction(device: DeviceInfo) {
     void handleDisconnectTunnel(device)
     return
   }
-  if (lifecycle.state === 'connecting' || activeTunnelJob(device)) {
+  if (lifecycle.state === 'connecting' || lifecycle.state === 'awaiting_approval' || activeTunnelJob(device)) {
     void handleCancelActiveTunnelJob(device)
     return
   }

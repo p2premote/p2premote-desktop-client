@@ -340,6 +340,29 @@
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-if="pendingInboundApproval"
+      v-model="inboundApprovalVisible"
+      :title="$t('app.inbound_approval.title')"
+      width="460px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="false"
+    >
+      <p>{{ $t('app.inbound_approval.body', { device: inboundApprovalDeviceName, user: inboundApprovalUser }) }}</p>
+      <p class="approval-countdown">
+        {{ $t('app.inbound_approval.expires', { seconds: inboundApprovalSeconds }) }}
+      </p>
+      <template #footer>
+        <el-button :loading="inboundApprovalSubmitting" @click="rejectInboundApproval">
+          {{ $t('app.inbound_approval.reject') }}
+        </el-button>
+        <el-button type="primary" :loading="inboundApprovalSubmitting" @click="approveInboundApproval">
+          {{ $t('app.inbound_approval.approve') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <div
       v-if="textContextMenu.visible"
       class="text-context-menu no-drag"
@@ -730,6 +753,7 @@ interface BackgroundServiceStatus {
     wgvpn_sessions?: Array<{
       peer_device_id: number
       is_active: boolean
+      approval_pending?: boolean
       virtual_ip: string
       peer_virtual_ip: string
       tunnel_name: string
@@ -741,12 +765,70 @@ interface BackgroundServiceStatus {
       peer_device_name?: string
       peer_device_alias?: string
     }>
+    pending_inbound_approvals?: InboundApprovalStatus[]
     active_tunnel_jobs?: ActiveTunnelJobStatus[]
   } | null
   machine_logged_in: boolean
   config_path: string
   log_dir: string
 }
+
+interface InboundApprovalStatus {
+  attempt_id: string
+  source_user_id: number
+  source_username?: string
+  source_email?: string
+  source_device_id: number
+  source_device_name?: string
+  source_device_alias?: string
+  requested_at: number
+  expires_at: number
+}
+
+const pendingInboundApprovals = ref<InboundApprovalStatus[]>([])
+const inboundApprovalSubmitting = ref(false)
+const inboundApprovalNow = ref(Math.floor(Date.now() / 1000))
+const pendingInboundApproval = computed(() => pendingInboundApprovals.value[0])
+const inboundApprovalVisible = computed({
+  get: () => Boolean(pendingInboundApproval.value),
+  set: () => {},
+})
+const inboundApprovalDeviceName = computed(() => (
+  pendingInboundApproval.value?.source_device_alias?.trim()
+  || pendingInboundApproval.value?.source_device_name?.trim()
+  || `#${pendingInboundApproval.value?.source_device_id ?? ''}`
+))
+const inboundApprovalUser = computed(() => (
+  pendingInboundApproval.value?.source_username?.trim()
+  || pendingInboundApproval.value?.source_email?.trim()
+  || t('common.unknown_user')
+))
+const inboundApprovalSeconds = computed(() => Math.max(
+  0,
+  (pendingInboundApproval.value?.expires_at ?? inboundApprovalNow.value) - inboundApprovalNow.value,
+))
+let inboundApprovalTimer: number | undefined
+
+async function resolveInboundApproval(allow: boolean) {
+  const approval = pendingInboundApproval.value
+  if (!approval || inboundApprovalSubmitting.value) return
+  inboundApprovalSubmitting.value = true
+  try {
+    await invoke(allow ? 'approve_inbound_tunnel' : 'reject_inbound_tunnel', {
+      attemptId: approval.attempt_id,
+    })
+    pendingInboundApprovals.value = pendingInboundApprovals.value.filter(
+      item => item.attempt_id !== approval.attempt_id,
+    )
+  } catch (error) {
+    ElMessage.error(normalizeError(error))
+  } finally {
+    inboundApprovalSubmitting.value = false
+  }
+}
+
+function approveInboundApproval() { void resolveInboundApproval(true) }
+function rejectInboundApproval() { void resolveInboundApproval(false) }
 
 interface ActiveTunnelJobStatus {
   target_device_id: number
@@ -784,6 +866,13 @@ const deviceStore = useDeviceStore()
 
 const autoStart = ref(false)
 const backgroundServiceStatus = ref<BackgroundServiceStatus | null>(null)
+watch(
+  () => backgroundServiceStatus.value?.runtime?.pending_inbound_approvals,
+  (approvals) => {
+    pendingInboundApprovals.value = Array.isArray(approvals) ? approvals : []
+  },
+  { deep: true },
+)
 const SERVICE_SESSION_STORAGE_KEY = 'p2premote-service-session-id'
 const cachedServiceSessionId = sessionStorage.getItem(SERVICE_SESSION_STORAGE_KEY)
 const showStartupPreflight = ref(!cachedServiceSessionId)
@@ -985,6 +1074,9 @@ function updateServiceStatusFromEvent(runtime: any) {
       },
     }
   }
+  pendingInboundApprovals.value = Array.isArray(runtime?.pending_inbound_approvals)
+    ? runtime.pending_inbound_approvals
+    : []
   void handleActiveTunnelJobStatuses(runtime?.active_tunnel_jobs)
   void handlePassiveWgvpnSessions(runtime)
 }
@@ -1015,7 +1107,9 @@ async function handlePassiveWgvpnSessions(
 
   const passiveSessions = sessions.filter(session => !session.is_active)
   const currentPeers = new Set(passiveSessions.map(session => session.peer_device_id))
-  const connected = passiveSessions.filter(session => !knownPassiveWgvpnPeers.has(session.peer_device_id))
+  const connected = passiveSessions.filter(session => (
+    !session.approval_pending && !knownPassiveWgvpnPeers.has(session.peer_device_id)
+  ))
 
   knownPassiveWgvpnPeers.clear()
   for (const peerId of currentPeers) knownPassiveWgvpnPeers.add(peerId)
@@ -1591,6 +1685,9 @@ async function bootstrapApp() {
 }
 
 onMounted(async () => {
+  inboundApprovalTimer = window.setInterval(() => {
+    inboundApprovalNow.value = Math.floor(Date.now() / 1000)
+  }, 1000)
   await syncMaximizedWindowState()
   window.addEventListener('resize', handleWindowResize)
   window.addEventListener('focus', handleActiveTunnelJobForeground)
@@ -1607,6 +1704,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (inboundApprovalTimer !== undefined) window.clearInterval(inboundApprovalTimer)
   window.removeEventListener('resize', handleWindowResize)
   if (windowStateSyncTimer !== null) window.clearTimeout(windowStateSyncTimer)
   window.removeEventListener('focus', handleActiveTunnelJobForeground)

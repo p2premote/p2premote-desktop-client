@@ -1187,6 +1187,16 @@ async fn handle_web_command(
                 dispatch_web_data(Data::StopActiveTunnelJob { target_device_id }, state).await?;
             command_message(resp)
         }
+        "approve_inbound_tunnel" => {
+            let attempt_id = arg_string(&args, &["attemptId", "attempt_id"])?;
+            let resp = dispatch_web_data(Data::ApproveInboundTunnel { attempt_id }, state).await?;
+            command_message(resp)
+        }
+        "reject_inbound_tunnel" => {
+            let attempt_id = arg_string(&args, &["attemptId", "attempt_id"])?;
+            let resp = dispatch_web_data(Data::RejectInboundTunnel { attempt_id }, state).await?;
+            command_message(resp)
+        }
         "stop_service_active_tunnel" => {
             let target_device_id = arg_i64(&args, &["targetDeviceId", "target_device_id"])?;
             let _ = dispatch_web_data(Data::StopActiveTunnel { target_device_id }, state).await?;

@@ -48,6 +48,9 @@ pub struct WgVpnSession {
     pub peer_device_id: i64,     // 对端 device_id
     pub peer_pubkey: String,     // 对端公钥（wg set remove 用）
     pub peer_virtual_ip: String, // 对端虚拟 IP
+    /// Cross-account passive sessions keep the WG peer alive while their
+    /// AllowedIPs are temporarily empty and the UI waits for approval.
+    pub approval_pending: bool,
     pub gonc_handle_id: String,  // gonc 库化 UDP tunnel handle
     pub local_forward_port: u16, // gonc 本地 UDP 转发端口
     pub is_active: bool,         // 本端角色（true=主动发起，false=被动等待）
@@ -902,6 +905,57 @@ pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result
         config.device_id,
         &session,
     ));
+    Ok(())
+}
+
+/// Toggle the control-plane AllowedIPs gate for one passive session. This
+/// deliberately performs no per-packet work: WireGuard keeps the peer and
+/// handshake alive while an empty AllowedIPs list prevents normal IP traffic.
+pub async fn set_wgvpn_allowed(
+    config: &MachineConfig,
+    target_device_id: i64,
+    allowed: bool,
+) -> Result<()> {
+    let session = WGVPN_SESSIONS
+        .lock()
+        .get(&target_device_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("wgvpn session not found"))?;
+    if session.is_active {
+        return Err(anyhow!(
+            "AllowedIPs approval gate is only valid for passive sessions"
+        ));
+    }
+    let mut allowed_ips = if allowed {
+        vec![format!("{}/32", session.peer_virtual_ip)]
+    } else {
+        Vec::new()
+    };
+    if allowed && !session.userspace_wg {
+        // Kernel-WG LAN forwarding is owned by the subnet-router backend;
+        // only the peer tail address belongs in the WG peer's AllowedIPs.
+        allowed_ips.truncate(1);
+    }
+    if !session.userspace_wg_peer_handle.is_empty() {
+        let punch_lib = resolve_p2p_punch_lib(config);
+        gonc_ffi::set_windows_wg_peer_allowed(
+            Path::new(&punch_lib),
+            &session.userspace_wg_peer_handle,
+            allowed,
+        )?;
+    } else {
+        let wg_cli = resolve_wg_cli();
+        wgvpn::set_peer_allowed_ips(
+            &wg_cli,
+            &session.tunnel_name,
+            &session.peer_pubkey,
+            &allowed_ips,
+        )?;
+    }
+    WGVPN_SESSIONS
+        .lock()
+        .get_mut(&target_device_id)
+        .map(|current| current.approval_pending = !allowed);
     Ok(())
 }
 

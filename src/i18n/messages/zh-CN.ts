@@ -175,6 +175,13 @@ export default {
       device_offline: '设备 {deviceName} 已离线',
       peer_device_id: '设备 #{deviceId}',
     },
+    inbound_approval: {
+      title: '远程协助请求',
+      body: '用户 {user} 正在请求通过设备 {device} 连接到本机。允许后才会转发业务数据。',
+      expires: '将在 {seconds} 秒后自动拒绝',
+      approve: '允许',
+      reject: '拒绝',
+    },
     // 自动登录确认
     auto_login: {
       confirm_title: '提示',
@@ -280,12 +287,14 @@ export default {
     lifecycle: {
       not_established: '未建立',
       connecting: '建立隧道中',
+      awaiting_approval: '等待被动端确认',
       recovering: '网络异常重连中',
       desc_connecting: '第 {attempt}/{max} 次尝试{suffix}',
       desc_connected_with_ip: '虚拟 IP：{ip}',
       desc_connected_with_lan: 'LAN 网段：{cidrs}',
       desc_connected_plain: '隧道连接正常',
       desc_recovering_default: '连续健康检查失败，正在等待网络恢复',
+      desc_awaiting_approval: '已完成握手，等待被动端允许业务数据',
       desc_none: '尚未与该设备建立隧道',
       tooltip_retry: '清理异常会话并重新建立隧道',
       tooltip_disconnect: '关闭当前 P2P 通道',
@@ -387,6 +396,7 @@ export default {
     state: {
       not_established: '未建立',
       connecting: '建立中',
+      awaiting_approval: '等待确认',
       connected: '已连接',
       recovering: '网络异常重连中',
     },

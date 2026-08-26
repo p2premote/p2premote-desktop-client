@@ -164,6 +164,12 @@ pub(super) struct SharedRuntimeState {
     ws_client: Option<ServiceWsClient>,
     p2p_attempt_waiters: HashMap<String, mpsc::UnboundedSender<P2PAttemptEvent>>,
     passive_p2p_attempts: HashMap<i64, PassiveP2PAttempt>,
+    /// Current in-memory account identity used to classify inbound attempts.
+    current_user_id: Option<i64>,
+    /// At most one temporary inbound approval can exist on a passive endpoint.
+    /// This is intentionally a single slot rather than a queue: remote assistance
+    /// is a one-shot interaction and concurrent inbound approvals are rejected.
+    pending_inbound_approval: Option<PendingInboundApprovalRuntime>,
     /// 被动连接请求附带的来源设备展示信息，仅用于本次进程内通知。
     passive_peer_infos: HashMap<i64, PassivePeerInfo>,
     p2p_notify_locks: HashMap<i64, Arc<tokio::sync::Mutex<()>>>,
@@ -176,10 +182,36 @@ struct PassiveP2PAttempt {
     attempt_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassiveApprovalDecision {
+    Pending,
+    Granted,
+    Denied,
+}
+
+struct PendingInboundApprovalRuntime {
+    status: crate::control::InboundApprovalStatus,
+    decision_tx: watch::Sender<PassiveApprovalDecision>,
+    connection_id: String,
+    source_device_id: i64,
+    access_grant: String,
+    ws_client: ServiceWsClient,
+}
+
 #[derive(Debug, Clone)]
 enum P2PAttemptEvent {
-    Ready { rdp_port: u16 },
-    Failed { error_code: String, message: String },
+    Ready {
+        rdp_port: u16,
+        approval_required: bool,
+    },
+    ApprovalRequired,
+    ApprovalGranted,
+    ApprovalDenied,
+    ApprovalTimeout,
+    Failed {
+        error_code: String,
+        message: String,
+    },
     Cancelled,
 }
 
@@ -210,6 +242,25 @@ enum P2PAttemptMessage {
         stage: String,
         rdp_enabled: bool,
         rdp_port: u16,
+        #[serde(default)]
+        approval_required: bool,
+    },
+    ApprovalRequired {
+        protocol_version: u8,
+        attempt_id: String,
+        expires_at: i64,
+    },
+    ApprovalGranted {
+        protocol_version: u8,
+        attempt_id: String,
+    },
+    ApprovalDenied {
+        protocol_version: u8,
+        attempt_id: String,
+    },
+    ApprovalTimeout {
+        protocol_version: u8,
+        attempt_id: String,
     },
     AttemptFailed {
         protocol_version: u8,
@@ -277,6 +328,51 @@ impl SharedRuntimeState {
     fn status_tx(&self) -> Option<&tokio::sync::broadcast::Sender<RuntimeStatus>> {
         self.status_tx.as_ref()
     }
+}
+
+pub(super) fn resolve_inbound_approval(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    attempt_id: &str,
+    allow: bool,
+) -> Option<Data> {
+    let approval_context = {
+        shared
+            .lock()
+            .pending_inbound_approval
+            .as_ref()
+            .filter(|pending| pending.status.attempt_id == attempt_id)
+            .map(|pending| (pending.decision_tx.clone(), pending.status.expires_at))
+    };
+    let Some((decision_tx, expires_at)) = approval_context else {
+        return Some(cmd_response(
+            false,
+            "inbound approval request not found or expired",
+            Some(shared.lock().status.clone()),
+        ));
+    };
+    if now_ts() >= expires_at {
+        let _ = decision_tx.send(PassiveApprovalDecision::Denied);
+        return Some(cmd_response(
+            false,
+            "inbound approval request expired",
+            Some(shared.lock().status.clone()),
+        ));
+    }
+    let decision = if allow {
+        PassiveApprovalDecision::Granted
+    } else {
+        PassiveApprovalDecision::Denied
+    };
+    let _ = decision_tx.send(decision);
+    Some(cmd_response(
+        true,
+        if allow {
+            "inbound tunnel approval granted"
+        } else {
+            "inbound tunnel approval denied"
+        },
+        Some(shared.lock().status.clone()),
+    ))
 }
 
 fn generate_temporary_password() -> String {
@@ -741,6 +837,14 @@ async fn bootstrap_service(
         let _ = refresh_with_config(&mut config).await?;
     }
 
+    // Keep the account identity in process memory only. This is needed before
+    // the authenticated WebSocket can deliver an inbound attempt so the
+    // passive side can classify same-account versus cross-account requests.
+    if shared.lock().current_user_id.is_none() {
+        let profile = fetch_profile(&mut config).await?;
+        shared.lock().current_user_id = Some(profile.user_id);
+    }
+
     let mut current_device = None;
     if config.device_id.is_none() || config.device_uuid.is_none() {
         current_device = Some(register_current_device_auto(&mut config).await?);
@@ -872,6 +976,20 @@ fn now_ts() -> i64 {
         .unwrap_or_default()
 }
 
+pub(super) fn refresh_pending_inbound_approvals(shared: &Arc<Mutex<SharedRuntimeState>>) {
+    let pending = {
+        let state = shared.lock();
+        state
+            .pending_inbound_approval
+            .as_ref()
+            .map(|item| vec![item.status.clone()])
+            .unwrap_or_default()
+    };
+    update_status(shared, |status| {
+        status.pending_inbound_approvals = pending;
+    });
+}
+
 // ---- IPC 控制服务器 ----
 
 fn classify_tunnel_error_code(message: &str) -> &'static str {
@@ -891,6 +1009,10 @@ fn classify_tunnel_error_code(message: &str) -> &'static str {
         "passive_start_failed",
         "wireguard_config_failed",
         "wireguard_handshake_failed",
+        "approval_denied",
+        "approval_timeout",
+        "approval_request_missing",
+        "approval_busy",
         "internal_error",
     ]
     .into_iter()
@@ -947,6 +1069,10 @@ fn is_non_retryable_wgvpn_error(message: &str) -> bool {
         "exposed lan cidr overlaps",
         "mobile wgvpn only supports",
         "subnet router backend is not implemented",
+        "approval_denied",
+        "approval_timeout",
+        "approval_request_missing",
+        "approval_busy",
     ]
     .iter()
     .any(|needle| message.contains(needle))

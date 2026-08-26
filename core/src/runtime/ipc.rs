@@ -222,6 +222,7 @@ async fn resume_saved_token_session(
     });
     {
         let mut state = shared.lock();
+        state.current_user_id = Some(bundle.user.user_id);
         state.login_session_enabled = true;
         state.reconnect_requested = true;
     }
@@ -237,6 +238,8 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::StartActiveTunnelJob { .. } => "StartActiveTunnelJob",
         Data::StartAnonymousActiveTunnelJob { .. } => "StartAnonymousActiveTunnelJob",
         Data::StopActiveTunnelJob { .. } => "StopActiveTunnelJob",
+        Data::ApproveInboundTunnel { .. } => "ApproveInboundTunnel",
+        Data::RejectInboundTunnel { .. } => "RejectInboundTunnel",
         Data::RefreshTunnelStatus => "RefreshTunnelStatus",
         Data::RefreshNetworkInfo => "RefreshNetworkInfo",
         Data::ReloadConfig => "ReloadConfig",
@@ -357,6 +360,12 @@ pub(super) async fn handle_data(
         } => start_anonymous_active_tunnel_job(shared, connect_code, temporary_password).await,
         Data::StopActiveTunnelJob { target_device_id } => {
             stop_active_tunnel_job(shared, target_device_id)
+        }
+        Data::ApproveInboundTunnel { attempt_id } => {
+            resolve_inbound_approval(shared, &attempt_id, true)
+        }
+        Data::RejectInboundTunnel { attempt_id } => {
+            resolve_inbound_approval(shared, &attempt_id, false)
         }
         Data::RefreshTunnelStatus => {
             refresh_wgvpn_sessions_with_options(shared, false, true);
@@ -525,6 +534,7 @@ pub(super) async fn handle_data(
                 });
                 {
                     let mut state = shared.lock();
+                    state.current_user_id = Some(bundle.user.user_id);
                     state.login_session_enabled = true;
                     state.reconnect_requested = true;
                 }
@@ -866,6 +876,7 @@ pub(super) async fn handle_data(
             save_machine_config(&config).ok()?;
             {
                 let mut state = shared.lock();
+                state.current_user_id = None;
                 state.login_session_enabled = false;
                 state.reconnect_requested = true;
             }

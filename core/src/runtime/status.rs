@@ -137,6 +137,9 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                 .unwrap_or_else(|| {
                     localized_message(locale.as_deref(), "tunnel.job.waiting_passive", &[])
                 }),
+            TunnelLifecycleState::AwaitingApproval => {
+                localized_message(locale.as_deref(), "tunnel.lifecycle.awaiting_approval", &[])
+            }
             TunnelLifecycleState::Connected => {
                 localized_message(locale.as_deref(), "tunnel.lifecycle.connected", &[])
             }

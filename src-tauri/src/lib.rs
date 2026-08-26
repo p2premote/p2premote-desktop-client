@@ -154,11 +154,12 @@ use commands::{
         parse_invite_info, set_device_password, update_device_alias,
     },
     service::{
-        acknowledge_device_identity_notification, check_required_client_files,
-        ensure_background_service_session, get_service_status, listen_service_events,
-        refresh_service_network_info, refresh_tunnel_status, start_service_active_tunnel,
-        start_service_anonymous_active_tunnel, stop_active_tunnel_job, stop_service_active_tunnel,
-        stop_service_tunnel, sync_service_runtime_config, test_tunnel_speed,
+        acknowledge_device_identity_notification, approve_inbound_tunnel,
+        check_required_client_files, ensure_background_service_session, get_service_status,
+        listen_service_events, refresh_service_network_info, refresh_tunnel_status,
+        reject_inbound_tunnel, start_service_active_tunnel, start_service_anonymous_active_tunnel,
+        stop_active_tunnel_job, stop_service_active_tunnel, stop_service_tunnel,
+        sync_service_runtime_config, test_tunnel_speed,
     },
 };
 
@@ -266,6 +267,8 @@ pub fn run() {
             start_service_active_tunnel,
             start_service_anonymous_active_tunnel,
             stop_active_tunnel_job,
+            approve_inbound_tunnel,
+            reject_inbound_tunnel,
             stop_service_active_tunnel,
             stop_service_tunnel,
             test_tunnel_speed,

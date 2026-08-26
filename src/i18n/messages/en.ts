@@ -163,6 +163,13 @@ const en = {
       device_offline: 'Device {deviceName} is offline',
       peer_device_id: 'Device #{deviceId}',
     },
+    inbound_approval: {
+      title: 'Remote assistance request',
+      body: '{user} is requesting a connection through device {device}. Business traffic is blocked until you allow it.',
+      expires: 'Automatically rejected in {seconds} seconds',
+      approve: 'Allow',
+      reject: 'Reject',
+    },
     auto_login: {
       confirm_title: 'Notice',
       confirm_body: 'Remember password and automatic sign-in are not both enabled, so you will need to enter your credentials after startup.\nFor unattended access, enable both options.',
@@ -262,12 +269,14 @@ const en = {
     lifecycle: {
       not_established: 'Not established',
       connecting: 'Establishing tunnel',
+      awaiting_approval: 'Waiting for passive approval',
       recovering: 'Network issue, reconnecting',
       desc_connecting: 'Attempt {attempt}/{max}{suffix}',
       desc_connected_with_ip: 'Virtual IP: {ip}',
       desc_connected_with_lan: 'LAN subnets: {cidrs}',
       desc_connected_plain: 'Tunnel is healthy',
       desc_recovering_default: 'Consecutive health checks failed; waiting for the network to recover',
+      desc_awaiting_approval: 'Handshake complete; waiting for passive approval to allow business traffic',
       desc_none: 'No tunnel has been established with this device',
       tooltip_retry: 'Clean up the unhealthy session and establish a new tunnel',
       tooltip_disconnect: 'Close the current P2P channel',
@@ -366,6 +375,7 @@ const en = {
     state: {
       not_established: 'Not established',
       connecting: 'Establishing',
+      awaiting_approval: 'Waiting for approval',
       connected: 'Connected',
       recovering: 'Network issue, reconnecting',
     },

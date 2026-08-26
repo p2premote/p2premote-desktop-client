@@ -928,6 +928,49 @@ pub fn add_peer(wg_cli: &str, tunnel_name: &str, peer: &PeerConfig) -> Result<()
     Ok(())
 }
 
+/// Replace only one peer's AllowedIPs. An empty list deliberately keeps the
+/// peer, endpoint and keepalive alive while preventing normal IP traffic from
+/// selecting the peer. This is a control-plane operation, never a packet-path
+/// check.
+pub fn set_peer_allowed_ips(
+    wg_cli: &str,
+    tunnel_name: &str,
+    peer_public_key: &str,
+    allowed_ips: &[String],
+) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if linux_wireguard_backend() == LinuxWireGuardBackend::Userspace {
+        let mut body = vec![
+            format!("public_key={}", base64_key_to_hex(peer_public_key)?),
+            "replace_allowed_ips=true".to_string(),
+        ];
+        body.extend(
+            allowed_ips
+                .iter()
+                .map(|allowed_ip| format!("allowed_ip={}", allowed_ip)),
+        );
+        return linux_uapi_set(tunnel_name, &body.join("\n"));
+    }
+
+    let mut args: Vec<String> = vec![
+        "set".into(),
+        tunnel_name.into(),
+        "peer".into(),
+        peer_public_key.into(),
+        "allowed-ips".into(),
+        allowed_ips.join(","),
+    ];
+    let output =
+        run_command_with_timeout(Command::new(wg_cli).args(&mut args), "wg set allowed-ips")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "wg set allowed-ips failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
 /// 动态移除 peer（不重启接口）。
 ///
 /// 等价命令：`wg set <tunnel> peer <pubkey> remove`
