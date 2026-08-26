@@ -562,7 +562,7 @@ export default {
     password_mismatch: '两次输入的密码不一致',
     email_invalid: '请输入有效邮箱',
     code_invalid: '请输入 6 位数字验证码',
-    password_invalid: '密码至少 6 位',
+    password_invalid: '密码至少 6 位，且必须同时包含英文字母和数字',
     confirm_required: '请再次输入新密码',
     code_sent: '如果该邮箱已注册，验证码将发送到邮箱，请注意查收',
     code_send_failed: '验证码发送失败，请稍后重试',

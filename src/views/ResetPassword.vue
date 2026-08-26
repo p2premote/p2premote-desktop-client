@@ -37,7 +37,7 @@ const validateConfirmPassword = (_rule: unknown, value: string, callback: (error
 const rules = computed<FormRules>(() => ({
   email: [{ required: true, type: 'email', message: t('reset_password.email_invalid'), trigger: 'blur' }],
   code: [{ required: true, pattern: /^\d{6}$/, message: t('reset_password.code_invalid'), trigger: 'blur' }],
-  password: [{ required: true, min: 6, message: t('reset_password.password_invalid'), trigger: 'blur' }],
+  password: [{ required: true, pattern: /^(?=.*[A-Za-z])(?=.*\d).{6,}$/, message: t('reset_password.password_invalid'), trigger: 'blur' }],
   confirmPassword: [
     { required: true, message: t('reset_password.confirm_required'), trigger: 'blur' },
     { validator: validateConfirmPassword, trigger: 'blur' },

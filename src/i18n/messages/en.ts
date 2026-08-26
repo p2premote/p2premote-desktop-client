@@ -538,7 +538,7 @@ const en = {
     password_mismatch: 'The passwords do not match',
     email_invalid: 'Enter a valid email address',
     code_invalid: 'Enter the 6-digit verification code',
-    password_invalid: 'The password must contain at least 6 characters',
+    password_invalid: 'The password must be at least 6 characters and contain both letters and numbers',
     confirm_required: 'Enter the new password again',
     code_sent: 'If the email is registered, a verification code has been sent.',
     code_send_failed: 'Unable to send the code. Please try again later.',
