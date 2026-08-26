@@ -234,8 +234,13 @@ test.describe('远程协助', () => {
     await expect(page.getByRole('button', { name: /^复制$/ })).not.toBeVisible()
 
     await page.getByRole('button', { name: '复制邀请信息' }).click()
-    await expect.poll(() => page.evaluate(() => (window as any).__lastClipboardText)).toContain('设备代码: 709621823')
-    await expect.poll(() => page.evaluate(() => (window as any).__lastClipboardText)).toContain('临时密码:')
+    const copiedInvitation = () => page.evaluate(() => (window as any).__lastClipboardText)
+    await expect.poll(copiedInvitation).toContain('✦ P2P Remote｜远程协助邀请')
+    await expect.poll(copiedInvitation).toContain('设备代码: 709621823')
+    await expect.poll(copiedInvitation).toContain('临时密码:')
+    await expect.poll(copiedInvitation).toContain('1. 打开 P2P Remote，进入「远程协助」')
+    await expect.poll(copiedInvitation).toContain('2. 粘贴本邀请信息，点击「建立远程连接」')
+    await expect.poll(copiedInvitation).toContain('⚠ 临时密码仅可使用一次，请勿转发给无关人员。')
   })
 
   test('服务端已有临时密码时挂载直接复用，不重新生成', async ({ page }) => {

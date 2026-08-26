@@ -384,7 +384,18 @@ async function copyInviteInfo() {
     return
   }
   await copyText(
-    `${t('remote.invite.device_code_label')}: ${inviteDeviceCode.value}\n${t('remote.invite.temp_password_label')}: ${inviteForm.temporaryPassword}`,
+    [
+      t('remote.invite.share_title'),
+      '',
+      `${t('remote.invite.device_code_label')}: ${inviteDeviceCode.value}`,
+      `${t('remote.invite.temp_password_label')}: ${inviteForm.temporaryPassword}`,
+      '',
+      `${t('remote.invite.share_guide_title')}:`,
+      t('remote.invite.share_guide_open'),
+      t('remote.invite.share_guide_connect'),
+      '',
+      t('remote.invite.share_security_tip'),
+    ].join('\n'),
     t('remote.message.invite_copied')
   )
 }
