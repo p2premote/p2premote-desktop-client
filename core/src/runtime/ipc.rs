@@ -882,6 +882,7 @@ pub(super) async fn handle_data(
             }
             update_status(shared, |s| {
                 s.logged_in = false;
+                s.last_error = None;
             });
             Some(cmd_response(
                 true,

@@ -162,6 +162,8 @@ const en = {
       device_online: 'Device {deviceName} is online',
       device_offline: 'Device {deviceName} is offline',
       peer_device_id: 'Device #{deviceId}',
+      session_expired_title: 'Session expired',
+      session_expired_body: 'Your sign-in credentials have expired or are no longer valid. Please sign in again.',
     },
     inbound_approval: {
       title: 'Allow remote assistance?',

@@ -558,7 +558,7 @@ pub async fn run_service_foreground() -> Result<()> {
 
     if let Err(err) = bootstrap_service(&shared, &ws_client, event_tx.clone()).await {
         info!("[ServiceRuntime] initial bootstrap failed: {}", err);
-        set_last_error(&shared, err.to_string());
+        handle_bootstrap_error(&shared, &ws_client, err).await;
     } else {
         info!("[ServiceRuntime] initial bootstrap succeeded");
     }
@@ -750,7 +750,7 @@ fn spawn_bootstrap_maintenance(
         let _maintenance_guard = maintenance_lock.lock().await;
         if let Err(err) = bootstrap_service(&shared, &ws_client, event_tx).await {
             info!("[ServiceRuntime] bootstrap {} failed: {}", reason, err);
-            set_last_error(&shared, err.to_string());
+            handle_bootstrap_error(&shared, &ws_client, err).await;
         }
     });
 }
@@ -959,6 +959,64 @@ fn set_last_error(shared: &Arc<Mutex<SharedRuntimeState>>, error: String) {
     error!("[ServiceRuntime] {}", error);
     update_status(shared, |s| {
         s.last_error = Some(error);
+    });
+}
+
+fn is_auth_session_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "invalid token",
+        "expired token",
+        "token expired",
+        "无效或已过期的令牌",
+        "令牌已过期",
+    ]
+    .iter()
+    .any(|needle| error.contains(needle))
+}
+
+async fn handle_bootstrap_error(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    ws_client: &ServiceWsClient,
+    err: anyhow::Error,
+) {
+    let error = err.to_string();
+    if !is_auth_session_error(&error) {
+        set_last_error(shared, error);
+        return;
+    }
+
+    warn!("[ServiceRuntime] saved session is no longer valid; signing out");
+    ws_client.disconnect().await;
+    match load_machine_config().and_then(|mut config| {
+        clear_machine_credentials(&mut config);
+        save_machine_config(&config)
+    }) {
+        Ok(()) => {}
+        Err(clear_err) => error!(
+            "[ServiceRuntime] failed to clear invalid saved credentials: {}",
+            clear_err
+        ),
+    }
+    {
+        let mut state = shared.lock();
+        state.login_session_enabled = false;
+        state.reconnect_requested = false;
+        state.current_user_id = None;
+    }
+    update_status(shared, |status| {
+        status.logged_in = false;
+        status.ws_connected = false;
+        status.device_id = None;
+        status.last_error = Some(localized_message(
+            status.locale.as_deref(),
+            "auth.token_expired",
+            &[],
+        ));
     });
 }
 
@@ -1366,6 +1424,17 @@ mod tests {
             CleanupGuard::Grace(7)
         ));
         assert!(state.wgvpn_health_runtime.contains_key(&29));
+    }
+
+    #[test]
+    fn websocket_auth_failures_are_not_retried_as_network_errors() {
+        assert!(is_auth_session_error(
+            "failed to connect service websocket: HTTP error: 403 Forbidden"
+        ));
+        assert!(is_auth_session_error("401 Unauthorized"));
+        assert!(is_auth_session_error("expired token"));
+        assert!(!is_auth_session_error("connection reset by peer"));
+        assert!(!is_auth_session_error("operation timed out"));
     }
 
     #[test]

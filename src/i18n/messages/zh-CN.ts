@@ -174,6 +174,8 @@ export default {
       device_online: '设备 {deviceName} 已上线',
       device_offline: '设备 {deviceName} 已离线',
       peer_device_id: '设备 #{deviceId}',
+      session_expired_title: '登录已失效',
+      session_expired_body: '登录凭证已过期或失效，请重新登录。',
     },
     inbound_approval: {
       title: '是否允许远程协助？',

@@ -1583,9 +1583,11 @@ async function bootstrapApp() {
       console.warn('[App] listen service events failed:', e)
     }
     let identityRebuildNotified = false
+    let sessionExpiredNotified = false
     await listen<{
       logged_in: boolean
       ws_connected: boolean
+      last_error?: string | null
       device_identity_rebuilt?: boolean
       device_identity_message?: string | null
     }>('service-status-changed', (event) => {
@@ -1593,6 +1595,19 @@ async function bootstrapApp() {
       // StatusChanged 推送已携带完整状态，直接更新，无需再调 get_service_status
       if (event.payload) {
         updateServiceStatusFromEvent(event.payload)
+        if (!event.payload.logged_in && authStore.isLoggedIn && event.payload.last_error) {
+          authStore.resetSession()
+          void router.push('/login')
+          if (!sessionExpiredNotified) {
+            sessionExpiredNotified = true
+            ElNotification({
+              title: t('app.notification.session_expired_title'),
+              message: t('app.notification.session_expired_body'),
+              type: 'warning',
+              duration: 8000,
+            })
+          }
+        }
         if (event.payload.device_identity_rebuilt && !identityRebuildNotified) {
           identityRebuildNotified = true
           ElNotification({
@@ -1638,7 +1653,21 @@ async function bootstrapApp() {
       invoke<string>('try_auto_login'),
       10_000,
       t('app.startup_errors.login_check_timeout')
-    )
+    ).catch(error => {
+      console.warn('[App] 自动登录失败，切换到登录页:', error)
+      authStore.resetSession()
+      void router.push('/login')
+      if (!sessionExpiredNotified) {
+        sessionExpiredNotified = true
+        ElNotification({
+          title: t('app.notification.session_expired_title'),
+          message: t('app.notification.session_expired_body'),
+          type: 'warning',
+          duration: 8000,
+        })
+      }
+      return ''
+    })
     if (token) {
       try {
         await restoreServiceSession(token, '自动登录')
