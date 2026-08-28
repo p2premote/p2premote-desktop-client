@@ -37,106 +37,6 @@ fn flash_main_window(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn show_system_notification(title: String, body: String) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        // 使用 Shell_NotifyIconW 的气球通知（balloon toast），与原 PowerShell NotifyIcon 行为一致，
-        // 但纯 Rust 调用 Windows API，无 spawn 进程开销，也无 Start-Sleep 阻塞。
-        use std::ffi::OsStr;
-        use std::iter;
-        use std::os::windows::ffi::OsStrExt;
-        use std::ptr;
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::Shell::{
-            Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
-            NOTIFYICONDATAW, NOTIFYICONDATAW_0,
-        };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, LoadIconW, IDI_APPLICATION, WS_EX_LAYERED,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
-        };
-
-        // 宽字符转换，零结尾
-        fn to_wide(s: &str) -> Vec<u16> {
-            OsStr::new(s).encode_wide().chain(iter::once(0)).collect()
-        }
-
-        // 截断到目标缓冲区容量（含结尾 \0）
-        fn copy_wide_into(dst: &mut [u16], src: &[u16]) {
-            let len = src.len().min(dst.len());
-            dst[..len].copy_from_slice(&src[..len]);
-            if len > 0 && len < dst.len() {
-                dst[len] = 0;
-            }
-        }
-
-        // 用系统预定义 "Static" 类创建一个隐藏的消息窗口作为托盘图标 owner，
-        // 避免自行注册窗口类的样板代码。气球显示由系统接管，无需处理回调。
-        let static_class = to_wide("Static");
-        let window_name = to_wide("P2PRemoteNotify");
-        let hwnd: HWND = unsafe {
-            CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-                static_class.as_ptr(),
-                window_name.as_ptr(),
-                WS_OVERLAPPED,
-                0,
-                0,
-                0,
-                0,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null(),
-            )
-        };
-        if hwnd.is_null() {
-            return Err("failed to create notify owner window".to_string());
-        }
-
-        let title_w = to_wide(&title);
-        let body_w = to_wide(&body);
-        let mut data: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
-        data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        data.hWnd = hwnd;
-        data.uID = 1;
-        // 自定义回调消息 ID（这里不实际处理，但 NIF_MESSAGE 要求设置一个非 0 值）
-        data.uCallbackMessage = 0x8000; // WM_APP
-        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO;
-        data.hIcon = unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) };
-        data.dwInfoFlags = NIIF_INFO;
-        copy_wide_into(&mut data.szInfo, &body_w);
-        copy_wide_into(&mut data.szInfoTitle, &title_w);
-        copy_wide_into(&mut data.szTip, &title_w);
-        // 设置气球显示时长（位于 Anonymous 联合体中）
-        data.Anonymous = NOTIFYICONDATAW_0 { uTimeout: 8000 };
-
-        let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) };
-        let _ = unsafe { DestroyWindow(hwnd) };
-        if added == 0 {
-            return Err("Shell_NotifyIconW failed".to_string());
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("notify-send")
-            .arg(title)
-            .arg(body)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("failed to show system notification: {}", e))
-    }
-
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = (title, body);
-        Err("system notification is not supported on this platform".to_string())
-    }
-}
-
 // 导入所有命令
 use commands::{
     auth::{
@@ -275,7 +175,6 @@ pub fn run() {
             refresh_service_network_info,
             refresh_tunnel_status,
             flash_main_window,
-            show_system_notification,
         ])
         .setup(|app| {
             info!("[p2premote] Tauri app setup complete");

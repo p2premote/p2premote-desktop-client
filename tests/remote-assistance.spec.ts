@@ -183,7 +183,6 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
               upload_mbps: 42.75,
               retransmits: 0,
             }
-          case 'show_system_notification':
           case 'flash_main_window':
           case 'sync_service_runtime_config':
             return null

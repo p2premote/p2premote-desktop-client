@@ -1129,13 +1129,6 @@ async function handlePassiveWgvpnSessions(
       ? t('app.notification.tunnel_connected_by_user', { username, deviceName })
       : t('app.notification.tunnel_connected_unknown_user', { deviceName })
 
-    await invoke('show_system_notification', {
-      title: t('app.notification.tunnel_connected_title'),
-      body: message,
-    }).catch(error => {
-      console.warn('[App] passive tunnel system notification failed:', error)
-    })
-
     if (isAppForeground()) {
       ElNotification({
         title: t('app.notification.tunnel_connected_title'),
@@ -1178,13 +1171,6 @@ async function showActiveTunnelJobNotification(notification: ActiveTunnelJobNoti
 }
 
 async function notifyActiveTunnelJobResult(notification: ActiveTunnelJobNotification) {
-  await invoke('show_system_notification', {
-    title: notification.title,
-    body: notification.message,
-  }).catch((e) => {
-    console.warn('[App] show system notification failed:', e)
-  })
-
   if (isAppForeground()) {
     await showActiveTunnelJobNotification(notification)
     return

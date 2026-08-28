@@ -59,10 +59,6 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     return tauri.invoke<T>(command, args)
   }
 
-  if (command === 'show_system_notification') {
-    showWebNotification(String(args.title || ''), String(args.body || ''))
-    return undefined as T
-  }
   if (command === 'flash_main_window') {
     flashWebPageTitle()
     return undefined as T
@@ -84,15 +80,6 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     throw new Error(payload?.error || i18n.global.t('errors.bridge_call_failed', { command }))
   }
   return payload.value as T
-}
-
-function showWebNotification(title: string, body: string): void {
-  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    new Notification(title, { body })
-  }
-  if (document.visibilityState !== 'visible' || !document.hasFocus()) {
-    flashWebPageTitle(title)
-  }
 }
 
 function flashWebPageTitle(message?: string): void {
