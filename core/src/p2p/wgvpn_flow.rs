@@ -243,6 +243,46 @@ fn release_reserved_ip(ip: u32) {
     RESERVED_ACTIVE_IPS.lock().remove(&ip);
 }
 
+fn conflicting_session_ids(
+    sessions: &[WgVpnSession],
+    target_device_id: i64,
+    peer_pubkey: &str,
+) -> Vec<(i64, bool)> {
+    sessions
+        .iter()
+        .filter(|session| {
+            session.target_device_id == target_device_id || session.peer_pubkey == peer_pubkey
+        })
+        .map(|session| (session.target_device_id, session.peer_pubkey == peer_pubkey))
+        .collect()
+}
+
+async fn stop_conflicting_sessions(
+    config: &MachineConfig,
+    target_device_id: i64,
+    peer_pubkey: &str,
+) -> Result<()> {
+    let conflicting_ids =
+        conflicting_session_ids(&snapshot_sessions(), target_device_id, peer_pubkey);
+    for (conflicting_id, same_peer_key) in conflicting_ids {
+        info!(
+            "[wgvpn] replacing conflicting session before active start: old_peer_device_id={}, new_peer_device_id={}, same_peer_key={}",
+            conflicting_id,
+            target_device_id,
+            same_peer_key
+        );
+        stop_wgvpn_internal(config, conflicting_id, false)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to stop conflicting wgvpn session for peer device {}",
+                    conflicting_id
+                )
+            })?;
+    }
+    Ok(())
+}
+
 /// wgvpn 启动结果。
 #[derive(Debug, Clone)]
 pub struct WgVpnStartResult {
@@ -313,12 +353,10 @@ pub async fn start_active_wgvpn(
     )?;
     let peer_exposed_lan_cidrs = peer_payload.exposed_lan_cidrs.clone();
     let warning = peer_payload.warning.clone();
-    validate_new_lan_routes(&peer_exposed_lan_cidrs)?;
     let peer_pubkey = peer_payload.pubkey;
     let peer_device_id = peer_payload.device_id;
     let my_ip = wgvpn_exchange::u32_to_ipv4(peer_payload.assigned_ip);
     let peer_ip = wgvpn_exchange::u32_to_ipv4(peer_payload.my_ip);
-    validate_peer_virtual_ip(target_device_id, &peer_ip)?;
 
     // 3. gonc 加密 UDP 数据面。WireGuard 只看到本机 UDP endpoint。
     // Do not log the punch token: it is a connection secret.
@@ -352,6 +390,23 @@ pub async fn start_active_wgvpn(
             return Err(err);
         }
     };
+
+    // A re-registered/reinstalled peer can have a new device ID while keeping
+    // the same WireGuard key. Keep the old session until the replacement UDP
+    // data plane is ready, then replace it immediately before adding the peer.
+    // Embedded WireGuard permits each public key only once per interface.
+    if let Err(err) = stop_conflicting_sessions(config, target_device_id, &peer_pubkey).await {
+        let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+        return Err(err);
+    }
+    if let Err(err) = validate_new_lan_routes(&peer_exposed_lan_cidrs) {
+        let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+        return Err(err);
+    }
+    if let Err(err) = validate_peer_virtual_ip(target_device_id, &peer_ip) {
+        let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+        return Err(err);
+    }
 
     // 4. 接口管理
     let conf_path = wg_dir.join(WG_CONF_NAME);
@@ -809,13 +864,21 @@ pub async fn start_passive_wgvpn(
 
 /// 停止指定会话。
 pub async fn stop_wgvpn(config: &MachineConfig, target_device_id: i64) -> Result<()> {
+    stop_wgvpn_internal(config, target_device_id, true).await
+}
+
+async fn stop_wgvpn_internal(
+    config: &MachineConfig,
+    target_device_id: i64,
+    notify_remote: bool,
+) -> Result<()> {
     let Some(session) = WGVPN_SESSIONS.lock().remove(&target_device_id) else {
         return Ok(());
     };
 
     // 主动端断开时，经已建立的虚拟网卡通知被动端同步清理会话。
     // 被动端执行 stop 时 is_active=false，不会反向通知，避免停止消息循环。
-    if session.is_active && !session.peer_virtual_ip.is_empty() {
+    if notify_remote && session.is_active && !session.peer_virtual_ip.is_empty() {
         if let Some(source_device_id) = config.device_id {
             let health_addr = format!("{}:{}", session.peer_virtual_ip, HEALTH_PORT);
             if let Err(err) = notify_remote_tunnel_stop(source_device_id, &health_addr).await {
@@ -1394,6 +1457,32 @@ pub(super) fn has_established_handshake(stdout: &str, min_epoch_secs: u64) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conflicting_sessions_match_target_id_or_peer_public_key() {
+        let sessions = vec![
+            WgVpnSession {
+                target_device_id: 65,
+                peer_pubkey: "same-machine-key".to_string(),
+                ..Default::default()
+            },
+            WgVpnSession {
+                target_device_id: 77,
+                peer_pubkey: "other-key".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        assert_eq!(
+            conflicting_session_ids(&sessions, 66, "same-machine-key"),
+            vec![(65, true)]
+        );
+        assert_eq!(
+            conflicting_session_ids(&sessions, 77, "new-key"),
+            vec![(77, false)]
+        );
+        assert!(conflicting_session_ids(&sessions, 88, "new-key").is_empty());
+    }
 
     #[test]
     fn latest_handshakes_accepts_recent_timestamp() {
