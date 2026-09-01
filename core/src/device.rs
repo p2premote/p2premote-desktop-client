@@ -925,6 +925,13 @@ pub async fn refresh_public_network_info(
 
 #[cfg(windows)]
 fn get_system_version() -> String {
+    if let Some((caption, current_build)) = get_windows_version_from_wmi() {
+        let product_name = caption.replace("Microsoft ", "");
+        let product_name = normalize_windows_product_name(product_name.trim(), &current_build);
+        let display_version = get_windows_registry_value("DisplayVersion");
+        return format_windows_system_version(&product_name, &display_version, &current_build);
+    }
+
     let product_name = match run_hidden_cmd(&[
         "/C",
         "reg",
@@ -941,7 +948,7 @@ fn get_system_version() -> String {
     };
 
     if product_name.is_empty() {
-        return get_windows_version_from_wmic();
+        return "Windows 10/11".to_string();
     }
 
     let product_name = product_name.replace("Microsoft ", "");
@@ -969,6 +976,51 @@ fn get_system_version() -> String {
         Err(_) => String::new(),
     };
 
+    let product_name = normalize_windows_product_name(&product_name, &current_build);
+
+    format_windows_system_version(&product_name, &display_version, &current_build)
+}
+
+#[cfg(windows)]
+fn get_windows_version_from_wmi() -> Option<(String, String)> {
+    #[derive(Deserialize)]
+    #[serde(rename = "Win32_OperatingSystem")]
+    struct WindowsOperatingSystem {
+        #[serde(rename = "Caption")]
+        caption: String,
+        #[serde(rename = "BuildNumber")]
+        build_number: String,
+    }
+
+    let com_library = wmi::COMLibrary::new().ok()?;
+    let connection = wmi::WMIConnection::new(com_library).ok()?;
+    let operating_systems: Vec<WindowsOperatingSystem> = connection.query().ok()?;
+    operating_systems
+        .into_iter()
+        .next()
+        .map(|os| (os.caption, os.build_number))
+}
+
+#[cfg(windows)]
+fn get_windows_registry_value(value_name: &str) -> String {
+    match run_hidden_cmd(&[
+        "/C",
+        "reg",
+        "query",
+        r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+        "/v",
+        value_name,
+    ]) {
+        Ok(output) => parse_reg_output(&String::from_utf8_lossy(&output.stdout)),
+        Err(_) => String::new(),
+    }
+}
+
+fn format_windows_system_version(
+    product_name: &str,
+    display_version: &str,
+    current_build: &str,
+) -> String {
     if !display_version.is_empty() && !current_build.is_empty() {
         return format!("{} ({}.{})", product_name, display_version, current_build);
     }
@@ -978,37 +1030,24 @@ fn get_system_version() -> String {
     if !current_build.is_empty() {
         return format!("{} (Build {})", product_name, current_build);
     }
-    product_name
+    product_name.to_string()
 }
 
-#[cfg(windows)]
-fn get_windows_version_from_wmic() -> String {
-    match run_hidden_cmd(&["/C", "wmic", "os", "get", "Caption,Version", "/format:list"]) {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut caption = String::new();
-            let mut version = String::new();
+fn normalize_windows_product_name(product_name: &str, current_build: &str) -> String {
+    let current_build = current_build.trim().parse::<u32>().ok();
 
-            for line in stdout.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                if let Some(value) = line.strip_prefix("Caption=") {
-                    caption = value.replace("Microsoft ", "");
-                }
-                if let Some(value) = line.strip_prefix("Version=") {
-                    version = value.to_string();
-                }
+    if let Some(suffix) = product_name.strip_prefix("Windows 10") {
+        if suffix.is_empty() || suffix.chars().next().is_some_and(char::is_whitespace) {
+            if current_build.is_some_and(|build| build >= 22_000) {
+                return format!("Windows 11{suffix}");
             }
-
-            if !caption.is_empty() && !version.is_empty() {
-                return format!("{} ({})", caption, version);
+            if current_build.is_none() {
+                return format!("Windows 10/11{suffix}");
             }
-            caption
         }
-        Err(_) => "Windows 10/11".to_string(),
     }
+
+    product_name.to_string()
 }
 
 #[cfg(windows)]
@@ -1212,6 +1251,51 @@ mod tests {
             resolve_client_version(None, Some(" ".to_string())),
             "unknown"
         );
+    }
+
+    #[test]
+    fn windows_11_build_corrects_legacy_registry_product_name() {
+        assert_eq!(
+            normalize_windows_product_name("Windows 10 Home", "26200"),
+            "Windows 11 Home"
+        );
+        assert_eq!(
+            normalize_windows_product_name("Windows 10 Pro", "22000"),
+            "Windows 11 Pro"
+        );
+    }
+
+    #[test]
+    fn windows_product_name_keeps_windows_10_and_server_names() {
+        assert_eq!(
+            normalize_windows_product_name("Windows 10 Home", "19045"),
+            "Windows 10 Home"
+        );
+        assert_eq!(
+            normalize_windows_product_name("Windows Server 2025 Datacenter", "26100"),
+            "Windows Server 2025 Datacenter"
+        );
+    }
+
+    #[test]
+    fn windows_product_name_does_not_assume_windows_10_without_a_build() {
+        assert_eq!(
+            normalize_windows_product_name("Windows 10 Home", ""),
+            "Windows 10/11 Home"
+        );
+        assert_eq!(
+            normalize_windows_product_name("Windows 10 Pro", "unknown"),
+            "Windows 10/11 Pro"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_wmi_returns_caption_and_numeric_build() {
+        let (caption, build_number) =
+            get_windows_version_from_wmi().expect("Win32_OperatingSystem should be available");
+        assert!(caption.to_ascii_lowercase().contains("windows"));
+        assert!(build_number.parse::<u32>().is_ok());
     }
 
     #[test]
