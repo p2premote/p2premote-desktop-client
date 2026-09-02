@@ -5,7 +5,6 @@ use p2premote_core::config::{
     machine_log_dir, save_machine_config,
 };
 use p2premote_core::control::{send_command, Data, RuntimeStatus};
-use p2premote_core::device::get_current_device_uuid;
 use p2premote_core::invite::parse_invite_info;
 use p2premote_core::service_control::{
     disable_service, enable_service, install_service, query_service_status, restart_service,
@@ -185,11 +184,17 @@ async fn main() -> Result<()> {
             let cfg = load_machine_config()?;
             println!("config: {}", machine_config_path().display());
             println!("server_url: {}", cfg.server_url);
-            println!("device_uuid: {}", get_current_device_uuid(&cfg));
             let service_status = query_service_status()?;
             println!("service_status: {:?}", service_status);
             if service_status.running {
                 let runtime = runtime_status().await?;
+                println!(
+                    "device_uuid: {}",
+                    runtime
+                        .get("device_uuid")
+                        .and_then(Value::as_str)
+                        .unwrap_or("not registered")
+                );
                 println!(
                     "logged_in: {}",
                     runtime
@@ -199,6 +204,10 @@ async fn main() -> Result<()> {
                 );
                 println!("{}", serde_json::to_string_pretty(&runtime)?);
             } else {
+                println!(
+                    "device_uuid: {}",
+                    cfg.device_uuid.as_deref().unwrap_or("not registered")
+                );
                 println!("logged_in: unavailable");
                 println!("runtime: unavailable (service is not running)");
             }
@@ -213,9 +222,27 @@ async fn main() -> Result<()> {
         Commands::Device {
             command: DeviceCommands::Info,
         } => {
-            let cfg = load_machine_config()?;
-            println!("device_id: {:?}", cfg.device_id);
-            println!("device_uuid: {}", get_current_device_uuid(&cfg));
+            if query_service_status()?.running {
+                let runtime = runtime_status().await?;
+                println!(
+                    "device_id: {:?}",
+                    runtime.get("device_id").and_then(Value::as_i64)
+                );
+                println!(
+                    "device_uuid: {}",
+                    runtime
+                        .get("device_uuid")
+                        .and_then(Value::as_str)
+                        .unwrap_or("not registered")
+                );
+            } else {
+                let cfg = load_machine_config()?;
+                println!("device_id: {:?}", cfg.device_id);
+                println!(
+                    "device_uuid: {}",
+                    cfg.device_uuid.as_deref().unwrap_or("not registered")
+                );
+            }
         }
         Commands::Device {
             command: DeviceCommands::List,

@@ -2,6 +2,20 @@
 
 use super::*;
 
+fn control_secret_matches(received: &str, expected: &str) -> bool {
+    if received.len() != expected.len() {
+        return false;
+    }
+    received
+        .as_bytes()
+        .iter()
+        .zip(expected.as_bytes())
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
 pub(super) fn spawn_control_server(shared: Arc<Mutex<SharedRuntimeState>>, wake: Arc<Notify>) {
     tokio::spawn(async move {
         let wake_for_shutdown = wake.clone();
@@ -53,7 +67,7 @@ pub(super) async fn handle_client(
     let _ = ensure_machine_config()?;
     let expected_secret = derive_control_secret();
 
-    if handshake != expected_secret {
+    if !control_secret_matches(&handshake, &expected_secret) {
         conn.send(&Data::CommandResponse {
             ok: false,
             message: "unauthorized".to_string(),
@@ -128,6 +142,24 @@ pub(super) async fn handle_client(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::control_secret_matches;
+
+    #[test]
+    fn ipc_handshake_accepts_only_the_exact_secret() {
+        assert!(control_secret_matches(
+            "0123456789abcdef",
+            "0123456789abcdef"
+        ));
+        assert!(!control_secret_matches(
+            "0123456789abcdee",
+            "0123456789abcdef"
+        ));
+        assert!(!control_secret_matches("short", "0123456789abcdef"));
+    }
 }
 
 pub(super) fn cmd_response(ok: bool, message: &str, status: Option<RuntimeStatus>) -> Data {

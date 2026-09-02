@@ -384,9 +384,17 @@ pub fn start_tunnel(wireguard_exe: &str, wg_cli: &str, conf_path: &Path) -> Resu
     }
 
     let tunnel_name = tunnel_name_from_conf_path(&conf_abs);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         return start_tunnel_linux(wireguard_exe, wg_cli, &tunnel_name, &conf_abs);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (wireguard_exe, wg_cli, tunnel_name, conf_abs);
+        return Err(anyhow!(
+            "macOS WireGuard is managed by the embedded userspace engine"
+        ));
     }
 
     #[cfg(windows)]
@@ -400,10 +408,16 @@ pub fn start_tunnel(wireguard_exe: &str, wg_cli: &str, conf_path: &Path) -> Resu
 
 /// 卸载并停止 WireGuard 隧道服务。
 pub fn stop_tunnel(wireguard_exe: &str, tunnel_name: &str) -> Result<()> {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         let _ = wireguard_exe;
         return stop_tunnel_linux(tunnel_name);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (wireguard_exe, tunnel_name);
+        return Ok(());
     }
 
     #[cfg(windows)]
@@ -413,7 +427,7 @@ pub fn stop_tunnel(wireguard_exe: &str, tunnel_name: &str) -> Result<()> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn start_tunnel_linux(
     wireguard_exe: &str,
     wg_cli: &str,
@@ -479,7 +493,7 @@ fn start_tunnel_linux(
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn stop_tunnel_linux(tunnel_name: &str) -> Result<()> {
     if linux_wireguard_backend() == LinuxWireGuardBackend::Userspace {
         stop_linux_userspace_wireguard_process(tunnel_name);
@@ -750,7 +764,7 @@ fn wg_quick_conf_to_uapi(conf: &str) -> Result<String> {
     Ok(output.join("\n"))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn run_linux_command(cmd: &str, args: &[&str]) -> Result<()> {
     let output = run_command_with_timeout(
         Command::new(cmd).args(args),
@@ -767,7 +781,7 @@ fn run_linux_command(cmd: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn parse_interface_address(conf: &str) -> Option<String> {
     conf.lines().find_map(|line| {
         let (key, value) = line.split_once('=')?;
@@ -779,7 +793,7 @@ fn parse_interface_address(conf: &str) -> Option<String> {
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn parse_interface_mtu(conf: &str) -> Option<u16> {
     conf.lines().find_map(|line| {
         let (key, value) = line.split_once('=')?;
@@ -791,7 +805,7 @@ fn parse_interface_mtu(conf: &str) -> Option<u16> {
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn strip_wg_quick_only_lines(conf: &str) -> String {
     conf.lines()
         .filter(|line| {

@@ -84,6 +84,7 @@ pub fn client_update_target() -> String {
                 | "linux-headless-aarch64"
                 | "linux-docker-x64"
                 | "linux-docker-aarch64"
+                | "macos-universal"
                 | "android"
         ) {
             return target;
@@ -92,6 +93,7 @@ pub fn client_update_target() -> String {
 
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", _) => "windows",
+        ("macos", _) => "macos-universal",
         ("linux", "aarch64") => "linux-headless-aarch64",
         ("linux", _) => "linux-headless-x64",
         _ => "windows",

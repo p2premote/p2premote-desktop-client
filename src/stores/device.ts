@@ -11,7 +11,12 @@ export interface DeviceInfo {
   status: string
   lan_ip?: string
   rdp_enabled: boolean
-  service_port: number  // RDP 端口（服务端字段名）
+  service_port: number
+  remote_access?: {
+    protocol: 'rdp' | 'vnc' | 'custom' | string
+    enabled: boolean
+    port: number
+  }
   public_ip?: string
   public_ip_location?: string
   system_version: string

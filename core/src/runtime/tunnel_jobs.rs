@@ -1043,9 +1043,10 @@ pub(super) fn refresh_wgvpn_sessions_with_options(
     if let Some(library_path) = punch_lib.as_deref() {
         for s in sessions.iter_mut() {
             if !s.userspace_wg_peer_handle.is_empty() {
-                if let Ok(peer) =
-                    gonc_ffi::get_windows_wg_peer_status(library_path, &s.userspace_wg_peer_handle)
-                {
+                if let Ok(peer) = gonc_ffi::get_userspace_wg_peer_status(
+                    library_path,
+                    &s.userspace_wg_peer_handle,
+                ) {
                     s.subnet_router_started = peer.started;
                     s.subnet_tcp_sessions = peer.tcp_sessions;
                     s.subnet_udp_sessions = peer.udp_sessions;

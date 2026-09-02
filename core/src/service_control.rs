@@ -13,12 +13,12 @@ pub struct ServiceStatus {
     pub raw_state: String,
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/p2premote-service.service";
 
-#[cfg(not(windows))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::{anyhow, Context};
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
 // ---- Windows 实现 ----
@@ -666,7 +666,7 @@ pub fn runas_scm_elevated_once(action: &str, service_exe: &Path) -> Result<()> {
     win_impl::runas_scm_elevated(action, Some(service_exe))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn run_systemctl(args: &[&str]) -> Result<std::process::Output> {
     std::process::Command::new("systemctl")
         .args(args)
@@ -674,7 +674,7 @@ fn run_systemctl(args: &[&str]) -> Result<std::process::Output> {
         .with_context(|| format!("failed to run systemctl {}", args.join(" ")))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn ensure_root() -> Result<()> {
     let output = std::process::Command::new("id")
         .arg("-u")
@@ -687,19 +687,19 @@ fn ensure_root() -> Result<()> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn systemd_unit_path() -> &'static Path {
     Path::new(SYSTEMD_UNIT_PATH)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn prefix_systemd_unit_path() -> PathBuf {
     crate::config::linux_install_root_dir()
         .join("systemd")
         .join("p2premote-service.service")
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn service_unit_contents(executable_path: &Path) -> String {
     let working_dir = crate::config::linux_install_root_dir();
     format!(
@@ -710,7 +710,7 @@ fn service_unit_contents(executable_path: &Path) -> String {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn ensure_systemd_unit_dir() -> Result<()> {
     if let Some(parent) = systemd_unit_path().parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -723,7 +723,7 @@ fn ensure_systemd_unit_dir() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn install_prefix_binaries(service_executable_path: &Path) -> Result<PathBuf> {
     let resources_dir = crate::config::linux_resources_dir();
     std::fs::create_dir_all(&resources_dir).with_context(|| {
@@ -752,7 +752,7 @@ fn install_prefix_binaries(service_executable_path: &Path) -> Result<PathBuf> {
     Ok(service_target)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn copy_or_keep(source: &Path, target: &Path, display_name: &str) -> Result<()> {
     if source == target && target.exists() {
         return Ok(());
@@ -786,7 +786,7 @@ fn copy_or_keep(source: &Path, target: &Path, display_name: &str) -> Result<()> 
     ))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn install_service(executable_path: &Path) -> Result<()> {
     ensure_root()?;
     ensure_systemd_unit_dir()?;
@@ -824,7 +824,7 @@ pub fn install_service(executable_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn uninstall_service() -> Result<()> {
     ensure_root()?;
     let _ = stop_service();
@@ -851,7 +851,7 @@ pub fn uninstall_service() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn start_service() -> Result<()> {
     ensure_root()?;
     let output = run_systemctl(&["start", SERVICE_NAME])?;
@@ -864,7 +864,7 @@ pub fn start_service() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn stop_service() -> Result<()> {
     ensure_root()?;
     let output = run_systemctl(&["stop", SERVICE_NAME])?;
@@ -878,7 +878,7 @@ pub fn stop_service() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn restart_service() -> Result<()> {
     ensure_root()?;
     let output = run_systemctl(&["restart", SERVICE_NAME])?;
@@ -891,7 +891,7 @@ pub fn restart_service() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn enable_service() -> Result<()> {
     ensure_root()?;
     let output = run_systemctl(&["enable", SERVICE_NAME])?;
@@ -904,7 +904,7 @@ pub fn enable_service() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn disable_service() -> Result<()> {
     ensure_root()?;
     let output = run_systemctl(&["disable", SERVICE_NAME])?;
@@ -918,7 +918,7 @@ pub fn disable_service() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub fn query_service_status() -> Result<ServiceStatus> {
     if !systemd_unit_path().exists() {
         return Ok(ServiceStatus {
@@ -938,5 +938,324 @@ pub fn query_service_status() -> Result<ServiceStatus> {
         running: active.status.success() && raw_state == "active",
         enabled: enabled.status.success(),
         raw_state,
+    })
+}
+
+// ---- macOS launchd implementation ----
+
+#[cfg(target_os = "macos")]
+const MACOS_SERVICE_LABEL: &str = "top.p2premote.service";
+#[cfg(target_os = "macos")]
+const MACOS_PLIST_PATH: &str = "/Library/LaunchDaemons/top.p2premote.service.plist";
+
+#[cfg(target_os = "macos")]
+fn macos_bundled_plist_path() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    executable.ancestors().find_map(|path| {
+        (path.file_name().and_then(|value| value.to_str()) == Some("Contents")).then(|| {
+            path.join("Library")
+                .join("LaunchDaemons")
+                .join("top.p2premote.service.plist")
+        })
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn register_bundled_macos_daemon() -> Result<()> {
+    use crate::macos_service_management::{set_daemon_registered, RegistrationStatus};
+
+    match set_daemon_registered(true)? {
+        RegistrationStatus::Enabled => Ok(()),
+        RegistrationStatus::RequiresApproval => Err(anyhow!(
+            "macOS background service is awaiting approval; enable p2pRemote in System Settings > General > Login Items"
+        )),
+        status => Err(anyhow!(
+            "macOS background service registration did not become active: {}",
+            status.as_str()
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &Path) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_admin_script(script: &str) -> Result<()> {
+    let is_root = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim() == "0")
+        .unwrap_or(false);
+    let output = if is_root {
+        std::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .output()
+            .context("failed to execute privileged macOS service operation")?
+    } else {
+        let apple_script = format!(
+            "do shell script \"{}\" with administrator privileges",
+            script.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+        std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", &apple_script])
+            .output()
+            .context("failed to request macOS administrator approval")?
+    };
+    if output.status.success() {
+        return Ok(());
+    }
+    let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if error.contains("-128") || error.to_ascii_lowercase().contains("canceled") {
+        return Err(anyhow!("macOS administrator approval was declined"));
+    }
+    Err(anyhow!("macOS service operation failed: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_plist_contents(executable_path: &Path) -> String {
+    let executable = executable_path.to_string_lossy();
+    let working_dir = crate::config::macos_install_root_dir();
+    let log_dir = crate::config::machine_log_dir();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{MACOS_SERVICE_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{executable}</string><string>--foreground</string></array>
+  <key>GroupName</key><string>staff</string>
+  <key>WorkingDirectory</key><string>{}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>{}/launchd.stdout.log</string>
+  <key>StandardErrorPath</key><string>{}/launchd.stderr.log</string>
+</dict></plist>
+"#,
+        working_dir.display(),
+        log_dir.display(),
+        log_dir.display(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub fn install_service(executable_path: &Path) -> Result<()> {
+    if !executable_path.exists() {
+        return Err(anyhow!(
+            "service executable not found: {}",
+            executable_path.display()
+        ));
+    }
+    if macos_bundled_plist_path()
+        .as_ref()
+        .is_some_and(|path| path.exists())
+    {
+        return register_bundled_macos_daemon();
+    }
+
+    // Development builds do not have an application bundle. Retain a
+    // launchctl installer for local debugging; release bundles always take the
+    // ServiceManagement path above.
+    let resources_dir = crate::config::macos_resources_dir();
+    let target = resources_dir.join(crate::config::default_service_binary_name());
+    let install_root = crate::config::macos_install_root_dir();
+    let run_dir = crate::config::platform_run_dir();
+    let log_dir = crate::config::machine_log_dir();
+    let temp_plist = std::env::temp_dir().join(format!(
+        "top.p2premote.service-{}.plist",
+        std::process::id()
+    ));
+    std::fs::write(&temp_plist, macos_plist_contents(&target))
+        .context("failed to prepare macOS LaunchDaemon property list")?;
+    let command = format!(
+        "/usr/bin/install -d -m 755 {root} {resources} {run_dir} {log_dir} && /usr/bin/install -m 755 {source} {target} && /usr/bin/install -m 644 {temp_plist} {plist} && (/bin/launchctl bootout system/{label} >/dev/null 2>&1 || true) && /bin/launchctl bootstrap system {plist} && /bin/launchctl enable system/{label}",
+        root = shell_quote(&install_root),
+        resources = shell_quote(&resources_dir),
+        run_dir = shell_quote(&run_dir),
+        log_dir = shell_quote(&log_dir),
+        source = shell_quote(executable_path),
+        target = shell_quote(&target),
+        temp_plist = shell_quote(&temp_plist),
+        plist = shell_quote(Path::new(MACOS_PLIST_PATH)),
+        label = MACOS_SERVICE_LABEL,
+    );
+    let result = run_macos_admin_script(&command);
+    let _ = std::fs::remove_file(temp_plist);
+    result
+}
+
+#[cfg(target_os = "macos")]
+pub fn uninstall_service() -> Result<()> {
+    if macos_bundled_plist_path()
+        .as_ref()
+        .is_some_and(|path| path.exists())
+    {
+        crate::macos_service_management::set_daemon_registered(false)?;
+        return Ok(());
+    }
+    let command = format!(
+        "/bin/launchctl bootout system/{label} >/dev/null 2>&1 || true; /bin/rm -f {plist}",
+        label = MACOS_SERVICE_LABEL,
+        plist = shell_quote(Path::new(MACOS_PLIST_PATH)),
+    );
+    run_macos_admin_script(&command)
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_service() -> Result<()> {
+    let bundled = macos_bundled_plist_path()
+        .as_ref()
+        .is_some_and(|path| path.exists());
+    if bundled {
+        use crate::macos_service_management::RegistrationStatus;
+        match crate::macos_service_management::daemon_status()? {
+            RegistrationStatus::Enabled => {
+                let running = std::process::Command::new("/bin/launchctl")
+                    .args(["print", &format!("system/{MACOS_SERVICE_LABEL}")])
+                    .output()
+                    .map(|output| output.status.success())
+                    .unwrap_or(false);
+                if running {
+                    return Ok(());
+                }
+                // A deliberate stop uses bootout while keeping the user's
+                // approval. Re-register the bundled daemon to bootstrap it.
+                crate::macos_service_management::set_daemon_registered(false)?;
+                return register_bundled_macos_daemon();
+            }
+            RegistrationStatus::RequiresApproval => {
+                return Err(anyhow!(
+                    "macOS background service is awaiting approval; enable p2pRemote in System Settings > General > Login Items"
+                ))
+            }
+            _ => return register_bundled_macos_daemon(),
+        }
+    }
+    if !Path::new(MACOS_PLIST_PATH).exists() {
+        return Err(anyhow!("macOS background service is not installed"));
+    }
+    let command = format!(
+        "/bin/launchctl enable system/{label} && (/bin/launchctl bootstrap system {plist} >/dev/null 2>&1 || /bin/launchctl kickstart -k system/{label})",
+        label = MACOS_SERVICE_LABEL,
+        plist = shell_quote(Path::new(MACOS_PLIST_PATH)),
+    );
+    run_macos_admin_script(&command)
+}
+
+#[cfg(target_os = "macos")]
+pub fn stop_service() -> Result<()> {
+    run_macos_admin_script(&format!(
+        "/bin/launchctl bootout system/{MACOS_SERVICE_LABEL} >/dev/null 2>&1 || true"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub fn restart_service() -> Result<()> {
+    run_macos_admin_script(&format!(
+        "/bin/launchctl kickstart -k system/{MACOS_SERVICE_LABEL}"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub fn enable_service() -> Result<()> {
+    if macos_bundled_plist_path()
+        .as_ref()
+        .is_some_and(|path| path.exists())
+    {
+        return register_bundled_macos_daemon();
+    }
+    run_macos_admin_script(&format!(
+        "/bin/launchctl enable system/{MACOS_SERVICE_LABEL}"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub fn disable_service() -> Result<()> {
+    if macos_bundled_plist_path()
+        .as_ref()
+        .is_some_and(|path| path.exists())
+    {
+        crate::macos_service_management::set_daemon_registered(false)?;
+        return Ok(());
+    }
+    run_macos_admin_script(&format!(
+        "/bin/launchctl disable system/{MACOS_SERVICE_LABEL}"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub fn query_service_status() -> Result<ServiceStatus> {
+    let bundled = macos_bundled_plist_path()
+        .as_ref()
+        .is_some_and(|path| path.exists());
+    let registration = if bundled {
+        Some(crate::macos_service_management::daemon_status()?)
+    } else {
+        None
+    };
+    let installed = bundled || Path::new(MACOS_PLIST_PATH).exists();
+    if !installed {
+        return Ok(ServiceStatus {
+            installed: false,
+            running: false,
+            enabled: false,
+            raw_state: "not-installed".to_string(),
+        });
+    }
+    let status = std::process::Command::new("/bin/launchctl")
+        .args(["print", &format!("system/{MACOS_SERVICE_LABEL}")])
+        .output()
+        .context("failed to query macOS background service")?;
+    let raw = String::from_utf8_lossy(&status.stdout).to_string();
+    let disabled = std::process::Command::new("/bin/launchctl")
+        .args(["print-disabled", "system"])
+        .output()
+        .ok()
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.contains(MACOS_SERVICE_LABEL) && line.contains("true"))
+        })
+        .unwrap_or(false);
+    if let Some(registration) = registration {
+        use crate::macos_service_management::RegistrationStatus;
+        // A bundled CLI is not the main application process, so
+        // SMAppService may report NotFound even while launchd is running the
+        // daemon registered by its parent app. In that case launchd is the
+        // authoritative runtime source and the embedded plist still proves
+        // that this installation supports the service.
+        let running = status.status.success();
+        return Ok(ServiceStatus {
+            installed,
+            running,
+            enabled: matches!(registration, RegistrationStatus::Enabled)
+                || (matches!(registration, RegistrationStatus::NotFound) && running && !disabled),
+            raw_state: if matches!(registration, RegistrationStatus::RequiresApproval) {
+                "requires-approval".to_string()
+            } else if running {
+                raw.lines()
+                    .find(|line| line.trim_start().starts_with("state ="))
+                    .map(str::trim)
+                    .unwrap_or("running")
+                    .to_string()
+            } else {
+                registration.as_str().to_string()
+            },
+        });
+    }
+    Ok(ServiceStatus {
+        installed,
+        running: status.status.success(),
+        enabled: !disabled,
+        raw_state: if status.status.success() {
+            raw.lines()
+                .find(|line| line.trim_start().starts_with("state ="))
+                .map(str::trim)
+                .unwrap_or("running")
+                .to_string()
+        } else {
+            "stopped".to_string()
+        },
     })
 }

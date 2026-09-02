@@ -709,13 +709,13 @@ pub async fn run_service_foreground() -> Result<()> {
     }
 
     cancel_all_wgvpn_jobs(&shared).await;
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "macos")) {
         let punch_lib = load_machine_config()
             .ok()
             .filter(|cfg| !cfg.p2p_punch_path.is_empty())
             .map(|cfg| std::path::PathBuf::from(cfg.p2p_punch_path))
             .unwrap_or_else(crate::config::default_p2p_punch_path);
-        if let Err(err) = gonc_ffi::stop_windows_wg_engine(&punch_lib) {
+        if let Err(err) = gonc_ffi::stop_userspace_wg_engine(&punch_lib) {
             warn!(
                 "[ServiceRuntime] userspace WG engine shutdown failed: {:#}",
                 err

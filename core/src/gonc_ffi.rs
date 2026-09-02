@@ -165,11 +165,15 @@ pub struct WgCapabilitiesResult {
     #[serde(default)]
     pub abi_version: u32,
     #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
     pub userspace_wg: bool,
     #[serde(default)]
     pub hybrid_tun: bool,
     #[serde(default)]
     pub wintun: bool,
+    #[serde(default)]
+    pub native_tun: bool,
     #[serde(default)]
     pub netstack_proxy: bool,
     #[serde(default)]
@@ -282,17 +286,17 @@ unsafe extern "C" {
     fn GetSubnetRouterStatus(input: *const c_char) -> *mut c_char;
     fn GetWgCapabilities(input: *const c_char) -> *mut c_char;
     fn GenerateWgKeypair(input: *const c_char) -> *mut c_char;
-    fn StartWindowsWgPeer(input: *const c_char) -> *mut c_char;
-    fn StopWindowsWgPeer(input: *const c_char) -> *mut c_char;
-    fn GetWindowsWgPeerStatus(input: *const c_char) -> *mut c_char;
-    fn SetWindowsWgPeerAllowed(input: *const c_char) -> *mut c_char;
-    fn StopWindowsWgEngine(input: *const c_char) -> *mut c_char;
-    fn CleanupWindowsWgPlatform(input: *const c_char) -> *mut c_char;
+    fn StartUserspaceWgPeer(input: *const c_char) -> *mut c_char;
+    fn StopUserspaceWgPeer(input: *const c_char) -> *mut c_char;
+    fn GetUserspaceWgPeerStatus(input: *const c_char) -> *mut c_char;
+    fn SetUserspaceWgPeerAllowed(input: *const c_char) -> *mut c_char;
+    fn StopUserspaceWgEngine(input: *const c_char) -> *mut c_char;
+    fn CleanupUserspaceWgPlatform(input: *const c_char) -> *mut c_char;
     fn Exchange(input: *const c_char) -> *mut c_char;
     fn FreeCString(ptr: *mut c_char);
 }
 
-const WINDOWS_WG_ABI_VERSION: u32 = 1;
+const USERSPACE_WG_ABI_VERSION: u32 = 2;
 
 pub fn get_wg_capabilities(library_path: &Path) -> Result<WgCapabilitiesResult> {
     validate_punch_library_available(library_path)?;
@@ -305,10 +309,10 @@ pub fn get_wg_capabilities(library_path: &Path) -> Result<WgCapabilitiesResult> 
             result.error
         ));
     }
-    if result.abi_version != WINDOWS_WG_ABI_VERSION {
+    if result.abi_version != USERSPACE_WG_ABI_VERSION {
         return Err(anyhow!(
             "userspace WG ABI mismatch: expected {}, got {}",
-            WINDOWS_WG_ABI_VERSION,
+            USERSPACE_WG_ABI_VERSION,
             result.abi_version
         ));
     }
@@ -329,32 +333,44 @@ pub fn generate_wg_keypair(library_path: &Path) -> Result<WgKeypairResult> {
     Ok(result)
 }
 
-pub fn start_windows_wg_peer(
+pub fn start_userspace_wg_peer(
     library_path: &Path,
     request: &StartWindowsWgPeerRequest,
 ) -> Result<WindowsWgPeerResult> {
     let capabilities = get_wg_capabilities(library_path)?;
-    if !capabilities.userspace_wg || !capabilities.hybrid_tun {
+    if !capabilities.userspace_wg || !capabilities.native_tun {
         return Err(anyhow!(
-            "punch library does not support Windows userspace WG"
+            "punch library does not support native userspace WG"
         ));
     }
     let input = serde_json::to_string(request).context("failed to encode userspace WG peer")?;
-    let output = unsafe { ffi_call(&input, |ptr| StartWindowsWgPeer(ptr), "StartWindowsWgPeer")? };
+    let output = unsafe {
+        ffi_call(
+            &input,
+            |ptr| StartUserspaceWgPeer(ptr),
+            "StartUserspaceWgPeer",
+        )?
+    };
     decode_windows_wg_peer_result(&output, "start")
 }
 
-pub fn stop_windows_wg_peer(library_path: &Path, handle_id: &str) -> Result<()> {
+pub fn stop_userspace_wg_peer(library_path: &Path, handle_id: &str) -> Result<()> {
     validate_punch_library_available(library_path)?;
     let input = serde_json::to_string(&WindowsWgPeerHandleRequest {
         handle_id: handle_id.to_string(),
     })?;
-    let output = unsafe { ffi_call(&input, |ptr| StopWindowsWgPeer(ptr), "StopWindowsWgPeer")? };
+    let output = unsafe {
+        ffi_call(
+            &input,
+            |ptr| StopUserspaceWgPeer(ptr),
+            "StopUserspaceWgPeer",
+        )?
+    };
     decode_windows_wg_peer_result(&output, "stop")?;
     Ok(())
 }
 
-pub fn get_windows_wg_peer_status(
+pub fn get_userspace_wg_peer_status(
     library_path: &Path,
     handle_id: &str,
 ) -> Result<WindowsWgPeerResult> {
@@ -365,8 +381,8 @@ pub fn get_windows_wg_peer_status(
     let output = unsafe {
         ffi_call(
             &input,
-            |ptr| GetWindowsWgPeerStatus(ptr),
-            "GetWindowsWgPeerStatus",
+            |ptr| GetUserspaceWgPeerStatus(ptr),
+            "GetUserspaceWgPeerStatus",
         )?
     };
     decode_windows_wg_peer_result(&output, "status")
@@ -374,7 +390,7 @@ pub fn get_windows_wg_peer_status(
 
 /// Toggle a passive userspace WireGuard peer's AllowedIPs without rebuilding
 /// the peer or touching the packet hot path.
-pub fn set_windows_wg_peer_allowed(
+pub fn set_userspace_wg_peer_allowed(
     library_path: &Path,
     handle_id: &str,
     allowed: bool,
@@ -384,27 +400,33 @@ pub fn set_windows_wg_peer_allowed(
     let output = unsafe {
         ffi_call(
             &input,
-            |ptr| SetWindowsWgPeerAllowed(ptr),
-            "SetWindowsWgPeerAllowed",
+            |ptr| SetUserspaceWgPeerAllowed(ptr),
+            "SetUserspaceWgPeerAllowed",
         )?
     };
     decode_windows_wg_peer_result(&output, "set allowed")
 }
 
-pub fn stop_windows_wg_engine(library_path: &Path) -> Result<()> {
-    validate_punch_library_available(library_path)?;
-    let output = unsafe { ffi_call("{}", |ptr| StopWindowsWgEngine(ptr), "StopWindowsWgEngine")? };
-    decode_windows_wg_peer_result(&output, "engine stop")?;
-    Ok(())
-}
-
-pub fn cleanup_windows_wg_platform(library_path: &Path) -> Result<()> {
+pub fn stop_userspace_wg_engine(library_path: &Path) -> Result<()> {
     validate_punch_library_available(library_path)?;
     let output = unsafe {
         ffi_call(
             "{}",
-            |ptr| CleanupWindowsWgPlatform(ptr),
-            "CleanupWindowsWgPlatform",
+            |ptr| StopUserspaceWgEngine(ptr),
+            "StopUserspaceWgEngine",
+        )?
+    };
+    decode_windows_wg_peer_result(&output, "engine stop")?;
+    Ok(())
+}
+
+pub fn cleanup_userspace_wg_platform(library_path: &Path) -> Result<()> {
+    validate_punch_library_available(library_path)?;
+    let output = unsafe {
+        ffi_call(
+            "{}",
+            |ptr| CleanupUserspaceWgPlatform(ptr),
+            "CleanupUserspaceWgPlatform",
         )?
     };
     decode_windows_wg_peer_result(&output, "platform cleanup")?;

@@ -664,16 +664,28 @@ pub(super) async fn start_wgvpn_active_with_notify(
         }
     }
     shared.lock().p2p_attempt_waiters.remove(&attempt_id);
-    let target_rdp_port = if rdp_port == 0 {
-        opened.target_rdp_port.max(3389)
+    let target_remote_port = if rdp_port == 0 {
+        opened.target_remote_access.port.max(opened.target_rdp_port)
     } else {
         rdp_port
     };
+    let remote_protocol = if opened.target_remote_access.protocol.is_empty() {
+        "rdp".to_string()
+    } else {
+        opened.target_remote_access.protocol.clone()
+    };
+    let remote_address = format!("{}:{}", started.peer_virtual_ip, target_remote_port);
     Ok(ActiveStartResult {
         success: started.success,
         reused: false,
         local_port: 0,
-        rdp_address: format!("{}:{}", started.peer_virtual_ip, target_rdp_port),
+        rdp_address: if remote_protocol == "rdp" {
+            remote_address.clone()
+        } else {
+            String::new()
+        },
+        remote_address,
+        remote_protocol,
         source_nat_type: started.local_nat_type,
         target_nat_type: started.remote_nat_type,
         message: started.message,

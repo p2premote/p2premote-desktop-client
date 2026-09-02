@@ -27,6 +27,11 @@ export interface DeviceInfo {
   lan_ip?: string
   rdp_enabled: boolean
   rdp_port: number
+  remote_access?: {
+    protocol: 'rdp' | 'vnc' | 'custom' | string
+    enabled: boolean
+    port: number
+  }
   public_ip?: string
   system_version: string
   client_version?: string

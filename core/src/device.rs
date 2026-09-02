@@ -7,7 +7,11 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::IpAddr;
+#[cfg(target_os = "macos")]
+use std::net::{SocketAddr, TcpStream};
 use std::sync::OnceLock;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 #[cfg(windows)]
 use tracing::error;
 use tracing::{debug, info};
@@ -64,6 +68,13 @@ use winreg::enums::*;
 #[cfg(windows)]
 use winreg::RegKey;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAccessInfo {
+    pub protocol: String,
+    pub enabled: bool,
+    pub port: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub device_id: i64,
@@ -79,6 +90,8 @@ pub struct DeviceInfo {
     pub rdp_enabled: bool,
     #[serde(default)]
     pub rdp_port: u16,
+    #[serde(default)]
+    pub remote_access: Option<RemoteAccessInfo>,
     #[serde(default)]
     pub public_ip: Option<String>,
     #[serde(default)]
@@ -114,6 +127,8 @@ struct RegisterRequest {
     rdp_enabled: bool,
     #[serde(rename = "rdp_port")]
     rdp_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_access: Option<RemoteAccessInfo>,
 }
 
 /// 业务响应 envelope 复用 http::ApiResponse<T>，按 data 类型别名。
@@ -135,6 +150,8 @@ pub struct DeviceStatusReport {
     public_ip_location: String,
     service_port: i64,
     rdp_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_access: Option<RemoteAccessInfo>,
     client_version: String,
 }
 
@@ -210,6 +227,7 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
         .clone()
         .ok_or_else(|| anyhow!("device uuid missing after initialization"))?;
 
+    let remote_access = current_remote_access();
     let rdp_port = get_rdp_port_from_registry();
     let rdp_enabled = is_rdp_enabled();
     let public_network = refresh_public_network_info(config, false).await;
@@ -228,6 +246,7 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
         service_port: rdp_port as i64,
         rdp_enabled,
         rdp_port,
+        remote_access,
     };
     let client = shared_client();
     let resp = send_authed(config, |token| {
@@ -266,7 +285,11 @@ pub async fn collect_device_status_report(
         .map(|ip| ip.to_string())
         .unwrap_or_else(|_| "127.0.0.1".to_string());
     let public_network = refresh_public_network_info(config, false).await;
-    let service_port = get_rdp_port_from_registry() as i64;
+    let remote_access = current_remote_access();
+    let service_port = remote_access
+        .as_ref()
+        .map(|access| access.port as i64)
+        .unwrap_or_else(|| get_rdp_port_from_registry() as i64);
     let rdp_enabled = is_rdp_enabled();
 
     Ok(DeviceStatusReport {
@@ -277,6 +300,7 @@ pub async fn collect_device_status_report(
         public_ip_location: public_network.location,
         service_port,
         rdp_enabled,
+        remote_access,
         client_version: current_client_version(),
     })
 }
@@ -1076,7 +1100,31 @@ fn get_system_version() -> String {
         .unwrap_or_else(|| "Linux".to_string())
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+fn get_system_version() -> String {
+    let product_version = std::process::Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty());
+    let build_version = std::process::Command::new("/usr/bin/sw_vers")
+        .arg("-buildVersion")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    match (product_version, build_version) {
+        (Some(product), Some(build)) => format!("macOS {product} ({build})"),
+        (Some(product), None) => format!("macOS {product}"),
+        _ => "macOS".to_string(),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn get_system_version() -> String {
     std::env::consts::OS.to_string()
 }
@@ -1124,7 +1172,14 @@ pub fn get_rdp_port_from_registry() -> u16 {
     3389
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn get_rdp_port_from_registry() -> u16 {
+    // This legacy field is still carried in the P2P-ready message for one
+    // compatibility cycle.  On macOS it represents Screen Sharing/VNC.
+    5900
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub fn get_rdp_port_from_registry() -> u16 {
     3389
 }
@@ -1155,6 +1210,39 @@ pub fn is_rdp_enabled() -> bool {
 #[cfg(not(windows))]
 pub fn is_rdp_enabled() -> bool {
     false
+}
+
+fn current_remote_access() -> Option<RemoteAccessInfo> {
+    #[cfg(windows)]
+    {
+        return Some(RemoteAccessInfo {
+            protocol: "rdp".to_string(),
+            enabled: is_rdp_enabled(),
+            port: get_rdp_port_from_registry(),
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Some(RemoteAccessInfo {
+            protocol: "vnc".to_string(),
+            enabled: is_macos_screen_sharing_enabled(),
+            port: 5900,
+        });
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_screen_sharing_enabled() -> bool {
+    [
+        SocketAddr::from(([127, 0, 0, 1], 5900)),
+        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 5900)),
+    ]
+    .iter()
+    .any(|address| TcpStream::connect_timeout(address, Duration::from_millis(250)).is_ok())
 }
 
 #[cfg(test)]
@@ -1234,11 +1322,17 @@ mod tests {
             public_ip_location: "test".to_string(),
             service_port: 3389,
             rdp_enabled: true,
+            remote_access: Some(RemoteAccessInfo {
+                protocol: "rdp".to_string(),
+                enabled: true,
+                port: 3389,
+            }),
             client_version: "1.7.3-3becb9".to_string(),
         };
 
         let value = serde_json::to_value(report).unwrap();
         assert_eq!(value["client_version"], "1.7.3-3becb9");
+        assert_eq!(value["remote_access"]["protocol"], "rdp");
     }
 
     #[test]

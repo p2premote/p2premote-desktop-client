@@ -117,8 +117,8 @@
             {{ $t('remote.connect.copy_address') }}
           </el-button>
         </div>
-        <p class="result-hint">{{ $t('remote.connect.result_hint') }}</p>
-        <p class="result-hint">
+        <p class="result-hint">{{ activeTunnelResultHint }}</p>
+        <p v-if="activeJob?.result?.remote_protocol === 'rdp'" class="result-hint">
           {{ $t('remote.connect.other_tool_hint_prefix') }}
           <strong>{{ activeTunnelPort }}</strong>
           {{ $t('remote.connect.other_tool_hint_infix') }}
@@ -170,6 +170,8 @@ interface ActiveTunnelJobStatus {
     success: boolean
     local_port: number
     rdp_address: string
+    remote_address?: string
+    remote_protocol?: string
   }
 }
 
@@ -219,8 +221,11 @@ const activeJobMessage = computed(() => {
     : t('remote.progress.attempt_prefix', { attempt: job.attempt, max: job.max_attempts })
   return `${prefix}${job.message || t('remote.progress.waiting_service_default')}`
 })
-const activeTunnelAddress = computed(() => activeJob.value?.result?.rdp_address || '')
-// 其他工具提示引用地址中的实际端口（设备自定义 RDP 端口时提示仍然准确）
+const activeTunnelAddress = computed(() => activeJob.value?.result?.remote_address || activeJob.value?.result?.rdp_address || '')
+const activeTunnelResultHint = computed(() => activeJob.value?.result?.remote_protocol === 'vnc'
+  ? t('remote.connect.vnc_result_hint')
+  : t('remote.connect.result_hint'))
+// 其他工具提示引用地址中的实际端口。
 const activeTunnelPort = computed(() => activeTunnelAddress.value.split(':').pop() || '3389')
 
 const inviteInfoPlaceholder = computed(() =>

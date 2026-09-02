@@ -206,6 +206,47 @@ pub fn linux_run_dir() -> PathBuf {
     linux_install_root_dir().join("run")
 }
 
+#[cfg(target_os = "macos")]
+pub fn macos_install_root_dir() -> PathBuf {
+    std::env::var("P2PREMOTE_INSTALL_ROOT")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("/Library/Application Support/p2pRemote"))
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_resources_dir() -> PathBuf {
+    // Both the GUI and the LaunchDaemon execute from the signed `.app`
+    // bundle. Keep code and dylibs inside that immutable bundle; only mutable
+    // data/log/runtime files live under /Library/Application Support.
+    if let Ok(executable) = std::env::current_exe() {
+        for ancestor in executable.ancestors() {
+            if ancestor.file_name().and_then(|name| name.to_str()) == Some("Contents") {
+                return ancestor.join("Resources").join("resources");
+            }
+        }
+    }
+    macos_install_root_dir().join("resources")
+}
+
+pub fn platform_run_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        return linux_run_dir();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos_install_root_dir().join("run");
+    }
+    #[cfg(windows)]
+    {
+        return install_root_dir().join("run");
+    }
+    #[allow(unreachable_code)]
+    PathBuf::from("run")
+}
+
 pub fn default_wireguard_binary_name() -> &'static str {
     #[cfg(windows)]
     {
@@ -217,7 +258,12 @@ pub fn default_wireguard_binary_name() -> &'static str {
         "wireguard-go"
     }
 
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        "wireguard-go"
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
         "wireguard"
     }
@@ -236,7 +282,12 @@ pub fn default_wireguard_path() -> PathBuf {
             .join(default_wireguard_binary_name());
     }
 
-    #[cfg(all(not(target_os = "linux"), not(windows)))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_resources_dir().join(default_wireguard_binary_name());
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(target_os = "macos"), not(windows)))]
     {
         PathBuf::from(default_wireguard_binary_name())
     }
@@ -270,7 +321,12 @@ pub fn default_wg_path() -> PathBuf {
             .join(default_wg_binary_name());
     }
 
-    #[cfg(all(not(target_os = "linux"), not(windows)))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_resources_dir().join(default_wg_binary_name());
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(target_os = "macos"), not(windows)))]
     {
         PathBuf::from(default_wg_binary_name())
     }
@@ -306,7 +362,12 @@ pub fn default_p2p_punch_path() -> PathBuf {
             .join(default_p2p_punch_binary_name());
     }
 
-    #[cfg(all(not(target_os = "linux"), not(windows)))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_resources_dir().join(default_p2p_punch_binary_name());
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(target_os = "macos"), not(windows)))]
     {
         PathBuf::from(default_p2p_punch_binary_name())
     }
@@ -318,7 +379,12 @@ pub fn default_service_path() -> PathBuf {
         return linux_resources_dir().join(default_service_binary_name());
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_resources_dir().join(default_service_binary_name());
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
     {
         PathBuf::from(default_service_binary_name())
     }
@@ -358,9 +424,14 @@ pub fn install_data_dir() -> PathBuf {
         return install_root_dir().join("data");
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         linux_install_root_dir().join("data")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        macos_install_root_dir().join("data")
     }
 }
 
@@ -383,9 +454,13 @@ pub fn machine_log_dir() -> PathBuf {
         return install_data_dir().join("logs");
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         linux_install_root_dir().join("logs")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_install_root_dir().join("logs")
     }
 }
 
@@ -411,7 +486,12 @@ pub fn default_machine_config_path() -> PathBuf {
             .join(".p2premote_default.json");
     }
 
-    #[cfg(all(not(target_os = "linux"), not(windows)))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_resources_dir().join(".p2premote_default.json");
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(target_os = "macos"), not(windows)))]
     {
         PathBuf::from(".p2premote_default.json")
     }
@@ -427,6 +507,12 @@ pub fn ensure_machine_dirs() -> Result<()> {
         fs::create_dir_all(linux_resources_dir())
             .context("failed to create Linux resources dir")?;
         fs::create_dir_all(linux_run_dir()).context("failed to create Linux run dir")?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        fs::create_dir_all(macos_resources_dir())
+            .context("failed to create macOS resources dir")?;
+        fs::create_dir_all(platform_run_dir()).context("failed to create macOS run dir")?;
     }
     fs::create_dir_all(&config_dir).context("failed to create machine config dir")?;
     fs::create_dir_all(machine_log_dir()).context("failed to create machine log dir")?;
@@ -477,7 +563,7 @@ fn secure_config_dir(dir: &Path) {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         // 仅 service 所属用户可访问（与 Windows 下"仅 SYSTEM+Admins"语义一致）。
@@ -749,9 +835,36 @@ pub fn get_machine_fingerprint() -> String {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("/usr/sbin/ioreg")
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+            .output()
+        {
+            if output.status.success() {
+                if let Some(uuid) = parse_ioplatform_uuid(&String::from_utf8_lossy(&output.stdout))
+                {
+                    return uuid;
+                }
+            }
+        }
+    }
+
     hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_ioplatform_uuid(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        if !key.contains("\"IOPlatformUUID\"") {
+            return None;
+        }
+        let value = value.trim().trim_matches('"').trim();
+        (!value.is_empty()).then(|| value.to_string())
+    })
 }
 
 pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -789,7 +902,7 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         let _ = fs::remove_file(&tmp_path);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         // 仅 service 所属用户可读写（machine config 含认证 token）
@@ -801,6 +914,15 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 #[cfg(test)]
 mod wgvpn_tests {
     use super::*;
+
+    #[test]
+    fn parses_macos_ioplatform_uuid() {
+        let output = r#"    | "IOPlatformUUID" = "01234567-89AB-CDEF-0123-456789ABCDEF""#;
+        assert_eq!(
+            parse_ioplatform_uuid(output).as_deref(),
+            Some("01234567-89AB-CDEF-0123-456789ABCDEF")
+        );
+    }
 
     #[test]
     fn default_config_has_bundled_punch_path() {

@@ -32,6 +32,12 @@ fn flash_main_window(app: AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        window.show().map_err(|error| error.to_string())?;
+        window.unminimize().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
     window
         .request_user_attention(Some(UserAttentionType::Informational))
         .map_err(|e| e.to_string())
@@ -57,9 +63,9 @@ use commands::{
         acknowledge_device_identity_notification, approve_inbound_tunnel,
         check_required_client_files, ensure_background_service_session, get_service_status,
         listen_service_events, refresh_service_network_info, refresh_tunnel_status,
-        reject_inbound_tunnel, start_service_active_tunnel, start_service_anonymous_active_tunnel,
-        stop_active_tunnel_job, stop_service_active_tunnel, stop_service_tunnel,
-        sync_service_runtime_config, test_tunnel_speed,
+        reject_inbound_tunnel, set_background_service_enabled, start_service_active_tunnel,
+        start_service_anonymous_active_tunnel, stop_active_tunnel_job, stop_service_active_tunnel,
+        stop_service_tunnel, sync_service_runtime_config, test_tunnel_speed,
     },
 };
 
@@ -161,6 +167,7 @@ pub fn run() {
             check_required_client_files,
             ensure_background_service_session,
             get_service_status,
+            set_background_service_enabled,
             listen_service_events,
             acknowledge_device_identity_notification,
             sync_service_runtime_config,
@@ -255,7 +262,7 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
                 if let Some(main_window) = app.get_webview_window("main") {
                     let main_window_for_close = main_window.clone();

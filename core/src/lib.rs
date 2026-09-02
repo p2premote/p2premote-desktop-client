@@ -10,6 +10,8 @@ pub mod http;
 pub mod i18n;
 pub mod invite;
 pub mod logging;
+#[cfg(target_os = "macos")]
+pub mod macos_service_management;
 pub mod p2p;
 pub mod runtime;
 pub mod service_control;

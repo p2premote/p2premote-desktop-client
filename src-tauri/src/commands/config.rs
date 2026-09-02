@@ -381,14 +381,41 @@ pub async fn set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String>
         return Ok(());
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         set_service_auto_start(&app, enabled)?;
         return save_service_auto_start(enabled).await;
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        set_macos_login_item(&app, enabled)?;
+        return save_service_auto_start(enabled).await;
+    }
+
     #[allow(unreachable_code)]
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_login_item(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let _ = app;
+    use p2premote_core::macos_service_management::RegistrationStatus;
+
+    match p2premote_core::macos_service_management::set_main_app_login_item(enabled)
+        .map_err(|error| format!("failed to update macOS Login Item: {error}"))?
+    {
+        RegistrationStatus::Enabled if enabled => Ok(()),
+        RegistrationStatus::NotRegistered | RegistrationStatus::NotFound if !enabled => Ok(()),
+        RegistrationStatus::RequiresApproval => Err(
+            "macOS Login Item is awaiting approval in System Settings > General > Login Items"
+                .to_string(),
+        ),
+        status => Err(format!(
+            "macOS Login Item update returned unexpected status: {}",
+            status.as_str()
+        )),
+    }
 }
 
 #[tauri::command]

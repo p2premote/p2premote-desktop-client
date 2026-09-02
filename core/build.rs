@@ -6,7 +6,10 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS is not set");
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
-    let resources_dir = manifest_dir.join("..").join("src-tauri").join("resources");
+    println!("cargo:rerun-if-env-changed=P2PREMOTE_PUNCH_LIB_DIR");
+    let resources_dir = env::var_os("P2PREMOTE_PUNCH_LIB_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("..").join("src-tauri").join("resources"));
     let punch_library = resources_dir.join(punch_library_name(&target_os));
     println!("cargo:rustc-link-search=native={}", resources_dir.display());
     emit_link_flags(&target_os);

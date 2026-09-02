@@ -12,12 +12,46 @@ fn main() {
     println!("cargo:rerun-if-changed=../core/src");
     println!("cargo:rerun-if-changed=../core/Cargo.toml");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PUNCH_DIR");
+    println!("cargo:rerun-if-env-changed=P2PREMOTE_PREBUILT_RESOURCES");
 
-    build_punch_library_into_resources();
-    copy_service_into_resources();
-    copy_cli_into_resources();
-    copy_notifier_into_resources();
+    emit_macos_rpath();
+
+    if env::var_os("P2PREMOTE_PREBUILT_RESOURCES").is_some() {
+        validate_prebuilt_resources();
+    } else {
+        build_punch_library_into_resources();
+        copy_service_into_resources();
+        copy_cli_into_resources();
+        copy_notifier_into_resources();
+    }
     tauri_build::build()
+}
+
+fn emit_macos_rpath() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Resources/resources");
+    }
+}
+
+fn validate_prebuilt_resources() {
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let resources_dir = manifest_dir.join("resources");
+    let (target_os, _) = parse_target();
+    let mut required = vec![
+        main_binary_name("p2premote-service", &target_os),
+        main_binary_name("p2premote-cli", &target_os),
+        punch_library_name(&target_os),
+    ];
+    if target_os == "windows" {
+        required.push(main_binary_name("p2premote-notifier", &target_os));
+    }
+    for name in required {
+        let path = resources_dir.join(&name);
+        if !path.is_file() {
+            panic!("required prebuilt resource is missing: {}", path.display());
+        }
+    }
 }
 
 fn main_binary_name(base: &str, target_os: &str) -> String {
@@ -131,6 +165,19 @@ fn build_punch_library_into_resources() {
             library_name,
             String::from_utf8_lossy(&output.stderr).trim()
         );
+    }
+    if target_os == "macos" {
+        let output = Command::new("install_name_tool")
+            .args(["-id", "@rpath/libp2premote-punch.dylib"])
+            .arg(&target)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to invoke install_name_tool: {}", err));
+        if !output.status.success() {
+            panic!(
+                "failed to set the macOS dylib install name: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
     }
     if target_os != "linux" {
         ensure_executable(&target);

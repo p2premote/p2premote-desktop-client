@@ -405,6 +405,25 @@ pub async fn get_service_status() -> Result<ServiceStatusResponse, String> {
     collect_service_status().await
 }
 
+#[tauri::command]
+pub async fn set_background_service_enabled(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<ServiceStatusResponse, String> {
+    if enabled {
+        let service_exe = resolve_service_executable(&app)?;
+        p2premote_core::service_control::install_service(&service_exe)
+            .and_then(|_| p2premote_core::service_control::enable_service())
+            .and_then(|_| p2premote_core::service_control::start_service())
+            .map_err(|error| error.to_string())?;
+    } else {
+        p2premote_core::service_control::stop_service()
+            .and_then(|_| p2premote_core::service_control::disable_service())
+            .map_err(|error| error.to_string())?;
+    }
+    collect_service_status().await
+}
+
 /// UI 调用：建立到 service 的持久连接，监听服务端推送事件。返回 true=已连接, false=service 未运行
 #[tauri::command]
 pub async fn listen_service_events(app: AppHandle) -> Result<bool, String> {
@@ -430,11 +449,11 @@ pub async fn sync_service_runtime_config() -> Result<ServiceStatusResponse, Stri
 
 #[tauri::command]
 pub async fn ensure_background_service_session(
-    _app: AppHandle,
+    app: AppHandle,
 ) -> Result<ServiceStatusResponse, String> {
     match tokio::time::timeout(
         SERVICE_CHECK_TIMEOUT,
-        ensure_background_service_session_inner(),
+        ensure_background_service_session_inner(&app),
     )
     .await
     {
@@ -449,7 +468,9 @@ pub async fn ensure_background_service_session(
     }
 }
 
-async fn ensure_background_service_session_inner() -> Result<ServiceStatusResponse, String> {
+async fn ensure_background_service_session_inner(
+    _app: &AppHandle,
+) -> Result<ServiceStatusResponse, String> {
     debug!("[service] === ensure_background_service_session begin ===");
     let _guard = get_service_session_lock().lock().await;
     debug!("[service] acquired session lock");
@@ -479,6 +500,15 @@ async fn ensure_background_service_session_inner() -> Result<ServiceStatusRespon
         warn!("[service] query_service_status failed: {}", e);
         e.to_string()
     })?;
+    #[cfg(target_os = "macos")]
+    let scm_status = if !scm_status.installed || !scm_status.enabled {
+        let service_exe = resolve_service_executable(_app)?;
+        p2premote_core::service_control::install_service(&service_exe)
+            .map_err(|error| error.to_string())?;
+        query_service_status().map_err(|error| error.to_string())?
+    } else {
+        scm_status
+    };
     debug!(
         "[service] SCM status: installed={}, running={}, enabled={}, raw_state={}",
         scm_status.installed, scm_status.running, scm_status.enabled, scm_status.raw_state
@@ -491,6 +521,8 @@ async fn ensure_background_service_session_inner() -> Result<ServiceStatusRespon
                 Ok(()) => debug!("[service] SCM start returned Ok"),
                 Err(err) => {
                     warn!("[service] SCM start failed: {:#}", err);
+                    #[cfg(target_os = "macos")]
+                    return Err(err.to_string());
                 }
             }
         } else {

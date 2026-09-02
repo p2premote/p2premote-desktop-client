@@ -1,5 +1,6 @@
 use crate::auth::refresh_with_config;
 use crate::config::MachineConfig;
+use crate::device::RemoteAccessInfo;
 use crate::health::HEALTH_PORT;
 use crate::http::{shared_client, ApiResponse};
 use crate::speed_test::{
@@ -37,6 +38,10 @@ pub struct ActiveStartResult {
     pub local_port: u16,
     pub rdp_address: String,
     #[serde(default)]
+    pub remote_address: String,
+    #[serde(default)]
+    pub remote_protocol: String,
+    #[serde(default)]
     pub source_nat_type: String,
     #[serde(default)]
     pub target_nat_type: String,
@@ -51,6 +56,7 @@ pub struct ActiveP2POpenResult {
     pub log_id: i64,
     pub access_grant: String,
     pub target_rdp_port: u16,
+    pub target_remote_access: RemoteAccessInfo,
     pub source_user_id: i64,
     pub source_username: String,
     pub source_email: String,
@@ -88,6 +94,10 @@ struct P2POpenData {
     #[serde(default)]
     target: Option<P2POpenTarget>,
     #[serde(default)]
+    target_remote_access: Option<RemoteAccessInfo>,
+    #[serde(default)]
+    target_rdp_enabled: bool,
+    #[serde(default)]
     source_user_id: i64,
     #[serde(default)]
     source_username: String,
@@ -99,6 +109,31 @@ struct P2POpenData {
 struct P2POpenTarget {
     #[serde(default)]
     service_port: u16,
+    #[serde(default)]
+    remote_access: Option<RemoteAccessInfo>,
+}
+
+fn target_remote_access(data: &P2POpenData) -> (u16, RemoteAccessInfo) {
+    let legacy_port = data
+        .target
+        .as_ref()
+        .map(|target| target.service_port)
+        .filter(|port| *port != 0)
+        .unwrap_or(3389);
+    let remote_access = data
+        .target_remote_access
+        .clone()
+        .or_else(|| {
+            data.target
+                .as_ref()
+                .and_then(|target| target.remote_access.clone())
+        })
+        .unwrap_or(RemoteAccessInfo {
+            protocol: "rdp".to_string(),
+            enabled: data.target_rdp_enabled,
+            port: legacy_port,
+        });
+    (legacy_port, remote_access)
 }
 #[derive(Serialize)]
 struct NotifyP2PEndRequest {
@@ -193,14 +228,13 @@ pub async fn open_active_p2p_job(
         !data.source_username.trim().is_empty(),
         !data.source_email.trim().is_empty(),
     );
+    let (legacy_port, target_remote_access) = target_remote_access(&data);
     Ok(ActiveP2POpenResult {
         connection_id: data.connection_id,
         log_id: data.log_id,
         access_grant: data.access_grant,
-        target_rdp_port: data
-            .target
-            .map(|target| target.service_port)
-            .unwrap_or(3389),
+        target_rdp_port: legacy_port,
+        target_remote_access,
         source_user_id: data.source_user_id,
         source_username: data.source_username,
         source_email: data.source_email,
@@ -711,6 +745,45 @@ pub async fn close_active_p2p_job_with_nat(
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn p2p_open_prefers_generic_vnc_capability() {
+        let data: P2POpenData = serde_json::from_value(serde_json::json!({
+            "connection_id": "connection",
+            "log_id": 1,
+            "access_grant": "grant",
+            "target_rdp_enabled": false,
+            "target": { "service_port": 3389 },
+            "target_remote_access": {
+                "protocol": "vnc",
+                "enabled": true,
+                "port": 5900
+            }
+        }))
+        .expect("parse generic remote access");
+        let (legacy_port, remote) = target_remote_access(&data);
+        assert_eq!(legacy_port, 3389);
+        assert_eq!(remote.protocol, "vnc");
+        assert!(remote.enabled);
+        assert_eq!(remote.port, 5900);
+    }
+
+    #[test]
+    fn p2p_open_preserves_legacy_rdp_fields() {
+        let data: P2POpenData = serde_json::from_value(serde_json::json!({
+            "connection_id": "connection",
+            "log_id": 1,
+            "access_grant": "grant",
+            "target_rdp_enabled": true,
+            "target": { "service_port": 3390 }
+        }))
+        .expect("parse legacy remote access");
+        let (legacy_port, remote) = target_remote_access(&data);
+        assert_eq!(legacy_port, 3390);
+        assert_eq!(remote.protocol, "rdp");
+        assert!(remote.enabled);
+        assert_eq!(remote.port, 3390);
+    }
 
     #[tokio::test]
     async fn active_health_session_sends_hello_and_ping() {

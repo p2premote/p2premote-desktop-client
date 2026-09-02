@@ -75,7 +75,7 @@
                       <el-icon aria-hidden="true"><Link /></el-icon>
                       <span>{{ tunnelConnectedLabel(selectedDevice) }}</span>
                     </el-tag>
-                    <el-tag v-if="isWindowsDevice(selectedDevice) && !selectedDevice.rdp_enabled" type="danger" size="small">{{ $t('devices.detail.rdp_not_enabled') }}</el-tag>
+                    <el-tag v-if="hasRemoteAccessCapability(selectedDevice) && !isRemoteAccessEnabled(selectedDevice)" type="danger" size="small">{{ remoteAccessDisabledLabel(selectedDevice) }}</el-tag>
                   </div>
                   <p class="detail-subtitle">{{ selectedDevice.device_name }} · {{ selectedDevice.device_type }}</p>
                 </div>
@@ -150,7 +150,7 @@
                 class="action-grid"
                 :class="{
                   'single-tunnel-action':
-                    !(isWindowsDevice(selectedDevice) && selectedDevice.rdp_enabled)
+                    !isRemoteAccessEnabled(selectedDevice)
                     && !tunnelVirtualIp(selectedDevice),
                 }"
               >
@@ -172,15 +172,15 @@
                 </button>
 
                 <button
-                  v-if="isWindowsDevice(selectedDevice) && selectedDevice.rdp_enabled"
+                  v-if="isRemoteAccessEnabled(selectedDevice)"
                   type="button"
                   class="action-tile"
-                  :aria-label="`${$t('devices.detail.connection.remote_desktop')}. ${$t('devices.detail.connection.remote_desktop_tooltip')}`"
+                  :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
                   @click="handleRemoteDesktop(selectedDevice!)"
                 >
                   <el-icon><Monitor /></el-icon>
-                  <span>{{ $t('devices.detail.connection.remote_desktop') }}</span>
-                  <el-tooltip :content="$t('devices.detail.connection.remote_desktop_tooltip')" placement="top">
+                  <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
+                  <el-tooltip :content="remoteAccessTooltip(selectedDevice)" placement="top">
                     <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
                   </el-tooltip>
                 </button>
@@ -263,8 +263,8 @@
                   <span class="info-value">{{ selectedDevice.lan_ip || '-' }}</span>
                 </div>
                 <div class="info-item">
-                  <span class="info-label">{{ $t('devices.detail.info.rdp_port') }}</span>
-                  <span class="info-value">{{ selectedDevice.service_port }}</span>
+                  <span class="info-label">{{ remoteAccessPortLabel(selectedDevice) }}</span>
+                  <span class="info-value">{{ selectedDevice.remote_access?.port || selectedDevice.service_port }}</span>
                 </div>
                 <div class="info-item">
                   <span class="info-label">{{ $t('devices.detail.info.device_uuid') }}</span>
@@ -326,6 +326,8 @@ interface TunnelSpeedTestResult {
 interface TunnelInfo {
   local_port: number
   rdp_address: string
+  remote_address?: string
+  remote_protocol?: string
   virtual_ip?: string
   exposed_lan_cidrs?: string[]
   health_state?: 'connected' | 'degraded'
@@ -343,6 +345,8 @@ interface ActiveTunnelJobStatus {
     success: boolean
     local_port: number
     rdp_address: string
+    remote_address?: string
+    remote_protocol?: string
     warning?: string | null
   } | null
   updated_at: number
@@ -680,6 +684,44 @@ function isWindowsDevice(device: DeviceInfo | null): boolean {
   return text.includes('windows') || /(^|\s)win(?:32|64|dows)?(?:\s|$)/.test(text)
 }
 
+function remoteAccessProtocol(device: DeviceInfo | null): string {
+  if (!device) return ''
+  return (device.remote_access?.protocol || (isWindowsDevice(device) ? 'rdp' : '')).toLowerCase()
+}
+
+function hasRemoteAccessCapability(device: DeviceInfo | null): boolean {
+  return Boolean(remoteAccessProtocol(device))
+}
+
+function isRemoteAccessEnabled(device: DeviceInfo | null): boolean {
+  if (!device) return false
+  return device.remote_access?.enabled ?? (isWindowsDevice(device) && device.rdp_enabled)
+}
+
+function remoteAccessActionLabel(device: DeviceInfo | null): string {
+  return remoteAccessProtocol(device) === 'vnc'
+    ? t('devices.detail.connection.screen_sharing')
+    : t('devices.detail.connection.remote_desktop')
+}
+
+function remoteAccessTooltip(device: DeviceInfo | null): string {
+  return remoteAccessProtocol(device) === 'vnc'
+    ? t('devices.detail.connection.screen_sharing_tooltip')
+    : t('devices.detail.connection.remote_desktop_tooltip')
+}
+
+function remoteAccessDisabledLabel(device: DeviceInfo | null): string {
+  return remoteAccessProtocol(device) === 'vnc'
+    ? t('devices.detail.screen_sharing_not_enabled')
+    : t('devices.detail.rdp_not_enabled')
+}
+
+function remoteAccessPortLabel(device: DeviceInfo | null): string {
+  return remoteAccessProtocol(device) === 'vnc'
+    ? t('devices.detail.info.vnc_port')
+    : t('devices.detail.info.rdp_port')
+}
+
 function isAndroidDevice(device: DeviceInfo | null): boolean {
   if (!device) return false
   const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
@@ -840,6 +882,8 @@ function applyTunnelRuntimeStatus(runtime: any) {
           newMap[job.target_device_id] = {
             local_port: job.result.local_port || 0,
             rdp_address: job.result.rdp_address || '',
+            remote_address: job.result.remote_address || job.result.rdp_address || '',
+            remote_protocol: job.result.remote_protocol || 'rdp',
             role: 'active',
           }
         }
@@ -1027,14 +1071,15 @@ async function handleRemoteDesktop(device: DeviceInfo) {
       return
     }
 
-    if (!tunnel.rdp_address) {
+    const remoteAddress = tunnel.remote_address || tunnel.rdp_address
+    if (!remoteAddress) {
       ElMessage.error(t('devices.message.no_rdp_address'))
       return
     }
 
-    const launchAddress = resolveLaunchableRdpAddress(tunnel.rdp_address, device)
+    const launchAddress = resolveLaunchableRdpAddress(remoteAddress, device)
     if (!launchAddress) {
-      await navigator.clipboard.writeText(tunnel.rdp_address)
+      await navigator.clipboard.writeText(remoteAddress)
       ElMessage.warning(t('devices.message.rdp_port_missing'))
       return
     }

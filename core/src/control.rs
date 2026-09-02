@@ -28,7 +28,7 @@ pub const IPC_ENDPOINT: &str = r"\\.\pipe\p2premote-service-control";
 
 #[cfg(not(windows))]
 pub fn ipc_socket_path() -> std::path::PathBuf {
-    crate::config::linux_run_dir().join("p2premote-service.sock")
+    crate::config::platform_run_dir().join("p2premote-service.sock")
 }
 
 // ---- 消息定义 ----
@@ -692,6 +692,15 @@ pub async fn accept_ipc_client() -> Result<IpcStream> {
         .accept()
         .await
         .context("failed to accept unix socket client")?;
+    match stream.peer_cred() {
+        Ok(cred) => tracing::debug!(
+            "accepted local IPC client uid={} gid={} pid={:?}",
+            cred.uid(),
+            cred.gid(),
+            cred.pid()
+        ),
+        Err(err) => tracing::warn!("failed to read local IPC client credentials: {}", err),
+    }
     Ok(to_ipc_stream(stream))
 }
 
@@ -740,6 +749,17 @@ mod tests {
         roundtrip_serialize(&Data::Handshake {
             secret: "test-secret".to_string(),
         });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_socket_exposes_local_client_identity() {
+        use tokio::net::UnixStream;
+
+        let (server, _client) = UnixStream::pair().expect("create unix socket pair");
+        let credential = server.peer_cred().expect("read peer credential");
+        assert_eq!(credential.uid(), unsafe { libc::geteuid() });
+        assert_eq!(credential.gid(), unsafe { libc::getegid() });
     }
 
     #[cfg(windows)]

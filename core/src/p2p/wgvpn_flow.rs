@@ -38,6 +38,10 @@ const WG_CONF_NAME: &str = "wg0.conf";
 /// WireGuard 本地监听端口。gonc 为每个 peer 创建独立的本地 UDP 转发端口。
 const WGVPN_LISTEN_PORT: u16 = 51820;
 
+const fn uses_userspace_wg() -> bool {
+    cfg!(any(windows, target_os = "macos"))
+}
+
 /// wgvpn 会话句柄（停止时用）。扩展字段支持多 peer 按 pubkey 精确增删。
 #[derive(Debug, Clone, Default)]
 pub struct WgVpnSession {
@@ -190,7 +194,7 @@ fn allocate_ip_for_active(
     // 2. 收集已占用的 IP（两个来源合并）：
     //    a) wg0 接口现有 peer 的 AllowedIPs（跨进程真实状态，最权威）
     //    b) 本进程 session 表（覆盖 wg0 还没生效的待加 peer）
-    let mut used: HashSet<u32> = if cfg!(windows) {
+    let mut used: HashSet<u32> = if uses_userspace_wg() {
         HashSet::new()
     } else {
         wgvpn::list_peer_allowed_ips(wg_cli, WG_TUNNEL_NAME)
@@ -410,8 +414,8 @@ pub async fn start_active_wgvpn(
 
     // 4. 接口管理
     let conf_path = wg_dir.join(WG_CONF_NAME);
-    let tunnel_existed = !cfg!(windows) && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
-    if !cfg!(windows) && !tunnel_existed {
+    let tunnel_existed = !uses_userspace_wg() && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
+    if !uses_userspace_wg() && !tunnel_existed {
         if let Err(err) = ensure_wg_listen_port_available(WGVPN_LISTEN_PORT) {
             let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
             return Err(err);
@@ -423,8 +427,8 @@ pub async fn start_active_wgvpn(
         .extend(peer_exposed_lan_cidrs.iter().cloned());
 
     let mut userspace_wg_peer_handle = String::new();
-    let handle_result = if cfg!(windows) {
-        match gonc_ffi::start_windows_wg_peer(
+    let handle_result = if uses_userspace_wg() {
+        match gonc_ffi::start_userspace_wg_peer(
             Path::new(&punch_lib),
             &gonc_ffi::StartWindowsWgPeerRequest {
                 session_id: target_device_id,
@@ -447,7 +451,7 @@ pub async fn start_active_wgvpn(
                     &handle_id,
                     WIREGUARD_HANDSHAKE_TIMEOUT,
                 ) {
-                    let _ = gonc_ffi::stop_windows_wg_peer(Path::new(&punch_lib), &handle_id);
+                    let _ = gonc_ffi::stop_userspace_wg_peer(Path::new(&punch_lib), &handle_id);
                     Err(err)
                 } else {
                     userspace_wg_peer_handle = handle_id;
@@ -516,7 +520,7 @@ pub async fn start_active_wgvpn(
         advertised_lan_routes: peer_exposed_lan_cidrs,
         lan_mode: subnet_router::desired_lan_mode(&peer_payload.exposed_lan_cidrs),
         userspace_wg_peer_handle: userspace_wg_peer_handle.clone(),
-        userspace_wg: cfg!(windows),
+        userspace_wg: uses_userspace_wg(),
         ..Default::default()
     };
     let audit_event = wgvpn_audit_event(TunnelAuditAction::Established, config.device_id, &session);
@@ -641,9 +645,10 @@ pub async fn start_passive_wgvpn(
         }
     };
 
-    // 3. Windows 始终使用单进程 userspace WG；其他平台保留内核 WG。
+    // 3. Windows/macOS use the single-process userspace WG engine; Linux
+    // keeps its existing kernel/wireguard-go backend.
     let conf_path = wg_dir.join(WG_CONF_NAME);
-    let use_userspace_router = cfg!(windows);
+    let use_userspace_router = uses_userspace_wg();
     let tunnel_existed = !use_userspace_router && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
     if !use_userspace_router && !tunnel_existed {
         if let Err(err) = ensure_wg_listen_port_available(WGVPN_LISTEN_PORT) {
@@ -657,7 +662,7 @@ pub async fn start_passive_wgvpn(
 
     let mut userspace_result = None;
     let handle_result = if use_userspace_router {
-        match gonc_ffi::start_windows_wg_peer(
+        match gonc_ffi::start_userspace_wg_peer(
             Path::new(&punch_lib),
             &gonc_ffi::StartWindowsWgPeerRequest {
                 session_id: source_device_id,
@@ -680,7 +685,7 @@ pub async fn start_passive_wgvpn(
                     WIREGUARD_HANDSHAKE_TIMEOUT,
                 ) {
                     let _ =
-                        gonc_ffi::stop_windows_wg_peer(Path::new(&punch_lib), &result.handle_id);
+                        gonc_ffi::stop_userspace_wg_peer(Path::new(&punch_lib), &result.handle_id);
                     Err(err)
                 } else {
                     userspace_result = Some(result);
@@ -897,9 +902,10 @@ async fn stop_wgvpn_internal(
 
     // 1. 精确删除当前 Peer，不影响同引擎的其他主动/被动会话。
     if !session.userspace_wg_peer_handle.is_empty() {
-        if let Err(e) =
-            gonc_ffi::stop_windows_wg_peer(Path::new(&punch_lib), &session.userspace_wg_peer_handle)
-        {
+        if let Err(e) = gonc_ffi::stop_userspace_wg_peer(
+            Path::new(&punch_lib),
+            &session.userspace_wg_peer_handle,
+        ) {
             warn!("[wgvpn] stop userspace WG peer failed: {:#}", e);
             cleanup_errors.push(format!("stop userspace WG peer: {e:#}"));
         }
@@ -1001,7 +1007,7 @@ pub async fn set_wgvpn_allowed(
     }
     if !session.userspace_wg_peer_handle.is_empty() {
         let punch_lib = resolve_p2p_punch_lib(config);
-        gonc_ffi::set_windows_wg_peer_allowed(
+        gonc_ffi::set_userspace_wg_peer_allowed(
             Path::new(&punch_lib),
             &session.userspace_wg_peer_handle,
             allowed,
@@ -1060,14 +1066,14 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
     WGVPN_SESSIONS.lock().clear();
     RESERVED_ACTIVE_IPS.lock().clear();
 
-    if cfg!(windows) {
+    if uses_userspace_wg() {
         let punch_lib = resolve_p2p_punch_lib(config);
-        gonc_ffi::cleanup_windows_wg_platform(Path::new(&punch_lib))
-            .context("failed to clear stale Wintun state")?;
+        gonc_ffi::cleanup_userspace_wg_platform(Path::new(&punch_lib))
+            .context("failed to clear stale userspace WireGuard state")?;
     }
     let wg_cli = resolve_wg_cli();
     let wireguard_exe = resolve_wireguard_exe();
-    if !cfg!(windows) {
+    if !uses_userspace_wg() {
         if !Path::new(&wg_cli).exists() || !Path::new(&wireguard_exe).exists() {
             return Err(anyhow!(
                 "cannot verify stale wgvpn cleanup: required tools are missing"
@@ -1242,7 +1248,7 @@ fn choose_passive_ip_for_peer(
 }
 
 fn used_peer_virtual_ips(wg_cli: &str) -> HashSet<u32> {
-    let mut used: HashSet<u32> = if cfg!(windows) {
+    let mut used: HashSet<u32> = if uses_userspace_wg() {
         HashSet::new()
     } else {
         wgvpn::list_peer_allowed_ips(wg_cli, WG_TUNNEL_NAME)
@@ -1270,7 +1276,7 @@ fn used_peer_virtual_ips(wg_cli: &str) -> HashSet<u32> {
 fn wait_for_windows_wg_peer(library: &Path, handle_id: &str, timeout: Duration) -> Result<()> {
     let started = std::time::Instant::now();
     while started.elapsed() <= timeout {
-        let status = gonc_ffi::get_windows_wg_peer_status(library, handle_id)?;
+        let status = gonc_ffi::get_userspace_wg_peer_status(library, handle_id)?;
         if status.started && status.last_handshake_at > 0 {
             info!(
                 "[wgvpn] userspace WireGuard handshake established for {} after {:?}",
@@ -1304,7 +1310,7 @@ fn ensure_keypair(config: &MachineConfig, wg_dir: &Path) -> Result<(String, Stri
         warn!("[wgvpn] cached pubkey invalid, regenerating");
     }
 
-    let (priv_key, pub_key) = if cfg!(windows) {
+    let (priv_key, pub_key) = if uses_userspace_wg() {
         let punch_lib = resolve_p2p_punch_lib(config);
         let pair = gonc_ffi::generate_wg_keypair(Path::new(&punch_lib))?;
         (pair.private_key, pair.public_key)

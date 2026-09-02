@@ -97,6 +97,14 @@
                     <span>{{ $t('app.settings.auto_start') }}</span>
                     <el-switch v-model="autoStart" @change="handleAutoStartChange" />
                   </div>
+                  <div v-if="isMacOS" class="settings-item">
+                    <span>{{ $t('app.settings.background_service') }}</span>
+                    <el-switch
+                      :model-value="backgroundServiceEnabled"
+                      :loading="backgroundServiceChanging"
+                      @change="handleBackgroundServiceChange"
+                    />
+                  </div>
                   <div class="settings-item">
                     <span>{{ $t('app.settings.language') }}</span>
                     <el-select v-model="localeModel" class="language-select" size="small">
@@ -158,7 +166,7 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <div v-if="isTauriRuntime()" class="window-controls no-drag">
+            <div v-if="isTauriRuntime() && !isMacOS" class="window-controls no-drag">
               <button class="window-control-btn minimize-btn" type="button" @click="handleMinimizeWindow" :aria-label="$t('app.window.minimize_aria')">
                 <span class="window-control-icon window-control-minimize"></span>
               </button>
@@ -843,6 +851,8 @@ interface ActiveTunnelJobStatus {
     reused: boolean
     local_port: number
     rdp_address: string
+    remote_address?: string
+    remote_protocol?: string
     message: string
     warning?: string | null
   } | null
@@ -866,10 +876,23 @@ const deviceStore = useDeviceStore()
 
 const autoStart = ref(false)
 const backgroundServiceStatus = ref<BackgroundServiceStatus | null>(null)
+const backgroundServiceChanging = ref(false)
+const backgroundServiceEnabled = computed(() => Boolean(
+  backgroundServiceStatus.value?.service?.enabled
+  && backgroundServiceStatus.value?.service?.running
+))
 watch(
   () => backgroundServiceStatus.value?.runtime?.pending_inbound_approvals,
-  (approvals) => {
+  (approvals, previous) => {
     pendingInboundApprovals.value = Array.isArray(approvals) ? approvals : []
+    const previousIds = new Set(
+      (Array.isArray(previous) ? previous : []).map(item => item.attempt_id),
+    )
+    if (pendingInboundApprovals.value.some(item => !previousIds.has(item.attempt_id))) {
+      void invoke('flash_main_window').catch(error => {
+        console.warn('[App] show inbound approval failed:', error)
+      })
+    }
   },
   { deep: true },
 )
@@ -914,7 +937,8 @@ const updateInfo = ref({
   releaseNotes: ''
 })
 let wsReconnectTimer: ReturnType<typeof window.setInterval> | null = null
-const titlebarDragEnabled = isTauriRuntime() && !/Linux/i.test(navigator.userAgent)
+const isMacOS = /Macintosh|Mac OS X/i.test(navigator.userAgent)
+const titlebarDragEnabled = isTauriRuntime() && !/Linux/i.test(navigator.userAgent) && !isMacOS
 const titlebarDragAttributes = titlebarDragEnabled
   ? { 'data-tauri-drag-region': '' }
   : {}
@@ -1222,7 +1246,7 @@ async function handleActiveTunnelJobStatuses(jobs?: ActiveTunnelJobStatus[]) {
 
     if (job.state === 'succeeded') {
       // 通知文案只显示对端虚拟 IP，端口属于后续 RDP 连接细节，由远程协助页单独处理。
-      const address = (job.result?.rdp_address || '').replace(/:\d+$/, '')
+      const address = (job.result?.remote_address || job.result?.rdp_address || '').replace(/:\d+$/, '')
       window.dispatchEvent(new CustomEvent('p2p-active-tunnel-job-completed', { detail: job }))
       await notifyActiveTunnelJobResult({
         key,
@@ -1296,6 +1320,24 @@ async function handleAutoStartChange(val: boolean) {
   } catch (e) {
     autoStart.value = !val
     ElMessage.error(t('app.actions.set_failed', { error: e }))
+  }
+}
+
+async function handleBackgroundServiceChange(value: boolean | string | number) {
+  const enabled = Boolean(value)
+  backgroundServiceChanging.value = true
+  try {
+    backgroundServiceStatus.value = await invoke<BackgroundServiceStatus>(
+      'set_background_service_enabled',
+      { enabled },
+    )
+    ElMessage.success(enabled
+      ? t('app.actions.background_service_enabled')
+      : t('app.actions.background_service_disabled'))
+  } catch (error) {
+    ElMessage.error(t('app.actions.set_failed', { error }))
+  } finally {
+    backgroundServiceChanging.value = false
   }
 }
 
