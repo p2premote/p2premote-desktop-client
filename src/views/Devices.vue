@@ -684,9 +684,18 @@ function isWindowsDevice(device: DeviceInfo | null): boolean {
   return text.includes('windows') || /(^|\s)win(?:32|64|dows)?(?:\s|$)/.test(text)
 }
 
+function isMacOSDevice(device: DeviceInfo | null): boolean {
+  if (!device) return false
+  const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
+  return text.includes('macos') || text.includes('mac os') || text.includes('darwin')
+}
+
 function remoteAccessProtocol(device: DeviceInfo | null): string {
   if (!device) return ''
-  return (device.remote_access?.protocol || (isWindowsDevice(device) ? 'rdp' : '')).toLowerCase()
+  const explicitProtocol = device.remote_access?.protocol?.trim().toLowerCase()
+  if (explicitProtocol) return explicitProtocol
+  if (isMacOSDevice(device)) return 'vnc'
+  return isWindowsDevice(device) ? 'rdp' : ''
 }
 
 function hasRemoteAccessCapability(device: DeviceInfo | null): boolean {
