@@ -249,6 +249,12 @@ export async function minimizeWindow(): Promise<void> {
   await tauriWindow.getCurrentWindow().minimize()
 }
 
+export async function startWindowDragging(): Promise<void> {
+  if (!isTauriRuntime()) return
+  const tauriWindow = await import('@tauri-apps/api/window')
+  await tauriWindow.getCurrentWindow().startDragging()
+}
+
 export async function toggleMaximizeWindow(): Promise<boolean> {
   if (!isTauriRuntime()) return false
   const tauriWindow = await import('@tauri-apps/api/window')

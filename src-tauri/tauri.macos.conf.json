@@ -10,8 +10,8 @@
         "minHeight": 600,
         "center": true,
         "decorations": true,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
+        "titleBarStyle": "Visible",
+        "hiddenTitle": false,
         "devtools": true
       }
     ]

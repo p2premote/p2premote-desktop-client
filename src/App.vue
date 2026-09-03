@@ -78,6 +78,7 @@
         class="app-titlebar"
         :class="{ 'drag-titlebar-enabled': titlebarDragEnabled }"
         v-bind="titlebarDragAttributes"
+        @mousedown="handleTitlebarMouseDown"
         @dblclick="handleTitlebarDoubleClick"
       >
         <div class="header-content" v-bind="titlebarDragAttributes">
@@ -402,6 +403,7 @@ import {
   openExternal,
   openClientDownloadPage,
   resumeWebSocket,
+  startWindowDragging,
   updateWebAdminAccess,
   logoutWebAdmin,
   unlockWebAdmin,
@@ -938,7 +940,7 @@ const updateInfo = ref({
 })
 let wsReconnectTimer: ReturnType<typeof window.setInterval> | null = null
 const isMacOS = /Macintosh|Mac OS X/i.test(navigator.userAgent)
-const titlebarDragEnabled = isTauriRuntime() && !/Linux/i.test(navigator.userAgent) && !isMacOS
+const titlebarDragEnabled = isTauriRuntime() && !/Linux/i.test(navigator.userAgent)
 const titlebarDragAttributes = titlebarDragEnabled
   ? { 'data-tauri-drag-region': '' }
   : {}
@@ -1376,6 +1378,16 @@ async function handleToggleMaximizeWindow() {
 async function handleTitlebarDoubleClick(event: MouseEvent) {
   if ((event.target as HTMLElement).closest('.no-drag')) return
   await handleToggleMaximizeWindow()
+}
+
+async function handleTitlebarMouseDown(event: MouseEvent) {
+  if (!isMacOS || !titlebarDragEnabled || event.button !== 0 || event.detail > 1) return
+  if ((event.target as HTMLElement).closest('.no-drag')) return
+  try {
+    await startWindowDragging()
+  } catch (error) {
+    console.warn('Failed to start macOS window dragging', error)
+  }
 }
 
 async function syncMaximizedWindowState() {
