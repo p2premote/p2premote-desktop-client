@@ -278,11 +278,13 @@ tar -C "$PACKAGE_STAGE_DIR/tar" -czf "$DIST_DIR/p2premote-headless_${BUILD_VERSI
 echo "==> Building deb package"
 DEB_ROOT="$PACKAGE_STAGE_DIR/deb"
 mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/opt/p2premote/resources" \
-  "$DEB_ROOT/usr/lib/systemd/system" "$DEB_ROOT/usr/share/applications"
+  "$DEB_ROOT/usr/lib/systemd/system" "$DEB_ROOT/usr/share/applications" \
+  "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
 chmod 755 "$DEB_ROOT/DEBIAN"
 cp -a "$PKG_ROOT/resources/." "$DEB_ROOT/opt/p2premote/resources/"
 cp "$APP_DIR/packaging/linux/common/p2premote-service.service" "$DEB_ROOT/usr/lib/systemd/system/p2premote-service.service"
 cp "$APP_DIR/packaging/linux/common/p2premote-web.desktop" "$DEB_ROOT/usr/share/applications/p2premote.desktop"
+cp "$APP_DIR/src-tauri/icons/icon.png" "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/p2premote.png"
 sed -e "s/@VERSION@/$BUILD_VERSION/g" -e "s/@ARCH@/$DEB_ARCH/g" \
   "$APP_DIR/packaging/linux/deb/control.in" > "$DEB_ROOT/DEBIAN/control"
 for script in preinst postinst prerm postrm; do
@@ -302,11 +304,12 @@ echo "==> Building rpm package"
 RPM_PAYLOAD="$PACKAGE_STAGE_DIR/rpm-payload"
 RPM_TOPDIR="$PACKAGE_STAGE_DIR/rpmbuild"
 mkdir -p "$RPM_PAYLOAD/opt/p2premote/resources" "$RPM_PAYLOAD/usr/lib/systemd/system" \
-  "$RPM_PAYLOAD/usr/share/applications" \
+  "$RPM_PAYLOAD/usr/share/applications" "$RPM_PAYLOAD/usr/share/icons/hicolor/512x512/apps" \
   "$RPM_TOPDIR/BUILD" "$RPM_TOPDIR/BUILDROOT" "$RPM_TOPDIR/RPMS" "$RPM_TOPDIR/SOURCES" "$RPM_TOPDIR/SPECS" "$RPM_TOPDIR/SRPMS"
 cp -a "$PKG_ROOT/resources/." "$RPM_PAYLOAD/opt/p2premote/resources/"
 cp "$APP_DIR/packaging/linux/common/p2premote-service.service" "$RPM_PAYLOAD/usr/lib/systemd/system/p2premote-service.service"
 cp "$APP_DIR/packaging/linux/common/p2premote-web.desktop" "$RPM_PAYLOAD/usr/share/applications/p2premote.desktop"
+cp "$APP_DIR/src-tauri/icons/icon.png" "$RPM_PAYLOAD/usr/share/icons/hicolor/512x512/apps/p2premote.png"
 rpmbuild -bb "$APP_DIR/packaging/linux/rpm/p2premote.spec" \
   --target "$RPM_ARCH" \
   --define "_topdir $RPM_TOPDIR" \

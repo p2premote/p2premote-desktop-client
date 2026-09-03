@@ -19,6 +19,7 @@ cp -a %{payload_root}/. %{buildroot}/
 /opt/p2premote/resources
 /usr/lib/systemd/system/p2premote-service.service
 /usr/share/applications/p2premote.desktop
+/usr/share/icons/hicolor/512x512/apps/p2premote.png
 
 %pre
 if command -v systemctl >/dev/null 2>&1; then
