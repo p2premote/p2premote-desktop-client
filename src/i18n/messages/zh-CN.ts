@@ -369,7 +369,7 @@ export default {
       user: '用户：{user}',
       from_user: '来自 {user}',
       unknown_device: '未知设备 · ID {id}',
-      device_id_label: '设备 ID',
+      peer_device_label: '对端设备',
       peer_virtual_ip_label: '对端虚拟 IP',
       local_virtual_ip_label: '本机虚拟 IP',
       public_ip_label: '公网 IP',

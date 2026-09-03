@@ -87,7 +87,7 @@
                 <el-icon :class="{ expanded: expandedIds.has(tunnelKey(tunnel)) }"><ArrowDown /></el-icon>
               </button>
               <div v-show="expandedIds.has(tunnelKey(tunnel))" :id="detailsId(tunnel)" class="network-details">
-                <div><span>{{ $t('tunnel.info.device_id_label') }}</span><strong>{{ tunnel.peer_device_id }}</strong></div>
+                <div><span>{{ $t('tunnel.info.peer_device_label') }}</span><strong>{{ deviceLabel(tunnel) }}</strong></div>
                 <div v-if="tunnel.peer_virtual_ip">
                   <span>{{ $t('tunnel.info.peer_virtual_ip_label') }}</span>
                   <strong>{{ tunnel.peer_virtual_ip }}</strong>

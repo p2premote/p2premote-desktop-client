@@ -348,7 +348,7 @@ const en = {
       user: 'User: {user}',
       from_user: 'From {user}',
       unknown_device: 'Unknown device · ID {id}',
-      device_id_label: 'Device ID',
+      peer_device_label: 'Peer device',
       peer_virtual_ip_label: 'Peer virtual IP',
       local_virtual_ip_label: 'Local virtual IP',
       public_ip_label: 'Public IP',
