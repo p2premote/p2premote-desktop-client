@@ -228,7 +228,10 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
         .ok_or_else(|| anyhow!("device uuid missing after initialization"))?;
 
     let remote_access = current_remote_access();
-    let rdp_port = get_rdp_port_from_registry();
+    let rdp_port = remote_access
+        .as_ref()
+        .map(|access| access.port)
+        .unwrap_or_else(get_rdp_port_from_registry);
     let rdp_enabled = is_rdp_enabled();
     let public_network = refresh_public_network_info(config, false).await;
     let system_version = get_system_version();
@@ -1207,9 +1210,14 @@ pub fn is_rdp_enabled() -> bool {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn is_rdp_enabled() -> bool {
     false
+}
+
+#[cfg(target_os = "linux")]
+pub fn is_rdp_enabled() -> bool {
+    is_local_port_open(3389)
 }
 
 fn current_remote_access() -> Option<RemoteAccessInfo> {
@@ -1231,15 +1239,47 @@ fn current_remote_access() -> Option<RemoteAccessInfo> {
         });
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        // 只探测本地监听端口（GNOME Remote Desktop / xrdp 的 RDP 3389，VNC 5900+），
+        // 不修改用户的远程桌面配置。
+        if is_local_port_open(3389) {
+            return Some(RemoteAccessInfo {
+                protocol: "rdp".to_string(),
+                enabled: true,
+                port: 3389,
+            });
+        }
+        for port in [5900, 5901] {
+            if is_local_port_open(port) {
+                return Some(RemoteAccessInfo {
+                    protocol: "vnc".to_string(),
+                    enabled: true,
+                    port,
+                });
+            }
+        }
+        return Some(RemoteAccessInfo {
+            protocol: "rdp".to_string(),
+            enabled: false,
+            port: 3389,
+        });
+    }
+
     #[allow(unreachable_code)]
     None
 }
 
 #[cfg(target_os = "macos")]
 fn is_macos_screen_sharing_enabled() -> bool {
+    is_local_port_open(5900)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn is_local_port_open(port: u16) -> bool {
     [
-        SocketAddr::from(([127, 0, 0, 1], 5900)),
-        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 5900)),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)),
     ]
     .iter()
     .any(|address| TcpStream::connect_timeout(address, Duration::from_millis(250)).is_ok())
