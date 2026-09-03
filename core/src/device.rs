@@ -7,14 +7,31 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::IpAddr;
-#[cfg(target_os = "macos")]
-use std::net::{SocketAddr, TcpStream};
 use std::sync::OnceLock;
-#[cfg(target_os = "macos")]
-use std::time::Duration;
-#[cfg(windows)]
-use tracing::error;
 use tracing::{debug, info};
+
+// 平台特定实现按 Go 的文件命名习惯拆分（device_windows.rs / device_macos.rs /
+// device_linux.rs）。Rust 不按文件名自动选择，构建门控在这里集中声明：
+// 纯函数所在模块附带 `test` 条件，保证单测可在任意平台运行。
+#[cfg(any(windows, test))]
+mod device_windows;
+#[cfg(target_os = "macos")]
+mod device_macos;
+#[cfg(any(target_os = "linux", test))]
+mod device_linux;
+
+#[cfg(windows)]
+pub(crate) use device_windows::{get_rdp_port_from_registry, is_rdp_enabled};
+#[cfg(windows)]
+use device_windows::{current_remote_access, get_system_version};
+#[cfg(target_os = "macos")]
+pub(crate) use device_macos::get_rdp_port_from_registry;
+#[cfg(target_os = "macos")]
+use device_macos::{current_remote_access, get_system_version};
+#[cfg(target_os = "linux")]
+pub(crate) use device_linux::{get_rdp_port_from_registry, is_rdp_enabled};
+#[cfg(target_os = "linux")]
+use device_linux::{current_remote_access, get_system_version};
 
 fn current_device_type() -> String {
     match std::env::consts::OS {
@@ -45,28 +62,6 @@ fn resolve_client_version(compiled: Option<&str>, runtime: Option<String>) -> St
         })
         .unwrap_or_else(|| "unknown".to_string())
 }
-
-#[cfg(windows)]
-fn run_hidden_cmd(args: &[&str]) -> std::io::Result<std::process::Output> {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.args(args).creation_flags(CREATE_NO_WINDOW);
-    cmd.output()
-}
-
-#[cfg(windows)]
-use windows_service::{
-    service::ServiceAccess,
-    service::ServiceState,
-    service_manager::{ServiceManager, ServiceManagerAccess},
-};
-#[cfg(windows)]
-use winreg::enums::*;
-#[cfg(windows)]
-use winreg::RegKey;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteAccessInfo {
@@ -950,331 +945,12 @@ pub async fn refresh_public_network_info(
     result
 }
 
-#[cfg(windows)]
-fn get_system_version() -> String {
-    if let Some((caption, current_build)) = get_windows_version_from_wmi() {
-        let product_name = caption.replace("Microsoft ", "");
-        let product_name = normalize_windows_product_name(product_name.trim(), &current_build);
-        let display_version = get_windows_registry_value("DisplayVersion");
-        return format_windows_system_version(&product_name, &display_version, &current_build);
-    }
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::net::{SocketAddr, TcpStream};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::time::Duration;
 
-    let product_name = match run_hidden_cmd(&[
-        "/C",
-        "reg",
-        "query",
-        r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-        "/v",
-        "ProductName",
-    ]) {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            parse_reg_output(&stdout)
-        }
-        Err(_) => String::new(),
-    };
-
-    if product_name.is_empty() {
-        return "Windows 10/11".to_string();
-    }
-
-    let product_name = product_name.replace("Microsoft ", "");
-    let display_version = match run_hidden_cmd(&[
-        "/C",
-        "reg",
-        "query",
-        r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-        "/v",
-        "DisplayVersion",
-    ]) {
-        Ok(output) => parse_reg_output(&String::from_utf8_lossy(&output.stdout)),
-        Err(_) => String::new(),
-    };
-
-    let current_build = match run_hidden_cmd(&[
-        "/C",
-        "reg",
-        "query",
-        r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-        "/v",
-        "CurrentBuildNumber",
-    ]) {
-        Ok(output) => parse_reg_output(&String::from_utf8_lossy(&output.stdout)),
-        Err(_) => String::new(),
-    };
-
-    let product_name = normalize_windows_product_name(&product_name, &current_build);
-
-    format_windows_system_version(&product_name, &display_version, &current_build)
-}
-
-#[cfg(windows)]
-fn get_windows_version_from_wmi() -> Option<(String, String)> {
-    #[derive(Deserialize)]
-    #[serde(rename = "Win32_OperatingSystem")]
-    struct WindowsOperatingSystem {
-        #[serde(rename = "Caption")]
-        caption: String,
-        #[serde(rename = "BuildNumber")]
-        build_number: String,
-    }
-
-    let com_library = wmi::COMLibrary::new().ok()?;
-    let connection = wmi::WMIConnection::new(com_library).ok()?;
-    let operating_systems: Vec<WindowsOperatingSystem> = connection.query().ok()?;
-    operating_systems
-        .into_iter()
-        .next()
-        .map(|os| (os.caption, os.build_number))
-}
-
-#[cfg(windows)]
-fn get_windows_registry_value(value_name: &str) -> String {
-    match run_hidden_cmd(&[
-        "/C",
-        "reg",
-        "query",
-        r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-        "/v",
-        value_name,
-    ]) {
-        Ok(output) => parse_reg_output(&String::from_utf8_lossy(&output.stdout)),
-        Err(_) => String::new(),
-    }
-}
-
-fn format_windows_system_version(
-    product_name: &str,
-    display_version: &str,
-    current_build: &str,
-) -> String {
-    if !display_version.is_empty() && !current_build.is_empty() {
-        return format!("{} ({}.{})", product_name, display_version, current_build);
-    }
-    if !display_version.is_empty() {
-        return format!("{} ({})", product_name, display_version);
-    }
-    if !current_build.is_empty() {
-        return format!("{} (Build {})", product_name, current_build);
-    }
-    product_name.to_string()
-}
-
-fn normalize_windows_product_name(product_name: &str, current_build: &str) -> String {
-    let current_build = current_build.trim().parse::<u32>().ok();
-
-    if let Some(suffix) = product_name.strip_prefix("Windows 10") {
-        if suffix.is_empty() || suffix.chars().next().is_some_and(char::is_whitespace) {
-            if current_build.is_some_and(|build| build >= 22_000) {
-                return format!("Windows 11{suffix}");
-            }
-            if current_build.is_none() {
-                return format!("Windows 10/11{suffix}");
-            }
-        }
-    }
-
-    product_name.to_string()
-}
-
-#[cfg(windows)]
-fn parse_reg_output(output: &str) -> String {
-    for line in output.lines() {
-        let line = line.trim();
-        if line.contains("REG_SZ") {
-            if let Some(value) = line.split("REG_SZ").nth(1) {
-                return value.trim().to_string();
-            }
-        }
-        if line.contains("REG_DWORD") {
-            if let Some(value) = line.split("REG_DWORD").nth(1) {
-                return value.trim().to_string();
-            }
-        }
-    }
-    String::new()
-}
-
-#[cfg(target_os = "linux")]
-fn get_system_version() -> String {
-    std::fs::read_to_string("/etc/os-release")
-        .ok()
-        .and_then(|contents| parse_linux_system_version(&contents))
-        .unwrap_or_else(|| "Linux".to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn get_system_version() -> String {
-    let product_version = std::process::Command::new("/usr/bin/sw_vers")
-        .arg("-productVersion")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|value| !value.is_empty());
-    let build_version = std::process::Command::new("/usr/bin/sw_vers")
-        .arg("-buildVersion")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    match (product_version, build_version) {
-        (Some(product), Some(build)) => format!("macOS {product} ({build})"),
-        (Some(product), None) => format!("macOS {product}"),
-        _ => "macOS".to_string(),
-    }
-}
-
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn get_system_version() -> String {
-    std::env::consts::OS.to_string()
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn parse_linux_system_version(os_release: &str) -> Option<String> {
-    fn value_for<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
-        contents.lines().find_map(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return None;
-            }
-            let (candidate, value) = line.split_once('=')?;
-            (candidate == key).then(|| value.trim().trim_matches(|c| c == '\"' || c == '\''))
-        })
-    }
-
-    let name = value_for(os_release, "NAME")
-        .or_else(|| value_for(os_release, "ID"))?
-        .trim();
-    if name.is_empty() {
-        return None;
-    }
-
-    let version = value_for(os_release, "VERSION_ID")
-        .map(str::trim)
-        .filter(|version| !version.is_empty());
-
-    Some(match version {
-        Some(version) => format!("{} {}", name, version),
-        None => name.to_string(),
-    })
-}
-
-#[cfg(windows)]
-pub fn get_rdp_port_from_registry() -> u16 {
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    if let Ok(key) =
-        hklm.open_subkey(r"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp")
-    {
-        if let Ok(port) = key.get_value::<u32, _>("PortNumber") {
-            return port as u16;
-        }
-    }
-    3389
-}
-
-#[cfg(target_os = "macos")]
-pub fn get_rdp_port_from_registry() -> u16 {
-    // This legacy field is still carried in the P2P-ready message for one
-    // compatibility cycle.  On macOS it represents Screen Sharing/VNC.
-    5900
-}
-
-#[cfg(all(not(windows), not(target_os = "macos")))]
-pub fn get_rdp_port_from_registry() -> u16 {
-    3389
-}
-
-#[cfg(windows)]
-pub fn is_rdp_enabled() -> bool {
-    match ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) {
-        Ok(manager) => match manager.open_service("TermService", ServiceAccess::QUERY_STATUS) {
-            Ok(service) => match service.query_status() {
-                Ok(status) => status.current_state == ServiceState::Running,
-                Err(e) => {
-                    error!("Failed to query RDP service status: {}", e);
-                    false
-                }
-            },
-            Err(e) => {
-                debug!("Failed to open TermService: {}", e);
-                false
-            }
-        },
-        Err(e) => {
-            debug!("Failed to connect to service manager: {}", e);
-            false
-        }
-    }
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-pub fn is_rdp_enabled() -> bool {
-    false
-}
-
-#[cfg(target_os = "linux")]
-pub fn is_rdp_enabled() -> bool {
-    is_local_port_open(3389)
-}
-
-fn current_remote_access() -> Option<RemoteAccessInfo> {
-    #[cfg(windows)]
-    {
-        return Some(RemoteAccessInfo {
-            protocol: "rdp".to_string(),
-            enabled: is_rdp_enabled(),
-            port: get_rdp_port_from_registry(),
-        });
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        return Some(RemoteAccessInfo {
-            protocol: "vnc".to_string(),
-            enabled: is_macos_screen_sharing_enabled(),
-            port: 5900,
-        });
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // 只探测本地监听端口（GNOME Remote Desktop / xrdp 的 RDP 3389，VNC 5900+），
-        // 不修改用户的远程桌面配置。
-        if is_local_port_open(3389) {
-            return Some(RemoteAccessInfo {
-                protocol: "rdp".to_string(),
-                enabled: true,
-                port: 3389,
-            });
-        }
-        for port in [5900, 5901] {
-            if is_local_port_open(port) {
-                return Some(RemoteAccessInfo {
-                    protocol: "vnc".to_string(),
-                    enabled: true,
-                    port,
-                });
-            }
-        }
-        return Some(RemoteAccessInfo {
-            protocol: "rdp".to_string(),
-            enabled: false,
-            port: 3389,
-        });
-    }
-
-    #[allow(unreachable_code)]
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn is_macos_screen_sharing_enabled() -> bool {
-    is_local_port_open(5900)
-}
-
+// macOS 与 Linux（TigerVNC/wayvnc 等）共用本地端口探测辅助。
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn is_local_port_open(port: u16) -> bool {
     [
@@ -1285,9 +961,34 @@ fn is_local_port_open(port: u16) -> bool {
     .any(|address| TcpStream::connect_timeout(address, Duration::from_millis(250)).is_ok())
 }
 
+// 未支持平台的兜底实现（与拆分前的 not(any(...)) 分支一致）。
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn get_system_version() -> String {
+    std::env::consts::OS.to_string()
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+pub(crate) fn get_rdp_port_from_registry() -> u16 {
+    3389
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub(crate) fn is_rdp_enabled() -> bool {
+    false
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn current_remote_access() -> Option<RemoteAccessInfo> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::device_linux::parse_linux_system_version;
+    use super::device_windows::normalize_windows_product_name;
+    #[cfg(windows)]
+    use super::device_windows::get_windows_version_from_wmi;
 
     #[test]
     fn formats_pconline_without_repeating_province_and_city() {
