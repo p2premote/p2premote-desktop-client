@@ -167,7 +167,7 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <div v-if="isTauriRuntime() && !isMacOS" class="window-controls no-drag">
+            <div v-if="isTauriRuntime() && !usesNativeWindowDecorations" class="window-controls no-drag">
               <button class="window-control-btn minimize-btn" type="button" @click="handleMinimizeWindow" :aria-label="$t('app.window.minimize_aria')">
                 <span class="window-control-icon window-control-minimize"></span>
               </button>
@@ -940,7 +940,9 @@ const updateInfo = ref({
 })
 let wsReconnectTimer: ReturnType<typeof window.setInterval> | null = null
 const isMacOS = /Macintosh|Mac OS X/i.test(navigator.userAgent)
-const titlebarDragEnabled = isTauriRuntime() && !/Linux/i.test(navigator.userAgent)
+const isLinux = /Linux/i.test(navigator.userAgent)
+const usesNativeWindowDecorations = isMacOS || isLinux
+const titlebarDragEnabled = isTauriRuntime() && !isLinux
 const titlebarDragAttributes = titlebarDragEnabled
   ? { 'data-tauri-drag-region': '' }
   : {}
