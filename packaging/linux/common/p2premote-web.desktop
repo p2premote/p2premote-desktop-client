@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=p2pRemote
-Name[zh_CN]=p2pRemote 远程管理
+Name[zh_CN]=p2pRemote
 Comment=Open the p2pRemote browser management interface
 Comment[zh_CN]=打开 p2pRemote 浏览器管理界面
 Exec=xdg-open http://127.0.0.1:48083
