@@ -686,6 +686,33 @@ pub async fn stop_service_active_tunnel(
 }
 
 #[tauri::command]
+pub async fn start_service_desktop_session(
+    peer_device_id: i64,
+) -> Result<serde_json::Value, String> {
+    match send_command_responsive(Data::StartDesktopSession { peer_device_id }).await? {
+        Data::CommandResponse {
+            ok: true,
+            data: Some(data),
+            ..
+        } => Ok(data),
+        Data::CommandResponse { ok: true, .. } => {
+            Err("desktop service returned no session result".to_string())
+        }
+        Data::CommandResponse { message, .. } => Err(message),
+        other => Err(format!("unexpected service response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub async fn stop_service_desktop_session(peer_device_id: i64) -> Result<(), String> {
+    match send_command_responsive(Data::StopDesktopSession { peer_device_id }).await? {
+        Data::CommandResponse { ok: true, .. } => Ok(()),
+        Data::CommandResponse { message, .. } => Err(message),
+        other => Err(format!("unexpected service response: {other:?}")),
+    }
+}
+
+#[tauri::command]
 pub async fn test_tunnel_speed(peer_device_id: i64) -> Result<serde_json::Value, String> {
     // 测速会持续数秒，使用独立 IPC 连接，避免占用 GUI 的持久连接并阻塞
     // 设备列表刷新、状态查询等交互。

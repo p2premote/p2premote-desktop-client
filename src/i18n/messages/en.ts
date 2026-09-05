@@ -325,6 +325,7 @@ const en = {
       rdp_port_missing: 'The remote RDP port is unavailable. The tunnel address was copied; replace {port} manually.',
       rdp_address_copied: 'Remote Desktop address copied: {address}',
       connect_failed: 'Connection failed: {error}',
+      desktop_window_started: 'Remote Desktop opened in a separate native window',
       alias_set_success: 'Alias updated',
       alias_set_failed: 'Update failed: {error}',
       delete_confirm_title: 'Delete device',

@@ -270,6 +270,8 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::StartActiveTunnelJob { .. } => "StartActiveTunnelJob",
         Data::StartAnonymousActiveTunnelJob { .. } => "StartAnonymousActiveTunnelJob",
         Data::StopActiveTunnelJob { .. } => "StopActiveTunnelJob",
+        Data::StartDesktopSession { .. } => "StartDesktopSession",
+        Data::StopDesktopSession { .. } => "StopDesktopSession",
         Data::ApproveInboundTunnel { .. } => "ApproveInboundTunnel",
         Data::RejectInboundTunnel { .. } => "RejectInboundTunnel",
         Data::RefreshTunnelStatus => "RefreshTunnelStatus",
@@ -287,7 +289,7 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::GetDeviceList => "GetDeviceList",
         Data::UpdateDeviceAlias { .. } => "UpdateDeviceAlias",
         Data::DeleteDevice { .. } => "DeleteDevice",
-		Data::WakeDevice { .. } => "WakeDevice",
+        Data::WakeDevice { .. } => "WakeDevice",
         Data::UpdateDeviceInfo { .. } => "UpdateDeviceInfo",
         Data::SetDevicePassword { .. } => "SetDevicePassword",
         Data::GenerateConnectCode { .. } => "GenerateConnectCode",
@@ -394,6 +396,14 @@ pub(super) async fn handle_data(
         Data::StopActiveTunnelJob { target_device_id } => {
             stop_active_tunnel_job(shared, target_device_id)
         }
+        Data::StartDesktopSession { peer_device_id } => Some(response_from_result(
+            desktop_engine::start_active_desktop_session(shared, peer_device_id).await,
+            |value| value,
+        )),
+        Data::StopDesktopSession { peer_device_id } => Some(response_from_result(
+            desktop_engine::stop_desktop_session(shared, peer_device_id, "user_requested").await,
+            |_| serde_json::json!({ "peer_device_id": peer_device_id }),
+        )),
         Data::ApproveInboundTunnel { attempt_id } => {
             resolve_inbound_approval(shared, &attempt_id, true)
         }
@@ -491,10 +501,16 @@ pub(super) async fn handle_data(
                 |_| serde_json::Value::Null,
             ))
         }
-		Data::WakeDevice { device_id } => {
-			let mut config=match load_config_or_err(){Ok(c)=>c,Err(resp)=>return Some(resp)};
-			Some(response_from_result(crate::device::wake_device(&mut config,device_id).await,|status|serde_json::json!({"status":status})))
-		}
+        Data::WakeDevice { device_id } => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(response_from_result(
+                crate::device::wake_device(&mut config, device_id).await,
+                |status| serde_json::json!({"status":status}),
+            ))
+        }
         Data::UpdateDeviceInfo {
             device_id,
             lan_ip,

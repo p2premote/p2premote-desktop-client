@@ -35,6 +35,7 @@
       "resources/p2premote-service.exe",
       "resources/p2premote-cli.exe",
       "resources/p2premote-notifier.exe",
+      "resources/p2premote-desktop-engine.exe",
       "resources/wintun.dll",
       "resources/p2premote-punch.dll",
       "resources/.p2premote_default.json",

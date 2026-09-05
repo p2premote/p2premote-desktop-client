@@ -75,7 +75,6 @@
                       <el-icon aria-hidden="true"><Link /></el-icon>
                       <span>{{ tunnelConnectedLabel(selectedDevice) }}</span>
                     </el-tag>
-                    <el-tag v-if="hasRemoteAccessCapability(selectedDevice) && !isRemoteAccessEnabled(selectedDevice)" type="danger" size="small">{{ remoteAccessDisabledLabel(selectedDevice) }}</el-tag>
                   </div>
                   <p class="detail-subtitle">{{ selectedDevice.device_name }} · {{ selectedDevice.device_type }}</p>
                 </div>
@@ -150,7 +149,7 @@
                 class="action-grid"
                 :class="{
                   'single-tunnel-action':
-                    !isRemoteAccessEnabled(selectedDevice)
+                    !supportsBuiltInDesktop(selectedDevice)
                     && !tunnelVirtualIp(selectedDevice),
                 }"
               >
@@ -176,9 +175,10 @@
                 </button>
 
                 <button
-                  v-if="isRemoteAccessEnabled(selectedDevice)"
+                  v-if="supportsBuiltInDesktop(selectedDevice)"
                   type="button"
                   class="action-tile"
+                  :disabled="!isTunnelConnected(selectedDevice)"
                   :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
                   @click="handleRemoteDesktop(selectedDevice!)"
                 >
@@ -303,7 +303,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { invoke, listen, openExternal, type UnlistenFn } from '../runtime/bridge'
+import { invoke, listen, type UnlistenFn } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import {
@@ -319,7 +319,6 @@ import {
 } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { useAuthStore } from '../stores/auth'
-import { resolveLaunchableRdpAddress } from '../utils/rdpAddress'
 const { t } = useI18n()
 
 interface TunnelSpeedTestResult {
@@ -419,7 +418,6 @@ const lanAccessDirty = computed(() => (
   lanAccessForm.enabled !== savedLanAccessConfig.enabled
   || lanAccessForm.cidrsText !== savedLanAccessConfig.cidrsText
 ))
-const WINDOWS_10_HOME_HELP_URL = 'https://cloud.tencent.com/developer/article/1445459'
 const sortedDevices = computed(() => {
   return [...deviceStore.devices].sort((a, b) => {
     const aCurrent = isCurrentDevice(a.device_uuid) ? 1 : 0
@@ -696,6 +694,16 @@ function isMacOSDevice(device: DeviceInfo | null): boolean {
   return text.includes('macos') || text.includes('mac os') || text.includes('darwin')
 }
 
+function isLinuxDevice(device: DeviceInfo | null): boolean {
+  if (!device) return false
+  const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
+  return text.includes('linux') || text.includes('ubuntu') || text.includes('kylin')
+}
+
+function supportsBuiltInDesktop(device: DeviceInfo | null): boolean {
+  return isWindowsDevice(device) || isLinuxDevice(device)
+}
+
 function remoteAccessProtocol(device: DeviceInfo | null): string {
   if (!device) return ''
   const explicitProtocol = device.remote_access?.protocol?.trim().toLowerCase()
@@ -704,31 +712,12 @@ function remoteAccessProtocol(device: DeviceInfo | null): string {
   return isWindowsDevice(device) ? 'rdp' : ''
 }
 
-function hasRemoteAccessCapability(device: DeviceInfo | null): boolean {
-  return Boolean(remoteAccessProtocol(device))
+function remoteAccessActionLabel(_device: DeviceInfo | null): string {
+  return t('devices.detail.connection.remote_desktop')
 }
 
-function isRemoteAccessEnabled(device: DeviceInfo | null): boolean {
-  if (!device) return false
-  return device.remote_access?.enabled ?? (isWindowsDevice(device) && device.rdp_enabled)
-}
-
-function remoteAccessActionLabel(device: DeviceInfo | null): string {
-  return remoteAccessProtocol(device) === 'vnc'
-    ? t('devices.detail.connection.screen_sharing')
-    : t('devices.detail.connection.remote_desktop')
-}
-
-function remoteAccessTooltip(device: DeviceInfo | null): string {
-  return remoteAccessProtocol(device) === 'vnc'
-    ? t('devices.detail.connection.screen_sharing_tooltip')
-    : t('devices.detail.connection.remote_desktop_tooltip')
-}
-
-function remoteAccessDisabledLabel(device: DeviceInfo | null): string {
-  return remoteAccessProtocol(device) === 'vnc'
-    ? t('devices.detail.screen_sharing_not_enabled')
-    : t('devices.detail.rdp_not_enabled')
+function remoteAccessTooltip(_device: DeviceInfo | null): string {
+  return t('devices.detail.connection.remote_desktop_tooltip')
 }
 
 function remoteAccessPortLabel(device: DeviceInfo | null): string {
@@ -751,14 +740,6 @@ function tunnelVirtualIp(device: DeviceInfo | null): string {
 function tunnelLanCidrs(device: DeviceInfo | null): string[] {
   if (!device || deviceTunnelLifecycle(device).state !== 'connected') return []
   return tunnelStatusMap.value[device.device_id]?.exposed_lan_cidrs || []
-}
-
-function isWindows10HomeDevice(device: DeviceInfo): boolean {
-  const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
-  const isWindows = text.includes('windows') || text.includes('win')
-  const isWin10 = text.includes('windows 10') || text.includes('win10')
-  const isHome = text.includes('home') || text.includes('家庭')
-  return isWindows && isWin10 && isHome
 }
 
 async function copyTunnelVirtualIp(device: DeviceInfo) {
@@ -794,23 +775,6 @@ async function testTunnelSpeed(device: DeviceInfo) {
     ElMessage.error(t('devices.message.speed_test_failed', { reason: String(error) }))
   } finally {
     speedTestingIds.delete(device.device_id)
-  }
-}
-
-async function warnWindows10HomeRdpUnsupported() {
-  try {
-    await ElMessageBox.confirm(
-      t('devices.message.win10_home_body'),
-      t('devices.message.win10_home_title'),
-      {
-        confirmButtonText: t('devices.message.view_tutorial'),
-        cancelButtonText: t('common.cancel'),
-        type: 'warning',
-      },
-    )
-    await openExternal(WINDOWS_10_HOME_HELP_URL)
-  } catch {
-    // 用户取消查看教程时无需打断当前界面。
   }
 }
 
@@ -1075,32 +1039,14 @@ async function handleDisconnectTunnel(device: DeviceInfo) {
 async function handleRemoteDesktop(device: DeviceInfo) {
   selectedDevice.value = device
   try {
-    if (isWindows10HomeDevice(device)) {
-      await warnWindows10HomeRdpUnsupported()
-      return
-    }
-
     const tunnel = tunnelStatusMap.value[device.device_id]
     if (!tunnel) {
       ElMessage.error(t('devices.message.no_active_tunnel'))
       return
     }
 
-    const remoteAddress = tunnel.remote_address || tunnel.rdp_address
-    if (!remoteAddress) {
-      ElMessage.error(t('devices.message.no_rdp_address'))
-      return
-    }
-
-    const launchAddress = resolveLaunchableRdpAddress(remoteAddress, device)
-    if (!launchAddress) {
-      await navigator.clipboard.writeText(remoteAddress)
-      ElMessage.warning(t('devices.message.rdp_port_missing'))
-      return
-    }
-
-    await navigator.clipboard.writeText(launchAddress)
-    ElMessage.success(t('devices.message.rdp_address_copied', { address: launchAddress }))
+    await invoke('start_service_desktop_session', { peerDeviceId: device.device_id })
+    ElMessage.success(t('devices.message.desktop_window_started'))
   } catch (e) {
     const msg = typeof e === 'string' ? e : (e as any)?.message || t('common.unknown_error')
     ElMessage.error(t('devices.message.connect_failed', { error: msg }))

@@ -53,6 +53,7 @@ use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
 mod active_jobs;
+mod desktop_engine;
 mod ipc;
 mod p2p_signal;
 mod status;
@@ -164,6 +165,9 @@ pub(super) struct SharedRuntimeState {
     ws_client: Option<ServiceWsClient>,
     p2p_attempt_waiters: HashMap<String, mpsc::UnboundedSender<P2PAttemptEvent>>,
     passive_p2p_attempts: HashMap<i64, PassiveP2PAttempt>,
+    desktop_signal_peers: HashMap<i64, DesktopSignalPeer>,
+    desktop_engine_starting: HashMap<i64, String>,
+    desktop_engine_tasks: HashMap<i64, desktop_engine::DesktopEngineTask>,
     /// Current in-memory account identity used to classify inbound attempts.
     current_user_id: Option<i64>,
     /// At most one temporary inbound approval can exist on a passive endpoint.
@@ -180,6 +184,13 @@ pub(super) struct SharedRuntimeState {
 struct PassiveP2PAttempt {
     connection_id: String,
     attempt_id: String,
+    access_grant: String,
+}
+
+#[derive(Debug, Clone)]
+struct DesktopSignalPeer {
+    connection_id: String,
+    access_grant: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +224,11 @@ enum P2PAttemptEvent {
         message: String,
     },
     Cancelled,
+    DesktopHostReady,
+    DesktopFailed {
+        error_code: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +285,26 @@ enum P2PAttemptMessage {
         error: P2PAttemptErrorPayload,
     },
     AttemptCancel {
+        protocol_version: u8,
+        attempt_id: String,
+        reason: String,
+    },
+    DesktopStart {
+        protocol_version: u8,
+        attempt_id: String,
+        session_secret: String,
+        port: u16,
+    },
+    DesktopHostReady {
+        protocol_version: u8,
+        attempt_id: String,
+    },
+    DesktopFailed {
+        protocol_version: u8,
+        attempt_id: String,
+        error: P2PAttemptErrorPayload,
+    },
+    DesktopStop {
         protocol_version: u8,
         attempt_id: String,
         reason: String,
@@ -555,6 +591,7 @@ pub async fn run_service_foreground() -> Result<()> {
     let maintenance_lock = Arc::new(tokio::sync::Mutex::new(()));
     let mut refresh_tick = interval(Duration::from_secs(60));
     let mut bootstrap_tick = interval(Duration::from_secs(60));
+    let mut desktop_engine_tick = interval(Duration::from_millis(200));
 
     if let Err(err) = bootstrap_service(&shared, &ws_client, event_tx.clone()).await {
         info!("[ServiceRuntime] initial bootstrap failed: {}", err);
@@ -570,6 +607,30 @@ pub async fn run_service_foreground() -> Result<()> {
         }
 
         tokio::select! {
+            _ = desktop_engine_tick.tick() => {
+                for (peer_device_id, outcome) in desktop_engine::poll_desktop_engine_tasks(&shared) {
+                    match outcome {
+                        Ok(event) => info!(
+                            "[DesktopEngine] terminal event: peer_device_id={}, event={:?}",
+                            peer_device_id,
+                            event
+                        ),
+                        Err(error) => {
+                            error!(
+                                "[DesktopEngine] failed: peer_device_id={}, code={}, stage={:?}, error={}",
+                                peer_device_id,
+                                error.code,
+                                error.stage,
+                                error
+                            );
+                            set_last_error(&shared, format!(
+                                "desktop engine {} failed: {}",
+                                peer_device_id, error
+                            ));
+                        }
+                    }
+                }
+            }
             _ = bootstrap_tick.tick() => {
                 spawn_bootstrap_maintenance(
                     shared.clone(), ws_client.clone(), event_tx.clone(), maintenance_lock.clone(), "tick"
@@ -702,9 +763,9 @@ pub async fn run_service_foreground() -> Result<()> {
                                 set_last_error(&shared, err.to_string());
                             }
                         }
-						WsEvent::WOLRequest { request_id, macs, target_ipv4, prefix_len } => {
-							let client=ws_client.clone(); tokio::spawn(async move { let result=crate::wol::send_magic_packets(&macs,&target_ipv4,prefix_len).await; let success=result.is_ok(); let code=if success{"sent".to_string()}else{"send_failed".to_string()}; let _=client.send_wol_result(request_id,success,code).await; });
-						}
+                        WsEvent::WOLRequest { request_id, macs, target_ipv4, prefix_len } => {
+                            let client=ws_client.clone(); tokio::spawn(async move { let result=crate::wol::send_magic_packets(&macs,&target_ipv4,prefix_len).await; let success=result.is_ok(); let code=if success{"sent".to_string()}else{"send_failed".to_string()}; let _=client.send_wol_result(request_id,success,code).await; });
+                        }
                     }
                 }
             }
@@ -1193,6 +1254,33 @@ mod tests {
                 assert_eq!(source_device_alias, "客厅电脑");
             }
             _ => panic!("expected attempt_start"),
+        }
+    }
+
+    #[test]
+    fn desktop_start_round_trips_required_fields() {
+        let message = P2PAttemptMessage::DesktopStart {
+            protocol_version: 1,
+            attempt_id: "desktop-attempt".into(),
+            session_secret: "one-time-secret".into(),
+            port: 39090,
+        };
+        let encoded = serde_json::to_string(&message).expect("serialize desktop start");
+        let decoded: P2PAttemptMessage =
+            serde_json::from_str(&encoded).expect("deserialize desktop start");
+        match decoded {
+            P2PAttemptMessage::DesktopStart {
+                protocol_version,
+                attempt_id,
+                session_secret,
+                port,
+            } => {
+                assert_eq!(protocol_version, 1);
+                assert_eq!(attempt_id, "desktop-attempt");
+                assert_eq!(session_secret, "one-time-secret");
+                assert_eq!(port, 39090);
+            }
+            other => panic!("expected desktop_start, got {other:?}"),
         }
     }
 

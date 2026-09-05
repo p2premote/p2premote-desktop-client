@@ -60,6 +60,8 @@ FunctionEnd
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote WGVPN Health" dir=in action=allow protocol=TCP localport=48082 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-service.exe" profile=any enable=yes'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Speed Test"'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote WGVPN Speed Test" dir=in action=allow protocol=UDP localport=48082 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-service.exe" profile=any enable=yes'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote Desktop Engine"'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote Desktop Engine" dir=in action=allow protocol=TCP localport=39090 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-desktop-engine.exe" profile=any enable=yes'
 
   ; Probe the persisted auto_start flag before touching the service.
   ; The uninstall phase of a reinstall deletes the HKCU Run autostart entries
@@ -114,6 +116,7 @@ FunctionEnd
 !macro NSIS_HOOK_PREUNINSTALL
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Health"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Speed Test"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote Desktop Engine"'
 
   ; Stop and uninstall the service before removing files
   ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm stop' $0

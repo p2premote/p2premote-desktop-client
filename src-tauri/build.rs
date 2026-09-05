@@ -13,6 +13,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../core/Cargo.toml");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PUNCH_DIR");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PREBUILT_RESOURCES");
+    println!("cargo:rerun-if-env-changed=P2PREMOTE_DESKTOP_ENGINE_DIR");
 
     emit_macos_rpath();
 
@@ -23,6 +24,7 @@ fn main() {
         copy_service_into_resources();
         copy_cli_into_resources();
         copy_notifier_into_resources();
+        copy_desktop_engine_into_resources();
     }
     tauri_build::build()
 }
@@ -42,6 +44,7 @@ fn validate_prebuilt_resources() {
         main_binary_name("p2premote-service", &target_os),
         main_binary_name("p2premote-cli", &target_os),
         punch_library_name(&target_os),
+        main_binary_name("p2premote-desktop-engine", &target_os),
     ];
     if target_os == "windows" {
         required.push(main_binary_name("p2premote-notifier", &target_os));
@@ -319,6 +322,60 @@ fn copy_notifier_into_resources() {
         &resources_dir,
         &binary_name,
     );
+}
+
+fn copy_desktop_engine_into_resources() {
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let source_dir = env::var_os("P2PREMOTE_DESKTOP_ENGINE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("../../remoteDesk/remote-desktop-engine"));
+    let engine_manifest = source_dir.join("crates/p2premote-desktop-engine/Cargo.toml");
+    if !engine_manifest.is_file() {
+        panic!(
+            "p2premote desktop engine manifest not found: {}; set P2PREMOTE_DESKTOP_ENGINE_DIR",
+            engine_manifest.display()
+        );
+    }
+    println!(
+        "cargo:rerun-if-changed={}",
+        source_dir.join("crates").display()
+    );
+    let resources_dir = manifest_dir.join("resources");
+    let profile = env::var("PROFILE").expect("PROFILE is not set");
+    let cargo = env::var("CARGO").expect("CARGO is not set");
+    let target_triple = env::var("TARGET").expect("TARGET is not set");
+    let target_dir = manifest_dir.join("target").join("desktop-engine-build");
+    let (target_os, _) = parse_target();
+    let binary_name = main_binary_name("p2premote-desktop-engine", &target_os);
+    let source = resolve_built_service_path(&target_dir, &target_triple, &profile, &binary_name);
+    let target = resources_dir.join(&binary_name);
+
+    let mut command = Command::new(cargo);
+    command
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&engine_manifest)
+        .args(["--bin", "p2premote-desktop-engine"])
+        .arg("--target")
+        .arg(&target_triple)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("VPX_VERSION", "1.15.2")
+        .env("VPX_STATIC", "1");
+    if profile.eq_ignore_ascii_case("release") {
+        command.arg("--release");
+    }
+    let output = command
+        .output()
+        .unwrap_or_else(|err| panic!("failed to invoke desktop engine build: {err}"));
+    if !output.status.success() {
+        panic!(
+            "failed to build {}: {}",
+            binary_name,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    copy_built_file(&source, &target, &resources_dir, &binary_name);
 }
 
 fn ensure_executable(path: &Path) {

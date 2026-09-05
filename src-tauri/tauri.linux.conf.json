@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": [
+      "resources/p2premote-service",
+      "resources/p2premote-cli",
+      "resources/p2premote-desktop-engine",
+      "resources/libp2premote-punch.a",
+      "resources/.p2premote_default.json",
+      "resources/web/**/*"
+    ]
+  }
+}

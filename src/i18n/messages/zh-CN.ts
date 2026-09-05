@@ -345,6 +345,7 @@ export default {
       rdp_port_missing: '未获取到远程 RDP 端口，隧道地址已复制，请手动替换 {port}',
       rdp_address_copied: '远程桌面地址已复制：{address}',
       connect_failed: '连接失败: {error}',
+      desktop_window_started: '远程桌面已在独立窗口中启动',
       alias_set_success: '别名设置成功',
       alias_set_failed: '设置失败: {error}',
       delete_confirm_title: '删除设备',

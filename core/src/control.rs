@@ -63,6 +63,12 @@ pub enum Data {
     StopActiveTunnelJob {
         target_device_id: i64,
     },
+    StartDesktopSession {
+        peer_device_id: i64,
+    },
+    StopDesktopSession {
+        peer_device_id: i64,
+    },
     ApproveInboundTunnel {
         attempt_id: String,
     },
@@ -97,7 +103,9 @@ pub enum Data {
     DeleteDevice {
         device_id: i64,
     },
-	WakeDevice { device_id: i64 },
+    WakeDevice {
+        device_id: i64,
+    },
     UpdateDeviceInfo {
         device_id: i64,
         lan_ip: String,

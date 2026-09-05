@@ -3125,6 +3125,8 @@ dependencies = [
  "local-ip-address",
  "network-interface",
  "once_cell",
+ "p2premote-remote-engine-manager",
+ "p2premote-remote-engine-protocol",
  "parking_lot",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -3159,6 +3161,21 @@ dependencies = [
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "p2premote-remote-engine-manager"
+version = "0.1.0"
+dependencies = [
+ "p2premote-remote-engine-protocol",
+ "serde_json",
+]
+
+[[package]]
+name = "p2premote-remote-engine-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

@@ -540,6 +540,23 @@ pub(super) async fn stop_wgvpn_job(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
 ) -> Option<Data> {
+    let desktop_stop_error = if shared
+        .lock()
+        .desktop_engine_tasks
+        .contains_key(&peer_device_id)
+    {
+        desktop_engine::stop_desktop_session(shared, peer_device_id, "tunnel_stopping")
+            .await
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        None
+    };
+    {
+        let mut state = shared.lock();
+        state.passive_p2p_attempts.remove(&peer_device_id);
+        state.desktop_signal_peers.remove(&peer_device_id);
+    }
     let removed_pending = {
         let mut state = shared.lock();
         if state
@@ -654,11 +671,19 @@ pub(super) async fn stop_wgvpn_job(
                 );
             }
             refresh_wgvpn_sessions(shared);
-            Some(cmd_response(
-                true,
-                "wgvpn stopped",
-                Some(shared.lock().status.clone()),
-            ))
+            if let Some(error) = desktop_stop_error {
+                Some(cmd_response(
+                    false,
+                    &format!("desktop engine stop failed before WGVPN cleanup: {error}"),
+                    Some(shared.lock().status.clone()),
+                ))
+            } else {
+                Some(cmd_response(
+                    true,
+                    "wgvpn stopped",
+                    Some(shared.lock().status.clone()),
+                ))
+            }
         }
         Err(err) => {
             warn!(
@@ -687,9 +712,15 @@ pub(super) async fn stop_wgvpn_job(
                 }
             }
             refresh_wgvpn_sessions(shared);
+            let message = match desktop_stop_error {
+                Some(desktop_error) => format!(
+                    "desktop engine stop failed: {desktop_error}; WGVPN cleanup failed: {err}"
+                ),
+                None => err.to_string(),
+            };
             Some(cmd_response(
                 false,
-                &err.to_string(),
+                &message,
                 Some(shared.lock().status.clone()),
             ))
         }
@@ -703,6 +734,14 @@ pub(super) async fn stop_wgvpn_job(
 /// 这里额外同步 stop 所有已知会话（基于 WGVPN_SESSIONS 快照），立即释放隧道资源。
 /// job task 后续醒来时会发现 session 已被清理（stop_wgvpn 幂等）。
 pub(super) async fn cancel_all_wgvpn_jobs(shared: &Arc<Mutex<SharedRuntimeState>>) {
+    for (peer_device_id, error) in
+        desktop_engine::stop_all_desktop_sessions(shared, "all_tunnels_stopping").await
+    {
+        warn!(
+            "[DesktopEngine] stop during tunnel cleanup failed: peer_device_id={}, error={}",
+            peer_device_id, error
+        );
+    }
     stop_all_wgvpn_health_monitors(shared);
     let cancel_txs: Vec<watch::Sender<bool>> = shared
         .lock()

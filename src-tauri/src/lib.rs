@@ -56,15 +56,16 @@ use commands::{
         save_wgvpn_lan_access_config, set_auto_start, set_locale,
     },
     device::{
-        delete_device, generate_connect_code, get_device_list, mark_current_device_offline, wake_device,
-        parse_invite_info, set_device_password, update_device_alias,
+        delete_device, generate_connect_code, get_device_list, mark_current_device_offline,
+        parse_invite_info, set_device_password, update_device_alias, wake_device,
     },
     service::{
         acknowledge_device_identity_notification, approve_inbound_tunnel,
         check_required_client_files, ensure_background_service_session, get_service_status,
         listen_service_events, refresh_service_network_info, refresh_tunnel_status,
         reject_inbound_tunnel, set_background_service_enabled, start_service_active_tunnel,
-        start_service_anonymous_active_tunnel, stop_active_tunnel_job, stop_service_active_tunnel,
+        start_service_anonymous_active_tunnel, start_service_desktop_session,
+        stop_active_tunnel_job, stop_service_active_tunnel, stop_service_desktop_session,
         stop_service_tunnel, sync_service_runtime_config, test_tunnel_speed,
     },
 };
@@ -174,6 +175,8 @@ pub fn run() {
             sync_service_runtime_config,
             start_service_active_tunnel,
             start_service_anonymous_active_tunnel,
+            start_service_desktop_session,
+            stop_service_desktop_session,
             stop_active_tunnel_job,
             approve_inbound_tunnel,
             reject_inbound_tunnel,
