@@ -287,6 +287,7 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::GetDeviceList => "GetDeviceList",
         Data::UpdateDeviceAlias { .. } => "UpdateDeviceAlias",
         Data::DeleteDevice { .. } => "DeleteDevice",
+		Data::WakeDevice { .. } => "WakeDevice",
         Data::UpdateDeviceInfo { .. } => "UpdateDeviceInfo",
         Data::SetDevicePassword { .. } => "SetDevicePassword",
         Data::GenerateConnectCode { .. } => "GenerateConnectCode",
@@ -490,6 +491,10 @@ pub(super) async fn handle_data(
                 |_| serde_json::Value::Null,
             ))
         }
+		Data::WakeDevice { device_id } => {
+			let mut config=match load_config_or_err(){Ok(c)=>c,Err(resp)=>return Some(resp)};
+			Some(response_from_result(crate::device::wake_device(&mut config,device_id).await,|status|serde_json::json!({"status":status})))
+		}
         Data::UpdateDeviceInfo {
             device_id,
             lan_ip,

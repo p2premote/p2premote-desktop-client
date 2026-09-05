@@ -80,6 +80,11 @@ pub async fn delete_device(device_id: i64) -> Result<(), String> {
     ensure_ok(&resp)
 }
 
+#[tauri::command]
+pub async fn wake_device(device_id:i64)->Result<String,String>{
+	match send_command_responsive(Data::WakeDevice{device_id}).await? { Data::CommandResponse{ok:true,data:Some(value),..}=>Ok(value.get("status").and_then(|v|v.as_str()).unwrap_or("sent").to_string()), Data::CommandResponse{message,..}=>Err(message), _=>Err("unexpected service response".to_string()) }
+}
+
 // 注：设备状态上报统一由后台 service 负责，启动/变化时上报并每 5 分钟兜底。
 
 /// Tauri 命令：标记当前设备为离线

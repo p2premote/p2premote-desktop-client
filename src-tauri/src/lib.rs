@@ -56,7 +56,7 @@ use commands::{
         save_wgvpn_lan_access_config, set_auto_start, set_locale,
     },
     device::{
-        delete_device, generate_connect_code, get_device_list, mark_current_device_offline,
+        delete_device, generate_connect_code, get_device_list, mark_current_device_offline, wake_device,
         parse_invite_info, set_device_password, update_device_alias,
     },
     service::{
@@ -151,6 +151,7 @@ pub fn run() {
             try_auto_login,
             resume_saved_session,
             get_device_list,
+			wake_device,
             parse_invite_info,
             update_device_alias,
             delete_device,

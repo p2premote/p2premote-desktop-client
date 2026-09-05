@@ -97,6 +97,7 @@ pub enum Data {
     DeleteDevice {
         device_id: i64,
     },
+	WakeDevice { device_id: i64 },
     UpdateDeviceInfo {
         device_id: i64,
         lan_ip: String,

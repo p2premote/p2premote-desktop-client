@@ -315,6 +315,7 @@ export default {
       label: '设备别名',
       placeholder: '请输入设备别名',
     },
+	wol: { action: '唤醒设备', sending: '正在发送…', sent: '唤醒包已发送', unsupported: '该设备尚未上报唤醒能力', target_online: '设备已经在线', no_relay: '目标局域网内没有可用的在线节点', relay_timeout: '唤醒节点响应超时', send_failed: '唤醒包发送失败', rate_limited: '操作过于频繁，请稍后重试', failed: '唤醒失败：{error}' },
     // 消息
     message: {
       lan_access_required: '开启 LAN 访问后必须填写至少一个 LAN 网段',

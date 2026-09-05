@@ -702,6 +702,9 @@ pub async fn run_service_foreground() -> Result<()> {
                                 set_last_error(&shared, err.to_string());
                             }
                         }
+						WsEvent::WOLRequest { request_id, macs, target_ipv4, prefix_len } => {
+							let client=ws_client.clone(); tokio::spawn(async move { let result=crate::wol::send_magic_packets(&macs,&target_ipv4,prefix_len).await; let success=result.is_ok(); let code=if success{"sent".to_string()}else{"send_failed".to_string()}; let _=client.send_wol_result(request_id,success,code).await; });
+						}
                     }
                 }
             }

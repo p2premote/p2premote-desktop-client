@@ -23,6 +23,7 @@ export interface DeviceInfo {
   client_version?: string
   connect_code?: string
   created_at?: string
+	wake_available?: boolean
 }
 
 /// API 统一响应格式

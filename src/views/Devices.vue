@@ -154,6 +154,10 @@
                     && !tunnelVirtualIp(selectedDevice),
                 }"
               >
+				<button v-if="selectedDevice.status !== 'online' && selectedDevice.wake_available && !isCurrentDevice(selectedDevice.device_uuid)" type="button" class="action-tile primary" :disabled="wakingIds.has(selectedDevice.device_id)" @click="handleWakeDevice(selectedDevice)">
+					<el-icon><SwitchButton /></el-icon>
+					<span>{{ wakingIds.has(selectedDevice.device_id) ? $t('devices.wol.sending') : $t('devices.wol.action') }}</span>
+				</button>
                 <button
                   type="button"
                   class="action-tile primary"
@@ -311,6 +315,7 @@ import {
   MoreFilled,
   Odometer,
   Refresh,
+	SwitchButton,
 } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { useAuthStore } from '../stores/auth'
@@ -392,6 +397,7 @@ const tunnelStatusMap = ref<Record<number, TunnelInfo>>({})
 const activeTunnelJobMap = ref<Record<number, ActiveTunnelJobStatus>>({})
 const tunnelLifecycleMap = ref<Record<number, TunnelLifecycleStatus>>({})
 const preparingTunnelIds = ref(new Set<number>())
+const wakingIds = reactive(new Set<number>())
 const lanAccessForm = reactive({
   enabled: false,
   cidrsText: '',
@@ -1111,6 +1117,17 @@ async function handleDeviceAction(command: string, device: DeviceInfo) {
       await confirmDeleteDevice(device)
       break
   }
+}
+
+async function handleWakeDevice(device: DeviceInfo) {
+	if (wakingIds.has(device.device_id)) return
+	wakingIds.add(device.device_id)
+	try {
+		const status = await invoke<string>('wake_device', { deviceId: device.device_id })
+		if (status === 'sent') ElMessage.success(t('devices.wol.sent'))
+		else ElMessage.error(t(`devices.wol.${status}`))
+	} catch (e) { ElMessage.error(t('devices.wol.failed', { error: String(e) })) }
+	finally { wakingIds.delete(device.device_id) }
 }
 
 async function confirmSetAlias() {

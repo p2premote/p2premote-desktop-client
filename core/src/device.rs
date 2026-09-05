@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use tracing::{debug, info};
+use crate::wol::WOLCapability;
 
 // 平台特定实现按 Go 的文件命名习惯拆分（device_windows.rs / device_macos.rs /
 // device_linux.rs）。Rust 不按文件名自动选择，构建门控在这里集中声明：
@@ -100,6 +101,8 @@ pub struct DeviceInfo {
     pub connect_code: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
+	#[serde(default)]
+	pub wake_available: bool,
 }
 
 #[derive(Serialize)]
@@ -124,6 +127,8 @@ struct RegisterRequest {
     rdp_port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     remote_access: Option<RemoteAccessInfo>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	wol_capability: Option<WOLCapability>,
 }
 
 /// 业务响应 envelope 复用 http::ApiResponse<T>，按 data 类型别名。
@@ -148,6 +153,8 @@ pub struct DeviceStatusReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     remote_access: Option<RemoteAccessInfo>,
     client_version: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	wol_capability: Option<WOLCapability>,
 }
 
 #[derive(Serialize)]
@@ -245,6 +252,7 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
         rdp_enabled,
         rdp_port,
         remote_access,
+		wol_capability: crate::wol::collect_capability(),
     };
     let client = shared_client();
     let resp = send_authed(config, |token| {
@@ -300,7 +308,16 @@ pub async fn collect_device_status_report(
         rdp_enabled,
         remote_access,
         client_version: current_client_version(),
+		wol_capability: crate::wol::collect_capability(),
     })
+}
+
+pub async fn wake_device(config: &mut MachineConfig, device_id: i64) -> Result<String> {
+    let url=server_url(config,&format!("/api/v1/devices/{device_id}/wake"));
+    let client=shared_client();
+    let resp=send_authed(config,|token|client.post(&url).header("Authorization",format!("Bearer {token}"))).await?;
+    let value:serde_json::Value=serde_json::from_str(&resp.body).map_err(|e|anyhow!("invalid wake response: {e}"))?;
+    Ok(value.pointer("/data/status").and_then(Value::as_str).unwrap_or("send_failed").to_string())
 }
 
 pub async fn send_device_status_report(
@@ -1069,6 +1086,7 @@ mod tests {
                 port: 3389,
             }),
             client_version: "1.7.3-3becb9".to_string(),
+			wol_capability: None,
         };
 
         let value = serde_json::to_value(report).unwrap();

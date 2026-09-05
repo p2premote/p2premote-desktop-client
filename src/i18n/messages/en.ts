@@ -296,6 +296,7 @@ const en = {
       label: 'Device alias',
       placeholder: 'Enter a device alias',
     },
+	wol: { action: 'Wake device', sending: 'Sending…', sent: 'Wake packet sent', unsupported: 'This device has not reported Wake-on-LAN support', target_online: 'The device is already online', no_relay: 'No online relay is available on the target LAN', relay_timeout: 'The wake relay timed out', send_failed: 'Failed to send the wake packet', rate_limited: 'Too many requests; try again shortly', failed: 'Wake failed: {error}' },
     message: {
       lan_access_required: 'Enter at least one LAN subnet when LAN access is enabled',
       lan_saved: 'Changes saved. Re-establish the tunnel to this device for them to take effect.',
