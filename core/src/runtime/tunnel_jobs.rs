@@ -555,7 +555,6 @@ pub(super) async fn stop_wgvpn_job(
     {
         let mut state = shared.lock();
         state.passive_p2p_attempts.remove(&peer_device_id);
-        state.desktop_signal_peers.remove(&peer_device_id);
     }
     let removed_pending = {
         let mut state = shared.lock();

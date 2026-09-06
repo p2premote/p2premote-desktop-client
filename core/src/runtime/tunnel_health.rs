@@ -82,6 +82,7 @@ pub(super) fn spawn_wgvpn_health_monitor(
     let generation = NEXT_WGVPN_HEALTH_GENERATION.fetch_add(1, Ordering::Relaxed);
     let (stop_tx, stop_rx) = watch::channel(false);
     let (speed_tx, speed_rx) = mpsc::unbounded_channel();
+    let (desktop_tx, desktop_rx) = mpsc::unbounded_channel();
     let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let mut state = shared.lock();
@@ -91,6 +92,7 @@ pub(super) fn spawn_wgvpn_health_monitor(
                 generation,
                 stop_tx,
                 speed_tx,
+                desktop_tx,
                 speed_test_busy: speed_test_busy.clone(),
             },
         ) {
@@ -127,6 +129,7 @@ pub(super) fn spawn_wgvpn_health_monitor(
             health_addr,
             stop_rx,
             speed_rx,
+            desktop_rx,
             speed_test_busy,
             event_handler,
         )

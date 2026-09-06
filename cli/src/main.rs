@@ -41,6 +41,10 @@ enum Commands {
         command: TunnelCommands,
     },
     Connect(ConnectArgs),
+    Desktop {
+        #[command(subcommand)]
+        command: DesktopCommands,
+    },
     Job {
         #[command(subcommand)]
         command: JobCommands,
@@ -95,6 +99,12 @@ enum InviteCommands {
 enum TunnelCommands {
     List,
     Stop(TunnelStopArgs),
+}
+
+#[derive(Subcommand)]
+enum DesktopCommands {
+    Start { peer_device_id: i64 },
+    Stop { peer_device_id: i64 },
 }
 
 #[derive(Args)]
@@ -346,6 +356,20 @@ async fn main() -> Result<()> {
             }
             _ => return Err(anyhow!("use exactly one of --device-id or --invite")),
         },
+        Commands::Desktop {
+            command: DesktopCommands::Start { peer_device_id },
+        } => {
+            print_command_response(
+                send_service_command(Data::StartDesktopSession { peer_device_id }).await?,
+            )?;
+        }
+        Commands::Desktop {
+            command: DesktopCommands::Stop { peer_device_id },
+        } => {
+            print_command_response(
+                send_service_command(Data::StopDesktopSession { peer_device_id }).await?,
+            )?;
+        }
         Commands::Job {
             command: JobCommands::List,
         } => {
@@ -552,7 +576,11 @@ fn default_service_executable() -> Result<PathBuf> {
 fn print_command_response(resp: Data) -> Result<()> {
     match resp {
         Data::CommandResponse {
-            ok, data, status, ..
+            ok,
+            message,
+            data,
+            status,
+            ..
         } => {
             let mut output = serde_json::json!({
                 "ok": ok,
@@ -560,6 +588,7 @@ fn print_command_response(resp: Data) -> Result<()> {
                 "status": status,
             });
             sanitize_cli_value(&mut output);
+            output["message"] = Value::String(message);
             println!("{}", serde_json::to_string_pretty(&output)?);
             if ok {
                 Ok(())

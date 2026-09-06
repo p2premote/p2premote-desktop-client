@@ -1,4 +1,5 @@
 use super::*;
+use crate::tunnel_control::{DesktopControlRequest, TunnelControlMessage, TunnelDesktopCommand};
 use p2premote_remote_engine_manager::{EngineManager, EngineProcess, EngineRole};
 use p2premote_remote_engine_protocol::{EngineEvent, EngineFailure, SessionConfig};
 use std::{
@@ -21,6 +22,7 @@ pub(super) enum DesktopEngineRole {
 
 pub(super) struct DesktopEngineTask {
     attempt_id: String,
+    role: DesktopEngineRole,
     stop_tx: std_mpsc::Sender<String>,
     outcome_rx: std_mpsc::Receiver<Result<EngineEvent, EngineFailure>>,
     worker: Option<JoinHandle<()>>,
@@ -96,13 +98,7 @@ impl DesktopEngineTask {
     }
 
     pub(super) fn stop(mut self, reason: impl Into<String>) -> Result<(), EngineFailure> {
-        self.stop_tx.send(reason.into()).map_err(|error| {
-            EngineFailure::new(
-                "engine_supervisor_closed",
-                p2premote_remote_engine_protocol::EngineStage::Shutdown,
-                format!("send stop to desktop engine supervisor: {error}"),
-            )
-        })?;
+        let _ = self.stop_tx.send(reason.into());
         if let Some(worker) = self.worker.take() {
             worker.join().map_err(|_| {
                 EngineFailure::new(
@@ -114,11 +110,15 @@ impl DesktopEngineTask {
         }
         match self.outcome_rx.try_recv() {
             Ok(Ok(EngineEvent::Stopped { .. })) => Ok(()),
+            Ok(Ok(EngineEvent::Failed { failure, .. })) if is_expected_peer_close(&failure) => {
+                Ok(())
+            }
             Ok(Ok(other)) => Err(EngineFailure::new(
                 "unexpected_engine_event",
                 p2premote_remote_engine_protocol::EngineStage::Shutdown,
                 format!("expected stopped event, received {other:?}"),
             )),
+            Ok(Err(error)) if is_expected_peer_close(&error) => Ok(()),
             Ok(Err(error)) => Err(error),
             Err(error) => Err(EngineFailure::new(
                 "engine_stop_result_missing",
@@ -142,6 +142,21 @@ impl DesktopEngineTask {
     }
 }
 
+fn is_expected_peer_close(error: &EngineFailure) -> bool {
+    matches!(
+        error.code.as_str(),
+        "controller_streaming_failed" | "clipboard_read_failed"
+    ) && [
+        "peer closed",
+        "connection reset",
+        "forcibly closed",
+        "强迫关闭",
+        "broken pipe",
+    ]
+    .iter()
+    .any(|needle| error.message.to_ascii_lowercase().contains(needle))
+}
+
 pub(super) fn start_desktop_engine(
     role: DesktopEngineRole,
     config: SessionConfig,
@@ -159,10 +174,14 @@ pub(super) fn start_desktop_engine(
             process.wait_for_streaming(ENGINE_START_TIMEOUT)?;
         }
     }
-    Ok(spawn_supervisor(attempt_id, process))
+    Ok(spawn_supervisor(attempt_id, role, process))
 }
 
-fn spawn_supervisor(attempt_id: String, mut process: EngineProcess) -> DesktopEngineTask {
+fn spawn_supervisor(
+    attempt_id: String,
+    role: DesktopEngineRole,
+    mut process: EngineProcess,
+) -> DesktopEngineTask {
     let (stop_tx, stop_rx) = std_mpsc::channel::<String>();
     let (outcome_tx, outcome_rx) = std_mpsc::channel();
     let worker_attempt_id = attempt_id.clone();
@@ -214,6 +233,7 @@ fn spawn_supervisor(attempt_id: String, mut process: EngineProcess) -> DesktopEn
     });
     DesktopEngineTask {
         attempt_id,
+        role,
         stop_tx,
         outcome_rx,
         worker: Some(worker),
@@ -282,64 +302,33 @@ pub(super) async fn start_active_desktop_session(
     peer_device_id: i64,
 ) -> Result<serde_json::Value> {
     let session = require_wgvpn_session(peer_device_id)?;
+    if !session.is_active {
+        return Err(anyhow!("desktop_controller_requires_active_tunnel"));
+    }
     let attempt_id = Uuid::new_v4().to_string();
     let reservation = reserve_desktop_start(shared, peer_device_id, &attempt_id)?;
-    let (signal, ws_client) = {
-        let state = shared.lock();
-        let signal = state
-            .desktop_signal_peers
-            .get(&peer_device_id)
-            .cloned()
-            .or_else(|| {
-                state
-                    .passive_p2p_attempts
-                    .get(&peer_device_id)
-                    .map(|attempt| DesktopSignalPeer {
-                        connection_id: attempt.connection_id.clone(),
-                        access_grant: attempt.access_grant.clone(),
-                    })
-            })
-            .ok_or_else(|| anyhow!("desktop_signal_context_missing"))?;
-        let ws_client = state
-            .ws_client
-            .clone()
-            .ok_or_else(|| anyhow!("desktop_signal_connection_missing"))?;
-        (signal, ws_client)
-    };
     let session_secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    shared
-        .lock()
-        .p2p_attempt_waiters
-        .insert(attempt_id.clone(), event_tx);
-    let send_result = send_p2p_attempt_message(
-        &ws_client,
-        signal.connection_id.clone(),
+    match request_desktop_control(
+        shared,
         peer_device_id,
-        signal.access_grant.clone(),
-        P2PAttemptMessage::DesktopStart {
-            protocol_version: 1,
+        DesktopControlRequest::Start {
             attempt_id: attempt_id.clone(),
             session_secret: session_secret.clone(),
             port: DESKTOP_PORT,
         },
+        ENGINE_START_TIMEOUT,
     )
-    .await;
-    if let Err(error) = send_result {
-        shared.lock().p2p_attempt_waiters.remove(&attempt_id);
-        return Err(error.context("desktop_start_notify_failed"));
-    }
-    let ready = tokio::time::timeout(ENGINE_START_TIMEOUT, event_rx.recv()).await;
-    shared.lock().p2p_attempt_waiters.remove(&attempt_id);
-    match ready {
-        Ok(Some(P2PAttemptEvent::DesktopHostReady)) => {}
-        Ok(Some(P2PAttemptEvent::DesktopFailed {
+    .await?
+    {
+        TunnelControlMessage::DesktopReady {
+            attempt_id: response_id,
+        } if response_id == attempt_id => {}
+        TunnelControlMessage::DesktopFailed {
             error_code,
             message,
-        })) => return Err(anyhow!("{error_code}: {message}")),
-        Ok(Some(other)) => return Err(anyhow!("unexpected_desktop_signal_event: {other:?}")),
-        Ok(None) => return Err(anyhow!("desktop_signal_channel_closed")),
-        Err(_) => return Err(anyhow!("desktop_host_ready_timeout")),
+            ..
+        } => return Err(anyhow!("{error_code}: {message}")),
+        other => return Err(anyhow!("unexpected_desktop_start_response: {other:?}")),
     }
 
     let config = session_config(
@@ -358,20 +347,19 @@ pub(super) async fn start_active_desktop_session(
     let task = match controller_result {
         Ok(task) => task,
         Err(controller_error) => {
-            let stop_result = send_p2p_attempt_message(
-                &ws_client,
-                signal.connection_id,
+            let stop_result = request_desktop_control(
+                shared,
                 peer_device_id,
-                signal.access_grant,
-                P2PAttemptMessage::DesktopStop {
-                    protocol_version: 1,
+                DesktopControlRequest::Stop {
                     attempt_id: attempt_id.clone(),
                     reason: "controller_start_failed".into(),
                 },
+                ENGINE_STOP_TIMEOUT,
             )
             .await;
             return match stop_result {
-                Ok(()) => Err(anyhow!(controller_error.to_string())),
+                Ok(TunnelControlMessage::DesktopStopped { .. }) => Err(anyhow!(controller_error.to_string())),
+                Ok(other) => Err(anyhow!("controller start failed: {controller_error}; unexpected remote cleanup response: {other:?}")),
                 Err(stop_error) => Err(anyhow!(
                     "controller start failed: {controller_error}; remote host cleanup notification failed: {stop_error}"
                 )),
@@ -384,6 +372,36 @@ pub(super) async fn start_active_desktop_session(
         "state": "streaming",
         "window": "native"
     }))
+}
+
+async fn request_desktop_control(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    peer_device_id: i64,
+    request: DesktopControlRequest,
+    timeout: Duration,
+) -> Result<TunnelControlMessage> {
+    let timeout_code = match &request {
+        DesktopControlRequest::Start { .. } => "desktop_host_start_timeout",
+        DesktopControlRequest::Stop { .. } => "desktop_host_stop_timeout",
+    };
+    let desktop_tx = shared
+        .lock()
+        .wgvpn_health_controls
+        .get(&peer_device_id)
+        .map(|control| control.desktop_tx.clone())
+        .ok_or_else(|| anyhow!("desktop_control_channel_unavailable"))?;
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    desktop_tx
+        .send(TunnelDesktopCommand {
+            request,
+            response: response_tx,
+        })
+        .map_err(|_| anyhow!("desktop_control_channel_unavailable"))?;
+    tokio::time::timeout(timeout, response_rx)
+        .await
+        .map_err(|_| anyhow!(timeout_code))?
+        .map_err(|_| anyhow!("desktop_control_channel_closed"))?
+        .map_err(anyhow::Error::msg)
 }
 
 pub(super) async fn start_passive_desktop_host(
@@ -417,6 +435,74 @@ pub(super) async fn start_passive_desktop_host(
     Ok(())
 }
 
+pub(super) async fn handle_tunnel_desktop_request(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    peer_device_id: i64,
+    message: TunnelControlMessage,
+) -> TunnelControlMessage {
+    match message {
+        TunnelControlMessage::DesktopStart {
+            attempt_id,
+            session_secret,
+            port,
+        } => {
+            match start_passive_desktop_host(
+                shared,
+                peer_device_id,
+                attempt_id.clone(),
+                session_secret,
+                port,
+            )
+            .await
+            {
+                Ok(()) => TunnelControlMessage::DesktopReady { attempt_id },
+                Err(error) => TunnelControlMessage::DesktopFailed {
+                    attempt_id,
+                    error_code: desktop_error_code(&error),
+                    message: error.to_string(),
+                },
+            }
+        }
+        TunnelControlMessage::DesktopStop { attempt_id, reason } => {
+            let current_attempt = shared
+                .lock()
+                .desktop_engine_tasks
+                .get(&peer_device_id)
+                .map(|task| task.attempt_id().to_owned());
+            if current_attempt.as_deref() != Some(attempt_id.as_str()) {
+                return TunnelControlMessage::DesktopFailed {
+                    attempt_id,
+                    error_code: "desktop_stop_attempt_mismatch".to_string(),
+                    message: format!("expected active attempt {current_attempt:?}"),
+                };
+            }
+            match stop_desktop_session(shared, peer_device_id, &reason).await {
+                Ok(()) => TunnelControlMessage::DesktopStopped { attempt_id },
+                Err(error) => TunnelControlMessage::DesktopFailed {
+                    attempt_id,
+                    error_code: desktop_error_code(&error),
+                    message: error.to_string(),
+                },
+            }
+        }
+        other => TunnelControlMessage::DesktopFailed {
+            attempt_id: String::new(),
+            error_code: "unexpected_desktop_control_message".to_string(),
+            message: format!("received {other:?}"),
+        },
+    }
+}
+
+fn desktop_error_code(error: &anyhow::Error) -> String {
+    error
+        .to_string()
+        .split(':')
+        .next()
+        .unwrap_or("desktop_operation_failed")
+        .trim()
+        .to_string()
+}
+
 pub(super) async fn stop_desktop_session(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
@@ -427,11 +513,44 @@ pub(super) async fn stop_desktop_session(
         .desktop_engine_tasks
         .remove(&peer_device_id)
         .ok_or_else(|| anyhow!("desktop_session_not_running"))?;
+    let remote_result = if task.role == DesktopEngineRole::Controller {
+        Some(
+            request_desktop_control(
+                shared,
+                peer_device_id,
+                DesktopControlRequest::Stop {
+                    attempt_id: task.attempt_id().to_owned(),
+                    reason: reason.to_owned(),
+                },
+                ENGINE_STOP_TIMEOUT,
+            )
+            .await
+            .and_then(|message| match message {
+                TunnelControlMessage::DesktopStopped { .. } => Ok(()),
+                TunnelControlMessage::DesktopFailed {
+                    error_code,
+                    message,
+                    ..
+                } => Err(anyhow!("{error_code}: {message}")),
+                other => Err(anyhow!("unexpected_desktop_stop_response: {other:?}")),
+            }),
+        )
+    } else {
+        None
+    };
     let reason = reason.to_owned();
-    tokio::task::spawn_blocking(move || task.stop(reason))
+    let local_result = tokio::task::spawn_blocking(move || task.stop(reason))
         .await
         .map_err(|error| anyhow!("desktop_stop_task_failed: {error}"))?
-        .map_err(|error| anyhow!(error.to_string()))
+        .map_err(|error| anyhow!(error.to_string()));
+    match (local_result, remote_result) {
+        (Ok(()), None | Some(Ok(()))) => Ok(()),
+        (Err(local), None | Some(Ok(()))) => Err(local),
+        (Ok(()), Some(Err(remote))) => Err(anyhow!("remote_desktop_stop_failed: {remote}")),
+        (Err(local), Some(Err(remote))) => Err(anyhow!(
+            "desktop_stop_failed: local={local}; remote={remote}"
+        )),
+    }
 }
 
 pub(super) fn poll_desktop_engine_tasks(
@@ -550,6 +669,23 @@ mod tests {
         drop(first);
         reserve_desktop_start(&shared, 42, "attempt-three")
             .expect("reservation should be released after failed start");
+    }
+
+    #[test]
+    fn peer_close_after_remote_stop_is_not_reported_as_cleanup_failure() {
+        let expected = EngineFailure::new(
+            "clipboard_read_failed",
+            p2premote_remote_engine_protocol::EngineStage::Streaming,
+            "transport I/O failed: 远程主机强迫关闭了一个现有的连接。 (os error 10054)",
+        );
+        assert!(is_expected_peer_close(&expected));
+
+        let unrelated = EngineFailure::new(
+            "capture_frame_failed",
+            p2premote_remote_engine_protocol::EngineStage::Streaming,
+            "DXGI access denied",
+        );
+        assert!(!is_expected_peer_close(&unrelated));
     }
 
     #[tokio::test]

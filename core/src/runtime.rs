@@ -38,6 +38,7 @@ use crate::p2p::{
 };
 use crate::speed_test::TunnelSpeedTestCommand;
 use crate::subnet_router;
+use crate::tunnel_control::{TunnelControlMessage, TunnelDesktopCommand};
 use crate::ws::{ServiceWsClient, WsEvent};
 use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
@@ -103,6 +104,7 @@ struct WgvpnHealthControl {
     generation: u64,
     stop_tx: watch::Sender<bool>,
     speed_tx: mpsc::UnboundedSender<TunnelSpeedTestCommand>,
+    desktop_tx: mpsc::UnboundedSender<TunnelDesktopCommand>,
     /// 测速是否正在进行（true 时拒绝新请求，避免在 health loop 里堆积串行）。
     speed_test_busy: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -165,7 +167,6 @@ pub(super) struct SharedRuntimeState {
     ws_client: Option<ServiceWsClient>,
     p2p_attempt_waiters: HashMap<String, mpsc::UnboundedSender<P2PAttemptEvent>>,
     passive_p2p_attempts: HashMap<i64, PassiveP2PAttempt>,
-    desktop_signal_peers: HashMap<i64, DesktopSignalPeer>,
     desktop_engine_starting: HashMap<i64, String>,
     desktop_engine_tasks: HashMap<i64, desktop_engine::DesktopEngineTask>,
     /// Current in-memory account identity used to classify inbound attempts.
@@ -184,13 +185,6 @@ pub(super) struct SharedRuntimeState {
 struct PassiveP2PAttempt {
     connection_id: String,
     attempt_id: String,
-    access_grant: String,
-}
-
-#[derive(Debug, Clone)]
-struct DesktopSignalPeer {
-    connection_id: String,
-    access_grant: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,11 +218,6 @@ enum P2PAttemptEvent {
         message: String,
     },
     Cancelled,
-    DesktopHostReady,
-    DesktopFailed {
-        error_code: String,
-        message: String,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,26 +274,6 @@ enum P2PAttemptMessage {
         error: P2PAttemptErrorPayload,
     },
     AttemptCancel {
-        protocol_version: u8,
-        attempt_id: String,
-        reason: String,
-    },
-    DesktopStart {
-        protocol_version: u8,
-        attempt_id: String,
-        session_secret: String,
-        port: u16,
-    },
-    DesktopHostReady {
-        protocol_version: u8,
-        attempt_id: String,
-    },
-    DesktopFailed {
-        protocol_version: u8,
-        attempt_id: String,
-        error: P2PAttemptErrorPayload,
-    },
-    DesktopStop {
         protocol_version: u8,
         attempt_id: String,
         reason: String,
@@ -567,17 +536,43 @@ pub async fn run_service_foreground() -> Result<()> {
             }
         },
     );
-    let health_server = match spawn_health_server(health_handler).await {
-        Ok(handle) => {
-            let handle = Arc::new(handle);
-            shared.lock().health_server_handle = Some(handle.clone());
-            Some(handle)
+    let peer_validator = Arc::new(move |source_device_id: i64, peer_ip: std::net::IpAddr| {
+        let peer_ip = peer_ip.to_string();
+        let session = wgvpn_flow::snapshot_sessions()
+            .into_iter()
+            .find(|session| session.peer_device_id == source_device_id)
+            .ok_or_else(|| "wgvpn session not found".to_string())?;
+        if session.approval_pending {
+            return Err("wgvpn session is still awaiting approval".to_string());
         }
-        Err(err) => {
-            warn!("[ServiceRuntime] health server start failed: {}", err);
-            None
+        if session.peer_virtual_ip != peer_ip {
+            return Err(format!(
+                "expected peer virtual ip {}, received {}",
+                session.peer_virtual_ip, peer_ip
+            ));
         }
-    };
+        Ok(())
+    });
+    let desktop_shared = shared.clone();
+    let desktop_handler = Arc::new(move |peer_device_id, message| {
+        let shared = desktop_shared.clone();
+        Box::pin(async move {
+            desktop_engine::handle_tunnel_desktop_request(&shared, peer_device_id, message).await
+        })
+            as std::pin::Pin<Box<dyn std::future::Future<Output = TunnelControlMessage> + Send>>
+    });
+    let health_server =
+        match spawn_health_server(health_handler, peer_validator, desktop_handler).await {
+            Ok(handle) => {
+                let handle = Arc::new(handle);
+                shared.lock().health_server_handle = Some(handle.clone());
+                Some(handle)
+            }
+            Err(err) => {
+                warn!("[ServiceRuntime] health server start failed: {}", err);
+                None
+            }
+        };
     let ws_client = ServiceWsClient::new();
     shared.lock().ws_client = Some(ws_client.clone());
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<WsEvent>();
@@ -1258,33 +1253,6 @@ mod tests {
     }
 
     #[test]
-    fn desktop_start_round_trips_required_fields() {
-        let message = P2PAttemptMessage::DesktopStart {
-            protocol_version: 1,
-            attempt_id: "desktop-attempt".into(),
-            session_secret: "one-time-secret".into(),
-            port: 39090,
-        };
-        let encoded = serde_json::to_string(&message).expect("serialize desktop start");
-        let decoded: P2PAttemptMessage =
-            serde_json::from_str(&encoded).expect("deserialize desktop start");
-        match decoded {
-            P2PAttemptMessage::DesktopStart {
-                protocol_version,
-                attempt_id,
-                session_secret,
-                port,
-            } => {
-                assert_eq!(protocol_version, 1);
-                assert_eq!(attempt_id, "desktop-attempt");
-                assert_eq!(session_secret, "one-time-secret");
-                assert_eq!(port, 39090);
-            }
-            other => panic!("expected desktop_start, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn p2p_attempt_error_is_structured_and_localized() {
         let error = P2PAttemptErrorPayload::new(
             "wireguard_handshake_failed",
@@ -1446,12 +1414,14 @@ mod tests {
         let shared = Arc::new(Mutex::new(SharedRuntimeState::default()));
         let (stop_tx, _stop_rx) = watch::channel(false);
         let (speed_tx, _speed_rx) = mpsc::unbounded_channel();
+        let (desktop_tx, _desktop_rx) = mpsc::unbounded_channel();
         shared.lock().wgvpn_health_controls.insert(
             29,
             WgvpnHealthControl {
                 generation: 2,
                 stop_tx,
                 speed_tx,
+                desktop_tx,
                 speed_test_busy: Arc::new(AtomicBool::new(false)),
             },
         );
@@ -1549,12 +1519,14 @@ mod tests {
         let mut state = SharedRuntimeState::default();
         let (stop_tx, _stop_rx) = watch::channel(false);
         let (speed_tx, _speed_rx) = mpsc::unbounded_channel();
+        let (desktop_tx, _desktop_rx) = mpsc::unbounded_channel();
         state.wgvpn_health_controls.insert(
             29,
             WgvpnHealthControl {
                 generation: 4,
                 stop_tx,
                 speed_tx,
+                desktop_tx,
                 speed_test_busy: Arc::new(AtomicBool::new(false)),
             },
         );

@@ -664,13 +664,6 @@ pub(super) async fn start_wgvpn_active_with_notify(
         }
     }
     shared.lock().p2p_attempt_waiters.remove(&attempt_id);
-    shared.lock().desktop_signal_peers.insert(
-        target_device_id,
-        DesktopSignalPeer {
-            connection_id: opened.connection_id.clone(),
-            access_grant: opened.access_grant.clone(),
-        },
-    );
     let target_remote_port = if rdp_port == 0 {
         opened.target_remote_access.port.max(opened.target_rdp_port)
     } else {

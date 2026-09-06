@@ -12,20 +12,20 @@
 ```text
 Vue                  Active Service            Passive Service            Host Engine        Controller Engine
  | StartDesktopSession      |                         |                         |                    |
- |------------------------->| validate WGVPN/context |                         |                    |
- |                          | DesktopStart(v1, id, secret, 39090)              |                    |
- |                          |------------------------>| validate tunnel/version|                    |
+ |------------------------->| validate WGVPN/control |                         |                    |
+ |                          | DesktopStart(v4, id, secret, 39090)              |                    |
+|                          |==== WGVPN health/control TCP ====================>| validate peer IP  |
  |                          |                         | host-user-session       |                    |
  |                          |                         |------------------------>|                    |
  |                          |                         |<----------- HostReady --|                    |
- |                          |<-- DesktopHostReady ----|                         |                    |
+ |                          |<== DesktopReady =========|                         |                    |
  |                          | controller-user-session |                         |                    |
  |                          |--------------------------------------------------------------->|
  |                          |<-------------------------------- FirstFrame + Streaming --------|
  |<-- success (native) -----|                         |                         |                    |
 ```
 
-任何一步失败即终止。HostReady 后 Controller 失败时，Active Service 发送 `DesktopStop`；该清理失败会与 Controller 原因合并返回。
+中心服务端只参与初始授权和打洞。隧道建立后，`DesktopStart/Ready/Failed/Stop/Stopped` 全部通过 WGVPN 内现有的 48082 健康控制长连接传输，不使用 WebSocket `p2p_notify`，也不依赖 `access_grant` 的有效期。任何一步失败即终止。HostReady 后 Controller 失败时，Active Service 发送 `DesktopStop`；该清理失败会与 Controller 原因合并返回。
 
 ## 本地进程管理
 
@@ -52,7 +52,7 @@ Vue                  Active Service            Passive Service            Host E
 ## 关键实现位置
 
 - Service Engine 生命周期：`core/src/runtime/desktop_engine.rs`
-- WebSocket 桌面信令：`core/src/runtime/p2p_signal.rs`
+- 隧道内桌面控制信令：`core/src/tunnel_control.rs`、`core/src/health.rs`、`core/src/p2p.rs`
 - IPC 命令：`core/src/control.rs`、`core/src/runtime/ipc.rs`
 - Tauri 命令：`src-tauri/src/commands/service.rs`
 - Vue 原生窗口入口：`src/views/Devices.vue`

@@ -8,7 +8,8 @@ use crate::speed_test::{
     TunnelSpeedTestCommand, TunnelSpeedTestResult, SPEED_TEST_PORT, SPEED_TEST_RUN_TIMEOUT_SECS,
 };
 use crate::tunnel_control::{
-    now_millis, TunnelControlConnection, TunnelControlMessage, TUNNEL_CONTROL_PROTOCOL_VERSION,
+    now_millis, TunnelControlConnection, TunnelControlMessage, TunnelDesktopCommand,
+    TUNNEL_CONTROL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
@@ -18,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Default)]
@@ -253,6 +254,7 @@ pub async fn wgvpn_health_monitor_loop(
     health_addr: String,
     mut stop_rx: watch::Receiver<bool>,
     mut speed_rx: mpsc::UnboundedReceiver<TunnelSpeedTestCommand>,
+    mut desktop_rx: mpsc::UnboundedReceiver<TunnelDesktopCommand>,
     speed_test_busy: Arc<std::sync::atomic::AtomicBool>,
     event_handler: TunnelHealthEventHandler,
 ) -> Result<()> {
@@ -277,6 +279,7 @@ pub async fn wgvpn_health_monitor_loop(
                 &health_addr,
                 &mut stop_rx,
                 &mut speed_rx,
+                &mut desktop_rx,
                 &speed_test_busy,
                 Some(&session_handler),
             )
@@ -325,6 +328,7 @@ async fn active_health_session(
     health_addr: &str,
     stop_rx: &mut watch::Receiver<bool>,
     speed_rx: &mut mpsc::UnboundedReceiver<TunnelSpeedTestCommand>,
+    desktop_rx: &mut mpsc::UnboundedReceiver<TunnelDesktopCommand>,
     speed_test_busy: &Arc<std::sync::atomic::AtomicBool>,
     event_handler: Option<&TunnelHealthEventHandler>,
 ) -> Result<()> {
@@ -354,6 +358,18 @@ async fn active_health_session(
             protocol_version,
             ..
         }) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => {}
+        Some(TunnelControlMessage::HelloAck {
+            ok: false,
+            protocol_version,
+            message,
+        }) => {
+            return Err(anyhow!(
+                "tunnel_control_protocol_rejected: local={}, remote={}, reason={}",
+                TUNNEL_CONTROL_PROTOCOL_VERSION,
+                protocol_version,
+                message
+            ))
+        }
         Some(other) => return Err(anyhow!("unexpected health hello ack: {:?}", other)),
         None => {
             if let Some(handler) = event_handler {
@@ -365,6 +381,15 @@ async fn active_health_session(
     };
 
     let mut reported_rtt_ms = None;
+    let mut pending_desktop: Option<(
+        String,
+        oneshot::Sender<Result<TunnelControlMessage, String>>,
+    )> = None;
+    let mut pending_ping: Option<(i64, std::time::Instant)> = None;
+    let mut pending_local_speed: Option<TunnelSpeedTestCommand> = None;
+    let mut pending_remote_speed: Option<u64> = None;
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(5));
+    heartbeat.tick().await;
     let peer_virtual_ip = health_addr
         .rsplit_once(':')
         .map(|(ip, _)| ip)
@@ -376,8 +401,12 @@ async fn active_health_session(
                     return Ok(());
                 }
             }
-            request = speed_rx.recv() => {
+            request = speed_rx.recv(), if pending_local_speed.is_none() => {
                 if let Some(request) = request {
+                    if pending_ping.is_some() {
+                        pending_local_speed = Some(request);
+                        continue;
+                    }
                     // 本分支串行占用健康连接约 15-20s；健康阈值约 60s，且
                     // 共享 busy 标志会阻止本地与远端请求并发堆积。
                     let result = run_speed_test_as_client(&mut conn, peer_virtual_ip).await.map_err(|e| e.to_string());
@@ -388,17 +417,100 @@ async fn active_health_session(
                     }
                 }
             }
+            request = desktop_rx.recv() => {
+                let Some(request) = request else {
+                    return Err(anyhow!("desktop control command channel closed"));
+                };
+                if pending_desktop.is_some() {
+                    let _ = request.response.send(Err("desktop_control_request_in_progress".to_string()));
+                    continue;
+                }
+                let attempt_id = request.request.attempt_id().to_owned();
+                if let Err(error) = conn.send(&request.request.into_message()).await {
+                    let _ = request.response.send(Err(format!("desktop_control_send_failed: {error}")));
+                    return Err(error.context("desktop control send failed"));
+                }
+                pending_desktop = Some((attempt_id, request.response));
+            }
             message = conn.next() => {
                 match message.context("failed to read health control message")? {
                     Some(TunnelControlMessage::SpeedTestRequest { request_id }) => {
-                        execute_requested_speed_test(
-                            &mut conn,
-                            peer_virtual_ip,
-                            request_id,
-                            speed_test_busy,
-                        ).await?;
+                        if pending_ping.is_some() {
+                            if pending_remote_speed.replace(request_id).is_some() {
+                                return Err(anyhow!("multiple speed requests received before health pong"));
+                            }
+                        } else {
+                            execute_requested_speed_test(
+                                &mut conn,
+                                peer_virtual_ip,
+                                request_id,
+                                speed_test_busy,
+                            ).await?;
+                            if let Some(handler) = event_handler {
+                                handler(TunnelHealthEvent::HeartbeatSucceeded { latency_ms: None });
+                            }
+                        }
+                    }
+                    Some(message @ (TunnelControlMessage::DesktopReady { .. }
+                        | TunnelControlMessage::DesktopFailed { .. }
+                        | TunnelControlMessage::DesktopStopped { .. })) => {
+                        let response_attempt_id = match &message {
+                            TunnelControlMessage::DesktopReady { attempt_id }
+                            | TunnelControlMessage::DesktopFailed { attempt_id, .. }
+                            | TunnelControlMessage::DesktopStopped { attempt_id } => attempt_id,
+                            _ => unreachable!(),
+                        };
+                        match pending_desktop.take() {
+                            Some((pending_id, response)) if pending_id == *response_attempt_id => {
+                                let response_was_dropped = response.send(Ok(message.clone())).is_err();
+                                if response_was_dropped {
+                                    if let TunnelControlMessage::DesktopReady { attempt_id } = message {
+                                        conn.send(&TunnelControlMessage::DesktopStop {
+                                            attempt_id: attempt_id.clone(),
+                                            reason: "desktop_start_request_expired".to_string(),
+                                        }).await.context("failed to clean up expired desktop start")?;
+                                        let (ignored_tx, _ignored_rx) = oneshot::channel();
+                                        pending_desktop = Some((attempt_id, ignored_tx));
+                                    }
+                                }
+                            }
+                            Some((pending_id, response)) => {
+                                let error = format!("desktop_response_attempt_mismatch: expected {pending_id}, received {response_attempt_id}");
+                                let _ = response.send(Err(error.clone()));
+                                return Err(anyhow!(error));
+                            }
+                            None => return Err(anyhow!("unexpected desktop response for attempt {response_attempt_id}")),
+                        }
+                    }
+                    Some(TunnelControlMessage::Pong { ts }) => {
+                        let Some((expected_ts, started)) = pending_ping.take() else {
+                            return Err(anyhow!("unexpected health pong: {ts}"));
+                        };
+                        if ts != expected_ts {
+                            return Err(anyhow!("health pong timestamp mismatch: expected {expected_ts}, received {ts}"));
+                        }
+                        let latency_ms = (started.elapsed().as_secs_f64() * 1000.0)
+                            .round().clamp(0.0, u32::MAX as f64) as u32;
+                        reported_rtt_ms = Some(latency_ms);
                         if let Some(handler) = event_handler {
-                            handler(TunnelHealthEvent::HeartbeatSucceeded { latency_ms: None });
+                            handler(TunnelHealthEvent::HeartbeatSucceeded { latency_ms: Some(latency_ms) });
+                        }
+                        if let Some(request) = pending_local_speed.take() {
+                            let result = run_speed_test_as_client(&mut conn, peer_virtual_ip)
+                                .await.map_err(|e| e.to_string());
+                            speed_test_busy.store(false, std::sync::atomic::Ordering::SeqCst);
+                            let _ = request.response.send(result);
+                        }
+                        if let Some(request_id) = pending_remote_speed.take() {
+                            execute_requested_speed_test(
+                                &mut conn,
+                                peer_virtual_ip,
+                                request_id,
+                                speed_test_busy,
+                            ).await?;
+                            if let Some(handler) = event_handler {
+                                handler(TunnelHealthEvent::HeartbeatSucceeded { latency_ms: None });
+                            }
                         }
                     }
                     Some(other) => {
@@ -413,66 +525,22 @@ async fn active_health_session(
                     }
                 }
             }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+            _ = heartbeat.tick() => {
+                if let Some((_ts, started)) = pending_ping {
+                    if started.elapsed() >= std::time::Duration::from_secs(5) {
+                        return Err(anyhow!("health pong timeout"));
+                    }
+                    continue;
+                }
                 let ts = now_millis();
                 let started = std::time::Instant::now();
                 conn.send(&TunnelControlMessage::Ping { ts, reported_rtt_ms })
                     .await
                     .context("failed to send health ping")?;
-                wait_for_health_pong(
-                    &mut conn,
-                    peer_virtual_ip,
-                    ts,
-                    speed_test_busy,
-                ).await?;
-                let raw_rtt_ms = (started.elapsed().as_secs_f64() * 1000.0)
-                    .round()
-                    .clamp(0.0, u32::MAX as f64) as u32;
-                let latency_ms = raw_rtt_ms;
-                reported_rtt_ms = Some(latency_ms);
-                if let Some(handler) = event_handler {
-                    handler(TunnelHealthEvent::HeartbeatSucceeded {
-                        latency_ms: Some(latency_ms),
-                    });
-                }
+                pending_ping = Some((ts, started));
             }
         }
     }
-}
-
-async fn wait_for_health_pong(
-    conn: &mut TunnelControlConnection<TcpStream>,
-    peer_virtual_ip: &str,
-    expected_ts: i64,
-    speed_test_busy: &Arc<std::sync::atomic::AtomicBool>,
-) -> Result<()> {
-    let mut deferred_speed_request = None;
-    loop {
-        let response = tokio::time::timeout(std::time::Duration::from_secs(5), conn.next())
-            .await
-            .context("health pong timeout")?
-            .context("failed to read health pong")?;
-        match response {
-            Some(TunnelControlMessage::Pong { ts }) if ts == expected_ts => break,
-            Some(TunnelControlMessage::SpeedTestRequest { request_id }) => {
-                if deferred_speed_request.is_some() {
-                    conn.send(&TunnelControlMessage::SpeedTestError {
-                        request_id,
-                        message: "speed test already in progress".to_string(),
-                    })
-                    .await?;
-                } else {
-                    deferred_speed_request = Some(request_id);
-                }
-            }
-            Some(other) => return Err(anyhow!("unexpected health response: {:?}", other)),
-            None => return Err(anyhow!("remote health closed")),
-        }
-    }
-    if let Some(request_id) = deferred_speed_request {
-        execute_requested_speed_test(conn, peer_virtual_ip, request_id, speed_test_busy).await?;
-    }
-    Ok(())
 }
 
 async fn execute_requested_speed_test(
@@ -746,6 +814,71 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
+    #[tokio::test]
+    async fn active_health_session_sends_desktop_start_and_routes_ready() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+        let addr = listener.local_addr().expect("server address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            let mut conn = TunnelControlConnection::new(stream);
+            assert!(matches!(
+                conn.next().await.unwrap(),
+                Some(TunnelControlMessage::Hello { .. })
+            ));
+            conn.send(&TunnelControlMessage::HelloAck {
+                ok: true,
+                protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+                message: "ok".into(),
+            })
+            .await
+            .unwrap();
+            match conn.next().await.unwrap() {
+                Some(TunnelControlMessage::DesktopStart { attempt_id, .. }) => {
+                    conn.send(&TunnelControlMessage::DesktopReady { attempt_id })
+                        .await
+                        .unwrap();
+                }
+                other => panic!("expected desktop start, got {other:?}"),
+            }
+        });
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
+        let (desktop_tx, mut desktop_rx) = mpsc::unbounded_channel();
+        let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session = tokio::spawn(async move {
+            active_health_session(
+                42,
+                &addr.to_string(),
+                &mut stop_rx,
+                &mut speed_rx,
+                &mut desktop_rx,
+                &busy,
+                None,
+            )
+            .await
+        });
+        let (response_tx, response_rx) = oneshot::channel();
+        desktop_tx
+            .send(TunnelDesktopCommand {
+                request: crate::tunnel_control::DesktopControlRequest::Start {
+                    attempt_id: "desktop-1".into(),
+                    session_secret: "secret".into(),
+                    port: 39090,
+                },
+                response: response_tx,
+            })
+            .unwrap();
+        assert_eq!(
+            response_rx.await.unwrap().unwrap(),
+            TunnelControlMessage::DesktopReady {
+                attempt_id: "desktop-1".into()
+            }
+        );
+        server.await.unwrap();
+        let _ = stop_tx.send(true);
+        let _ = session.await;
+    }
+
     #[test]
     fn p2p_open_prefers_generic_vnc_capability() {
         let data: P2POpenData = serde_json::from_value(serde_json::json!({
@@ -823,6 +956,7 @@ mod tests {
 
         let (stop_tx, mut stop_rx) = watch::channel(false);
         let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
+        let (_desktop_tx, mut desktop_rx) = mpsc::unbounded_channel();
         let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = tokio::spawn(async move {
             active_health_session(
@@ -830,6 +964,7 @@ mod tests {
                 &addr.to_string(),
                 &mut stop_rx,
                 &mut speed_rx,
+                &mut desktop_rx,
                 &speed_test_busy,
                 None,
             )
@@ -900,6 +1035,7 @@ mod tests {
 
         let (_stop_tx, mut stop_rx) = watch::channel(false);
         let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
+        let (_desktop_tx, mut desktop_rx) = mpsc::unbounded_channel();
         let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = tokio::spawn(async move {
             active_health_session(
@@ -907,6 +1043,7 @@ mod tests {
                 &addr.to_string(),
                 &mut stop_rx,
                 &mut speed_rx,
+                &mut desktop_rx,
                 &speed_test_busy,
                 None,
             )
@@ -950,6 +1087,7 @@ mod tests {
 
         let (_stop_tx, mut stop_rx) = watch::channel(false);
         let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
+        let (_desktop_tx, mut desktop_rx) = mpsc::unbounded_channel();
         let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let session_busy = speed_test_busy.clone();
         let session = tokio::spawn(async move {
@@ -958,6 +1096,7 @@ mod tests {
                 &addr.to_string(),
                 &mut stop_rx,
                 &mut speed_rx,
+                &mut desktop_rx,
                 &session_busy,
                 None,
             )
