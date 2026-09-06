@@ -16,6 +16,8 @@ ARG HTTPS_PROXY
 ARG GO_VERSION=1.25.13
 ARG NODE_VERSION=22.22.1
 ARG RUST_VERSION=1.94.1
+ARG ZIG_VERSION=0.13.0
+ARG CARGO_ZIGBUILD_VERSION=0.20.1
 ARG GO_DOWNLOAD_BASE=https://go.dev/dl
 ARG NODE_DOWNLOAD_BASE=https://nodejs.org/dist
 
@@ -96,6 +98,25 @@ RUN curl --http1.1 --fail --location --retry 10 --retry-delay 5 \
     && rustc --version \
     && cargo --version \
     && rustfmt --version
+
+# The standalone desktop Engine targets glibc 2.27 independently from this
+# Debian 10/glibc 2.28 builder. Zig provides that explicit ABI baseline.
+RUN case "$(uname -m)" in \
+        x86_64) zig_arch=x86_64 ;; \
+        aarch64) zig_arch=aarch64 ;; \
+        *) echo "Unsupported Zig architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+    && curl --http1.1 --fail --location --retry 10 --retry-delay 5 \
+        --retry-connrefused --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+        "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${zig_arch}-${ZIG_VERSION}.tar.xz" \
+        -o /tmp/zig.tar.xz \
+    && mkdir -p /opt/zig \
+    && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 \
+    && ln -s /opt/zig/zig /usr/local/bin/zig \
+    && rm /tmp/zig.tar.xz \
+    && cargo install cargo-zigbuild --locked --version "${CARGO_ZIGBUILD_VERSION}" \
+    && zig version \
+    && cargo zigbuild --help >/dev/null
 
 # 构建期通过 --build-arg http_proxy 等传入的代理只用于下载工具链，
 # 不固化进运行期环境，保证镜像在任意网络下都可复用。

@@ -46,6 +46,8 @@ Vue                  Active Service            Passive Service            Host E
 - Windows 安装包资源：`resources/p2premote-desktop-engine.exe`。
 - Linux 安装包资源：`resources/p2premote-desktop-engine`，安装 Service 时复制到固定 resources 目录。
 - `P2PREMOTE_DESKTOP_ENGINE_PATH` 只用于开发/测试覆盖二进制路径，不承载秘密。
+- Engine 分平台脚本先生成到 Engine 仓库的 `artifacts/<platform-arch>` 固定目录；桌面客户端分平台打包脚本只复制对应产物。Tauri `build.rs` 不再隐式编译 Engine，缺失产物直接失败。
+- CI 如需覆盖固定目录，只能用 `P2PREMOTE_DESKTOP_ENGINE_ARTIFACT` 指向精确文件，禁止目录扫描和跨架构复用。
 
 ## 关键实现位置
 

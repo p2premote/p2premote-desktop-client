@@ -26,12 +26,22 @@ fi
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 punch_dir="${P2PREMOTE_PUNCH_DIR:-$(cd "$repo_dir/../p2premote-punch" && pwd)}"
 resources_dir="$repo_dir/src-tauri/resources"
+engine_dir="$(cd "$repo_dir/../remoteDesk/remote-desktop-engine" && pwd)"
+engine_build_script="$engine_dir/scripts/build-macos.sh"
+engine_artifact="$engine_dir/artifacts/macos-universal/p2premote-desktop-engine"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/p2premote-macos.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
 for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
 done
+
+mkdir -p "$resources_dir"
+[[ -x "$engine_build_script" ]] || { echo "macOS Engine build script not found or not executable: $engine_build_script" >&2; exit 1; }
+"$engine_build_script"
+[[ -f "$engine_artifact" ]] || { echo "macOS Engine artifact is missing after build: $engine_artifact" >&2; exit 1; }
+cp "$engine_artifact" "$resources_dir/p2premote-desktop-engine"
+chmod 755 "$resources_dir/p2premote-desktop-engine"
 
 rustup target add x86_64-apple-darwin aarch64-apple-darwin
 mkdir -p "$resources_dir" "$build_dir/x86_64" "$build_dir/arm64"
@@ -81,6 +91,8 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
     --sign "$APPLE_SIGNING_IDENTITY" "$resources_dir/p2premote-service"
   codesign --force --timestamp --options runtime \
     --sign "$APPLE_SIGNING_IDENTITY" "$resources_dir/p2premote-cli"
+  codesign --force --timestamp --options runtime \
+    --sign "$APPLE_SIGNING_IDENTITY" "$resources_dir/p2premote-desktop-engine"
 else
   echo "APPLE_SIGNING_IDENTITY is required for a distributable Developer ID build." >&2
   exit 1
@@ -105,7 +117,7 @@ fi
 app_path="$(find "$repo_dir/target/universal-apple-darwin/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
 if [[ -n "$app_path" ]]; then
   lipo "$app_path/Contents/MacOS/p2pRemote" -verify_arch x86_64 arm64
-  for artifact in p2premote-service p2premote-cli libp2premote-punch.dylib; do
+  for artifact in p2premote-service p2premote-cli p2premote-desktop-engine libp2premote-punch.dylib; do
     lipo "$app_path/Contents/Resources/resources/$artifact" -verify_arch x86_64 arm64
   done
   test -f "$app_path/Contents/Library/LaunchDaemons/top.p2premote.service.plist"

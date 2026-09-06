@@ -68,6 +68,22 @@ $punchSource = Join-Path $projectRoot '..\p2premote-punch'
 if (-not (Test-Path -LiteralPath $punchSource -PathType Container)) {
     throw "p2premote-punch source directory not found: $punchSource"
 }
+$engineRoot = Join-Path $projectRoot '..\remoteDesk\remote-desktop-engine'
+$engineBuildScript = Join-Path $engineRoot 'scripts\build-windows.ps1'
+$engineArtifact = Join-Path $engineRoot 'artifacts\windows-x86_64\p2premote-desktop-engine.exe'
+if (-not (Test-Path -LiteralPath $engineBuildScript -PathType Leaf)) {
+    throw "Windows Engine build script not found: $engineBuildScript"
+}
+& $engineBuildScript
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows Engine build script failed with exit code $LASTEXITCODE"
+}
+if (-not (Test-Path -LiteralPath $engineArtifact -PathType Leaf)) {
+    throw "Windows Engine artifact is missing after build: $engineArtifact"
+}
+$engineResource = Join-Path $projectRoot 'src-tauri\resources\p2premote-desktop-engine.exe'
+Copy-Item -LiteralPath $engineArtifact -Destination $engineResource -Force
+Write-Host "Copied Windows Engine resource: $engineResource"
 $previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
 $previousPunchDir = $env:P2PREMOTE_PUNCH_DIR
 $env:P2PREMOTE_CLIENT_VERSION = $buildVersion

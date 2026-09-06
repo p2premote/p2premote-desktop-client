@@ -93,6 +93,7 @@ OUT_DIR="$APP_DIR/build/linux/headless"
 DIST_DIR="$APP_DIR/build/linux/dist/headless"
 PUNCH_LIB="$APP_DIR/src-tauri/resources/libp2premote-punch.a"
 PUNCH_SOURCE_DIR="$REPO_ROOT/../p2premote-punch"
+ENGINE_SOURCE_DIR="$REPO_ROOT/../remoteDesk/remote-desktop-engine"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
 WG_CLI="$OUT_DIR/wg"
 if [[ -z "$TARGET_ARCH" ]]; then
@@ -100,12 +101,14 @@ if [[ -z "$TARGET_ARCH" ]]; then
 fi
 case "$TARGET_ARCH" in
   aarch64|arm64)
+    ENGINE_ARCH="aarch64"
     LINUX_ARCH="arm64"
     TARGET_LABEL="aarch64-linux-gnu"
     DEB_ARCH="arm64"
     RPM_ARCH="aarch64"
     ;;
   x86_64|amd64)
+    ENGINE_ARCH="x86_64"
     LINUX_ARCH="amd64"
     TARGET_LABEL="x86_64-linux-gnu"
     DEB_ARCH="amd64"
@@ -116,6 +119,8 @@ case "$TARGET_ARCH" in
     exit 1
     ;;
 esac
+ENGINE_BUILD_SCRIPT="$ENGINE_SOURCE_DIR/scripts/build-linux.sh"
+ENGINE_ARTIFACT="$ENGINE_SOURCE_DIR/artifacts/linux-${ENGINE_ARCH}/p2premote-desktop-engine"
 DOCKER_PLATFORM="linux/${LINUX_ARCH}"
 
 # Headless 产物必须携带固定的 glibc 基线（Debian 10 / GLIBC_2.28），
@@ -180,6 +185,17 @@ fi
 
 if [[ ! -d "$PUNCH_SOURCE_DIR" ]]; then
   echo "p2premote-punch source directory not found: $PUNCH_SOURCE_DIR" >&2
+  exit 1
+fi
+if [[ ! -x "$ENGINE_BUILD_SCRIPT" ]]; then
+  echo "Linux Engine build script not found or not executable: $ENGINE_BUILD_SCRIPT" >&2
+  exit 1
+fi
+
+echo "==> Building standalone desktop Engine"
+"$ENGINE_BUILD_SCRIPT" --arch "$ENGINE_ARCH"
+if [[ ! -f "$ENGINE_ARTIFACT" ]]; then
+  echo "Linux Engine artifact is missing after build: $ENGINE_ARTIFACT" >&2
   exit 1
 fi
 
@@ -248,6 +264,7 @@ prepare_prefix_root() {
   mkdir -p "$root/resources/web"
   cp "$release_dir/p2premote-service" "$root/resources/p2premote-service"
   cp "$release_dir/p2premote-cli" "$root/resources/p2premote-cli"
+  cp "$ENGINE_ARTIFACT" "$root/resources/p2premote-desktop-engine"
   cp "$WIREGUARD_GO" "$root/resources/wireguard-go"
   cp "$WG_CLI" "$root/resources/wg"
   cp "$APP_DIR/src-tauri/resources/.p2premote_default.json" "$root/resources/.p2premote_default.json"
@@ -259,7 +276,7 @@ prepare_prefix_root() {
   cp "$APP_DIR/packaging/linux/headless/scripts/install-gui.sh" "$root/install-gui.sh"
   cp "$APP_DIR/packaging/linux/headless/scripts/install-p2premote.desktop" "$root/安装-p2pRemote.desktop"
   cp "$APP_DIR/packaging/linux/headless/scripts/uninstall-service.sh" "$root/uninstall-service.sh"
-  chmod 755 "$root/resources/p2premote-service" "$root/resources/p2premote-cli" "$root/resources/wireguard-go" "$root/resources/wg" "$root/resources/configure-installation" "$root/resources/configure-kysec"
+  chmod 755 "$root/resources/p2premote-service" "$root/resources/p2premote-cli" "$root/resources/p2premote-desktop-engine" "$root/resources/wireguard-go" "$root/resources/wg" "$root/resources/configure-installation" "$root/resources/configure-kysec"
   chmod 755 "$root/install-service.sh" "$root/install-gui.sh" "$root/安装-p2pRemote.desktop" "$root/uninstall-service.sh"
   chmod 644 "$root/resources/.p2premote_default.json" "$root/p2premote-service.service"
   find "$root/resources/web" -type d -exec chmod 755 {} +
