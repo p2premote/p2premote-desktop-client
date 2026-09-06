@@ -1,11 +1,11 @@
-# 独立远程桌面 Engine 的桌面客户端集成
+# 独立 p2premote-desktop 的桌面客户端集成
 
 ## 产品边界
 
 - “远程桌面”始终启动独立原生窗口；Vue 页面只发命令、显示成功或精确错误，不传递视频帧、键鼠或剪贴板数据。
 - WGVPN 和桌面会话是两层生命周期：隧道可以独立存在；只有用户点击内置远程桌面后才启动 Host/Controller。
 - 不调用 mstc，不检查 Windows RDP Edition，不复制 RDP 地址，不自动切换 RDP/VNC/GDI/Raw 等方案。
-- 单文件超过 100 MiB、视频背压丢弃旧帧、相同剪贴板不重发是明确策略；其余错误全部结构化失败。
+- 新组件基于完整 RustDesk 捕获、输入、剪贴板、编解码和窗口生命周期；p2premote 不链接其源码。
 
 ## 信令顺序
 
@@ -15,11 +15,11 @@ Vue                  Active Service            Passive Service            Host E
  |------------------------->| validate WGVPN/control |                         |                    |
  |                          | DesktopStart(v4, id, secret, 39090)              |                    |
 |                          |==== WGVPN health/control TCP ====================>| validate peer IP  |
- |                          |                         | host-user-session       |                    |
+ |                          |                         | session-helper host     |                    |
  |                          |                         |------------------------>|                    |
- |                          |                         |<----------- HostReady --|                    |
+ |                          |                         |<---------- host_ready --|                    |
  |                          |<== DesktopReady =========|                         |                    |
- |                          | controller-user-session |                         |                    |
+ |                          | session-helper connect  |                         |                    |
  |                          |--------------------------------------------------------------->|
  |                          |<-------------------------------- FirstFrame + Streaming --------|
  |<-- success (native) -----|                         |                         |                    |
@@ -29,25 +29,24 @@ Vue                  Active Service            Passive Service            Host E
 
 ## 本地进程管理
 
-- `remote-engine-manager` 校验 Engine 路径与 SessionConfig，通过 stdin 一次性写配置，通过 stdout 读取 NDJSON 事件，stderr 独立排空。
-- Host 必须在 30 秒内到达 `HostReady`；Controller 必须在 30 秒内完成首帧并到达 `Streaming`。
-- 监督线程每 200 ms 响应停止，同时检查 Engine 退出和终态事件。
-- 优雅停止期限为 5 秒；超时后终止并回收进程。启动中任一步失败也立即终止并回收，禁止孤儿进程。
+- Service 只启动 `p2premote-desktop-session-helper.exe -- host/connect ... --machine-readable`，逐行读取 stdout JSON，stderr 独立排空。
+- Host 必须在 30 秒内到达 `host_ready`；Controller 必须在 30 秒内收到首帧并到达 `streaming`。
+- 监督线程每 200 ms 响应停止，同时检查组件退出和终态事件；协议错误、进程退出及超时均返回稳定错误码。
+- Helper 使用 Windows Job Object；Service 终止 Helper 时，当前用户 Session 中的主程序同步退出并被回收，不允许孤儿进程。
 - Service 停隧道、登出和整体退出前先停止所有关联 Engine。
 
 ## 图形 Session
 
-- Windows：Service 运行于 LocalSystem。`*-user-session` 使用 WTS 活动 console token、用户环境和 `CreateProcessAsUserW` 在 `winsta0\\default` 创建真实 Engine，并继承管理管道。
-- Linux：root Service 的 `*-user-session` 通过 logind 选择唯一活动本地 X11 Session，从同 UID 进程环境验证唯一 `DISPLAY/XAUTHORITY/XDG_RUNTIME_DIR`，校验文件所有者、执行 initgroups/setgid/setuid 后运行。Wayland、无 Session 或多 Session 均明确失败。
-- macOS：当前 Service user-session 调度仍未接入；调用会返回 `service_session_launcher_unsupported`，不冒充支持。
+- Windows：Service 运行于 LocalSystem。Session Helper 只接受唯一 `WTSActive` 会话，使用用户 token、用户环境和 `CreateProcessAsUserW` 在 `winsta0\\default` 创建组件；没有活动会话或存在多个活动会话均明确失败。
+- Linux/macOS：首期不提供新组件；调用明确返回 `desktop_platform_unsupported`，不运行旧 Engine 兜底。
 
 ## 安装资源
 
-- Windows 安装包资源：`resources/p2premote-desktop-engine.exe`。
-- Linux 安装包资源：`resources/p2premote-desktop-engine`，安装 Service 时复制到固定 resources 目录。
-- `P2PREMOTE_DESKTOP_ENGINE_PATH` 只用于开发/测试覆盖二进制路径，不承载秘密。
-- Engine 分平台脚本先生成到 Engine 仓库的 `artifacts/<platform-arch>` 固定目录；桌面客户端分平台打包脚本只复制对应产物。Tauri `build.rs` 不再隐式编译 Engine，缺失产物直接失败。
-- CI 如需覆盖固定目录，只能用 `P2PREMOTE_DESKTOP_ENGINE_ARTIFACT` 指向精确文件，禁止目录扫描和跨架构复用。
+- 独立仓库固定产物目录：`remoteDesk/p2premote-desktop/dist/windows-x64-release`。
+- Windows 安装包复制整个运行目录到 `resources/p2premote-desktop/`，不能只复制 exe。
+- `P2PREMOTE_DESKTOP_SESSION_HELPER_PATH` 只用于开发/测试覆盖 Helper 精确路径。
+- `P2PREMOTE_DESKTOP_ARTIFACT_DIR` 仅供 CI 覆盖固定产物目录；缺少主程序或 Helper 时构建立即失败。
+- Linux/macOS 安装包不再包含旧自研 Engine。
 
 ## 关键实现位置
 
@@ -60,7 +59,6 @@ Vue                  Active Service            Passive Service            Host E
 
 ## 尚需实机证明的门槛
 
-1. 安装后的 Windows LocalSystem Service 能通过 WTS 启动 Host 和 Controller，并由 Job/生命线完整回收。
-2. 安装后的 Ubuntu 18.04 root systemd Service 能自动降权启动两种角色。
-3. 双向画面、鼠标、键盘、Unicode 文本剪贴板、文件剪贴板、连续多帧和断线重连。
-4. Controller 错误只在客户端状态/UI 展示；Vue 永不创建远程画面窗口。
+1. 安装后的 Windows LocalSystem Service 能通过 Helper 启动 Host 和 Controller，并由 Job 完整回收。
+2. Windows 双机验证双向画面、鼠标、键盘、Unicode 文本剪贴板、文件剪贴板、连续多帧和断线重连。
+3. Controller 错误只在客户端状态/UI 展示；Vue 永不创建远程画面窗口。

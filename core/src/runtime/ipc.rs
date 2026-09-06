@@ -396,10 +396,26 @@ pub(super) async fn handle_data(
         Data::StopActiveTunnelJob { target_device_id } => {
             stop_active_tunnel_job(shared, target_device_id)
         }
-        Data::StartDesktopSession { peer_device_id } => Some(response_from_result(
-            desktop_engine::start_active_desktop_session(shared, peer_device_id).await,
-            |value| value,
-        )),
+        Data::StartDesktopSession { peer_device_id } => {
+            let started = Instant::now();
+            info!(
+                peer_device_id,
+                "[Desktop] service received StartDesktopSession"
+            );
+            let result = desktop_engine::start_active_desktop_session(shared, peer_device_id).await;
+            match &result {
+                Ok(_) => info!(
+                    peer_device_id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "[Desktop] service completed StartDesktopSession"
+                ),
+                Err(error) => {
+                    error!(peer_device_id, elapsed_ms = started.elapsed().as_millis(), error = %error,
+                    "[Desktop] service failed StartDesktopSession")
+                }
+            }
+            Some(response_from_result(result, |value| value))
+        }
         Data::StopDesktopSession { peer_device_id } => Some(response_from_result(
             desktop_engine::stop_desktop_session(shared, peer_device_id, "user_requested").await,
             |_| serde_json::json!({ "peer_device_id": peer_device_id }),

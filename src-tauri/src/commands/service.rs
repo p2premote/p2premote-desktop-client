@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 use p2premote_core::config::{
     default_service_binary_name, machine_config_path, machine_log_dir, platform_executable_name,
@@ -689,7 +689,19 @@ pub async fn stop_service_active_tunnel(
 pub async fn start_service_desktop_session(
     peer_device_id: i64,
 ) -> Result<serde_json::Value, String> {
-    match send_command_responsive(Data::StartDesktopSession { peer_device_id }).await? {
+    let started = std::time::Instant::now();
+    info!(
+        peer_device_id,
+        "[Desktop] GUI requested desktop session start"
+    );
+    let response = send_command_responsive(Data::StartDesktopSession { peer_device_id })
+        .await
+        .map_err(|error_message| {
+            error!(peer_device_id, elapsed_ms = started.elapsed().as_millis(), error = %error_message,
+                "[Desktop] service IPC request failed");
+            error_message
+        })?;
+    let result = match response {
         Data::CommandResponse {
             ok: true,
             data: Some(data),
@@ -700,7 +712,19 @@ pub async fn start_service_desktop_session(
         }
         Data::CommandResponse { message, .. } => Err(message),
         other => Err(format!("unexpected service response: {other:?}")),
+    };
+    match &result {
+        Ok(_) => info!(
+            peer_device_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            "[Desktop] desktop session start succeeded"
+        ),
+        Err(error_message) => {
+            error!(peer_device_id, elapsed_ms = started.elapsed().as_millis(), error = %error_message,
+            "[Desktop] desktop session start failed")
+        }
     }
+    result
 }
 
 #[tauri::command]

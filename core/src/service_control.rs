@@ -743,7 +743,7 @@ fn install_prefix_binaries(service_executable_path: &Path) -> Result<PathBuf> {
     let source_dir = service_executable_path
         .parent()
         .ok_or_else(|| anyhow!("failed to resolve service executable directory"))?;
-    for binary in ["p2premote-cli", "p2premote-desktop-engine"] {
+    for binary in ["p2premote-cli"] {
         let source = source_dir.join(binary);
         let target = resources_dir.join(binary);
         copy_or_keep(&source, &target, binary)?;

@@ -13,7 +13,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../core/Cargo.toml");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PUNCH_DIR");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PREBUILT_RESOURCES");
-    println!("cargo:rerun-if-env-changed=P2PREMOTE_DESKTOP_ENGINE_ARTIFACT");
+    println!("cargo:rerun-if-env-changed=P2PREMOTE_DESKTOP_ARTIFACT_DIR");
 
     emit_macos_rpath();
 
@@ -44,10 +44,18 @@ fn validate_prebuilt_resources() {
         main_binary_name("p2premote-service", &target_os),
         main_binary_name("p2premote-cli", &target_os),
         punch_library_name(&target_os),
-        main_binary_name("p2premote-desktop-engine", &target_os),
     ];
     if target_os == "windows" {
         required.push(main_binary_name("p2premote-notifier", &target_os));
+        for name in [
+            "p2premote-desktop/p2premote-desktop.exe",
+            "p2premote-desktop/p2premote-desktop-session-helper.exe",
+        ] {
+            let path = resources_dir.join(name);
+            if !path.is_file() {
+                panic!("required prebuilt resource is missing: {}", path.display());
+            }
+        }
     }
     for name in required {
         let path = resources_dir.join(&name);
@@ -329,31 +337,61 @@ fn copy_desktop_engine_into_resources() {
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let resources_dir = manifest_dir.join("resources");
     let (target_os, target_arch) = parse_target();
-    let binary_name = main_binary_name("p2premote-desktop-engine", &target_os);
-    let artifact_label = match (target_os.as_str(), target_arch.as_str()) {
-        ("windows", "amd64") => "windows-x86_64",
-        ("linux", "amd64") => "linux-x86_64",
-        ("linux", "arm64") => "linux-aarch64",
-        ("macos", "amd64" | "arm64") => "macos-universal",
-        _ => panic!("no packaged desktop Engine artifact is defined for {target_os}/{target_arch}"),
-    };
-    let source = env::var_os("P2PREMOTE_DESKTOP_ENGINE_ARTIFACT")
+    if target_os != "windows" {
+        return;
+    }
+    if target_arch != "amd64" {
+        panic!("p2premote-desktop currently supports Windows amd64 only");
+    }
+    let source = env::var_os("P2PREMOTE_DESKTOP_ARTIFACT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            manifest_dir
-                .join("../../remoteDesk/remote-desktop-engine/artifacts")
-                .join(artifact_label)
-                .join(&binary_name)
+            manifest_dir.join("../../remoteDesk/p2premote-desktop/dist/windows-x64-release")
         });
-    if !source.is_file() {
+    if !source.is_dir() {
         panic!(
-            "desktop Engine artifact not found for {target_os}/{target_arch}: {}; run the matching remote-desktop-engine/scripts/build-* script first",
+            "p2premote-desktop artifact directory not found: {}; run remoteDesk/p2premote-desktop/scripts/build-windows.ps1 first",
             source.display()
         );
     }
-    println!("cargo:rerun-if-changed={}", source.display());
-    let target = resources_dir.join(&binary_name);
-    copy_built_file(&source, &target, &resources_dir, &binary_name);
+    for required in [
+        "p2premote-desktop.exe",
+        "p2premote-desktop-session-helper.exe",
+    ] {
+        if !source.join(required).is_file() {
+            panic!(
+                "required desktop artifact is missing: {}",
+                source.join(required).display()
+            );
+        }
+    }
+    let target = resources_dir.join("p2premote-desktop");
+    copy_directory(&source, &target);
+}
+
+fn copy_directory(source: &Path, target: &Path) {
+    fs::create_dir_all(target)
+        .unwrap_or_else(|err| panic!("failed to create {}: {}", target.display(), err));
+    for entry in fs::read_dir(source)
+        .unwrap_or_else(|err| panic!("failed to read {}: {}", source.display(), err))
+    {
+        let entry = entry.unwrap_or_else(|err| panic!("failed to read directory entry: {err}"));
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory(&source_path, &target_path);
+        } else {
+            println!("cargo:rerun-if-changed={}", source_path.display());
+            fs::copy(&source_path, &target_path).unwrap_or_else(|err| {
+                panic!(
+                    "failed to copy {} to {}: {}",
+                    source_path.display(),
+                    target_path.display(),
+                    err
+                )
+            });
+        }
+    }
 }
 
 fn ensure_executable(path: &Path) {

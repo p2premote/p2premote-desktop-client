@@ -1,10 +1,11 @@
 use super::*;
 use crate::tunnel_control::{DesktopControlRequest, TunnelControlMessage, TunnelDesktopCommand};
-use p2premote_remote_engine_manager::{EngineManager, EngineProcess, EngineRole};
-use p2premote_remote_engine_protocol::{EngineEvent, EngineFailure, SessionConfig};
+use serde::Deserialize;
 use std::{
-    path::PathBuf,
-    sync::mpsc as std_mpsc,
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::mpsc::{self as std_mpsc, Receiver},
     thread::{self, JoinHandle},
 };
 use uuid::Uuid;
@@ -13,6 +14,426 @@ const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
 const ENGINE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const ENGINE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const DESKTOP_PORT: u16 = 39090;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum EngineStage {
+    Configuration,
+    SessionDiscovery,
+    Bind,
+    Accept,
+    Connect,
+    Authentication,
+    FirstFrame,
+    Streaming,
+    Shutdown,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct EngineFailure {
+    pub(super) code: String,
+    pub(super) stage: EngineStage,
+    pub(super) message: String,
+    pub(super) platform_detail: Option<String>,
+}
+
+impl EngineFailure {
+    fn new(code: impl Into<String>, stage: EngineStage, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            stage,
+            message: message.into(),
+            platform_detail: None,
+        }
+    }
+
+    fn io(
+        code: &'static str,
+        stage: EngineStage,
+        context: &'static str,
+        error: std::io::Error,
+    ) -> Self {
+        let platform_detail = format!(
+            "kind={:?}, raw_os_error={:?}",
+            error.kind(),
+            error.raw_os_error()
+        );
+        let mut failure = Self::new(code, stage, format!("{context}: {error}"));
+        failure.platform_detail = Some(platform_detail);
+        failure
+    }
+}
+
+impl std::fmt::Display for EngineFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} at {:?}: {}{}",
+            self.code,
+            self.stage,
+            self.message,
+            self.platform_detail
+                .as_deref()
+                .map(|detail| format!(" ({detail})"))
+                .unwrap_or_default()
+        )
+    }
+}
+
+impl std::error::Error for EngineFailure {}
+
+#[derive(Clone, Debug)]
+pub(super) enum EngineEvent {
+    Starting,
+    HostReady,
+    Connecting,
+    Streaming,
+    Stopped,
+}
+
+#[derive(Debug)]
+pub(super) struct SessionConfig {
+    attempt_id: String,
+    peer_device_id: i64,
+    local_virtual_ip: String,
+    peer_virtual_ip: String,
+    port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopCliEvent {
+    event: String,
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    error_code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    platform_error: Option<String>,
+}
+
+struct DesktopCliProcess {
+    child: Child,
+    events: Receiver<Result<EngineEvent, EngineFailure>>,
+}
+
+impl DesktopCliProcess {
+    fn start(
+        session_helper: &Path,
+        role: DesktopEngineRole,
+        config: &SessionConfig,
+    ) -> Result<Self, EngineFailure> {
+        let address = match role {
+            DesktopEngineRole::Host => format!("{}:{}", config.local_virtual_ip, config.port),
+            DesktopEngineRole::Controller => {
+                format!("{}:{}", config.peer_virtual_ip, config.port)
+            }
+        };
+        let mut command = Command::new(session_helper);
+        command.arg("--");
+        match role {
+            DesktopEngineRole::Host => {
+                command.args(["host", "--listen", &address, "--machine-readable"]);
+            }
+            DesktopEngineRole::Controller => {
+                command.args(["connect", "--address", &address, "--machine-readable"]);
+            }
+        }
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                EngineFailure::io(
+                    "desktop_process_spawn_failed",
+                    EngineStage::SessionDiscovery,
+                    "spawn p2premote desktop session helper",
+                    error,
+                )
+            })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            cleanup_cli_start(
+                &mut child,
+                EngineFailure::new(
+                    "desktop_stdout_unavailable",
+                    EngineStage::Configuration,
+                    "desktop process stdout was not piped",
+                ),
+            )
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            cleanup_cli_start(
+                &mut child,
+                EngineFailure::new(
+                    "desktop_stderr_unavailable",
+                    EngineStage::Configuration,
+                    "desktop process stderr was not piped",
+                ),
+            )
+        })?;
+        let (event_tx, event_rx) = std_mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let event = match line {
+                    Ok(line) => decode_cli_event(&line),
+                    Err(error) => Err(EngineFailure::io(
+                        "desktop_event_read_failed",
+                        EngineStage::Streaming,
+                        "read p2premote desktop event",
+                        error,
+                    )),
+                };
+                if event_tx.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                match line {
+                    Ok(line) => warn!(message = %line, "[p2pRemoteDesktop] stderr"),
+                    Err(error) => {
+                        error!(error = %error, "[p2pRemoteDesktop] stderr read failed");
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            events: event_rx,
+        })
+    }
+
+    fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    fn poll_event(&mut self, timeout: Duration) -> Result<Option<EngineEvent>, EngineFailure> {
+        match self.events.recv_timeout(timeout) {
+            Ok(result) => result.map(Some),
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                match self.child.try_wait().map_err(|error| {
+                    EngineFailure::io(
+                        "desktop_process_wait_failed",
+                        EngineStage::Streaming,
+                        "query p2premote desktop process",
+                        error,
+                    )
+                })? {
+                    Some(status) => Err(EngineFailure::new(
+                        "desktop_process_exited",
+                        EngineStage::Streaming,
+                        format!("p2premote desktop exited with {status}"),
+                    )),
+                    None => Ok(None),
+                }
+            }
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => Err(EngineFailure::new(
+                "desktop_event_channel_closed",
+                EngineStage::Streaming,
+                "p2premote desktop event channel closed",
+            )),
+        }
+    }
+
+    fn next_event(&mut self, timeout: Duration) -> Result<EngineEvent, EngineFailure> {
+        self.poll_event(timeout)?.ok_or_else(|| {
+            EngineFailure::new(
+                "desktop_event_timeout",
+                EngineStage::Streaming,
+                format!("no p2premote desktop event within {timeout:?}"),
+            )
+        })
+    }
+
+    fn wait_for_host_ready(&mut self, timeout: Duration) -> Result<(), EngineFailure> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(EngineFailure::new(
+                    "host_ready_timeout",
+                    EngineStage::Bind,
+                    format!("host was not ready within {timeout:?}"),
+                ));
+            }
+            let event = self.next_event(remaining).map_err(|error| {
+                if error.code == "desktop_event_timeout" {
+                    EngineFailure::new(
+                        "host_ready_timeout",
+                        EngineStage::Bind,
+                        format!("host was not ready within {timeout:?}"),
+                    )
+                } else {
+                    error
+                }
+            })?;
+            match event {
+                EngineEvent::Starting => {}
+                EngineEvent::HostReady => return Ok(()),
+                other => {
+                    return Err(EngineFailure::new(
+                        "unexpected_desktop_event",
+                        EngineStage::Bind,
+                        format!("expected host_ready, received {other:?}"),
+                    ))
+                }
+            }
+        }
+    }
+
+    fn wait_for_streaming(&mut self, timeout: Duration) -> Result<(), EngineFailure> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(EngineFailure::new(
+                    "controller_streaming_timeout",
+                    EngineStage::FirstFrame,
+                    format!("controller did not reach streaming within {timeout:?}"),
+                ));
+            }
+            let event = self.next_event(remaining).map_err(|error| {
+                if error.code == "desktop_event_timeout" {
+                    EngineFailure::new(
+                        "controller_streaming_timeout",
+                        EngineStage::FirstFrame,
+                        format!("controller did not reach streaming within {timeout:?}"),
+                    )
+                } else {
+                    error
+                }
+            })?;
+            match event {
+                EngineEvent::Connecting | EngineEvent::Starting => {}
+                EngineEvent::Streaming => return Ok(()),
+                other => {
+                    return Err(EngineFailure::new(
+                        "unexpected_desktop_event",
+                        EngineStage::FirstFrame,
+                        format!("expected streaming, received {other:?}"),
+                    ))
+                }
+            }
+        }
+    }
+
+    fn stop(mut self, _reason: impl Into<String>, timeout: Duration) -> Result<(), EngineFailure> {
+        self.child.kill().map_err(|error| {
+            EngineFailure::io(
+                "desktop_process_terminate_failed",
+                EngineStage::Shutdown,
+                "terminate p2premote desktop session helper",
+                error,
+            )
+        })?;
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self
+                .child
+                .try_wait()
+                .map_err(|error| {
+                    EngineFailure::io(
+                        "desktop_process_wait_failed",
+                        EngineStage::Shutdown,
+                        "query terminated p2premote desktop session helper",
+                        error,
+                    )
+                })?
+                .is_some()
+            {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Err(EngineFailure::new(
+            "desktop_process_stop_timeout",
+            EngineStage::Shutdown,
+            format!("desktop session helper did not exit within {timeout:?}"),
+        ))
+    }
+}
+
+impl Drop for DesktopCliProcess {
+    fn drop(&mut self) {
+        match self.child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if let Err(error) = self.child.kill() {
+                    error!(error = %error, "[p2pRemoteDesktop] process cleanup kill failed");
+                }
+                if let Err(error) = self.child.wait() {
+                    error!(error = %error, "[p2pRemoteDesktop] process cleanup reap failed");
+                }
+            }
+            Err(error) => {
+                error!(error = %error, "[p2pRemoteDesktop] process cleanup status failed");
+            }
+        }
+    }
+}
+
+fn decode_cli_event(line: &str) -> Result<EngineEvent, EngineFailure> {
+    let event = serde_json::from_str::<DesktopCliEvent>(line).map_err(|error| {
+        EngineFailure::new(
+            "desktop_protocol_error",
+            EngineStage::Configuration,
+            format!("decode desktop event: {error}; payload={line:?}"),
+        )
+    })?;
+    match event.event.as_str() {
+        "starting" => Ok(EngineEvent::Starting),
+        "host_ready" => Ok(EngineEvent::HostReady),
+        "connecting" => Ok(EngineEvent::Connecting),
+        "streaming" => Ok(EngineEvent::Streaming),
+        "stopped" => Ok(EngineEvent::Stopped),
+        "failed" => Err(cli_failure(event)),
+        other => Err(EngineFailure::new(
+            "desktop_protocol_error",
+            EngineStage::Configuration,
+            format!("unknown desktop event: {other}"),
+        )),
+    }
+}
+
+fn cli_failure(event: DesktopCliEvent) -> EngineFailure {
+    let stage = match event.stage.as_deref() {
+        Some("bind") => EngineStage::Bind,
+        Some("accept") => EngineStage::Accept,
+        Some("handshake") | Some("authentication") => EngineStage::Authentication,
+        Some("connect") => EngineStage::Connect,
+        Some("streaming") => EngineStage::Streaming,
+        Some("shutdown") => EngineStage::Shutdown,
+        _ => EngineStage::Configuration,
+    };
+    let mut failure = EngineFailure::new(
+        event
+            .error_code
+            .unwrap_or_else(|| "desktop_failed".to_owned()),
+        stage,
+        event
+            .message
+            .unwrap_or_else(|| "p2premote desktop reported an unspecified failure".to_owned()),
+    );
+    failure.platform_detail = event.platform_error;
+    failure
+}
+
+fn cleanup_cli_start(child: &mut Child, mut failure: EngineFailure) -> EngineFailure {
+    let mut cleanup = Vec::new();
+    if let Err(error) = child.kill() {
+        cleanup.push(format!("kill failed: {error}"));
+    }
+    if let Err(error) = child.wait() {
+        cleanup.push(format!("reap failed: {error}"));
+    }
+    if !cleanup.is_empty() {
+        failure.platform_detail = Some(cleanup.join("; "));
+    }
+    failure
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DesktopEngineRole {
@@ -91,7 +512,7 @@ impl DesktopEngineTask {
             Err(std_mpsc::TryRecvError::Empty) => Ok(None),
             Err(std_mpsc::TryRecvError::Disconnected) => Err(EngineFailure::new(
                 "engine_supervisor_closed",
-                p2premote_remote_engine_protocol::EngineStage::Streaming,
+                EngineStage::Streaming,
                 "desktop engine supervisor exited without a terminal event",
             )),
         }
@@ -103,26 +524,23 @@ impl DesktopEngineTask {
             worker.join().map_err(|_| {
                 EngineFailure::new(
                     "engine_supervisor_panicked",
-                    p2premote_remote_engine_protocol::EngineStage::Shutdown,
+                    EngineStage::Shutdown,
                     "desktop engine supervisor panicked while stopping",
                 )
             })?;
         }
         match self.outcome_rx.try_recv() {
-            Ok(Ok(EngineEvent::Stopped { .. })) => Ok(()),
-            Ok(Ok(EngineEvent::Failed { failure, .. })) if is_expected_peer_close(&failure) => {
-                Ok(())
-            }
+            Ok(Ok(EngineEvent::Stopped)) => Ok(()),
             Ok(Ok(other)) => Err(EngineFailure::new(
                 "unexpected_engine_event",
-                p2premote_remote_engine_protocol::EngineStage::Shutdown,
+                EngineStage::Shutdown,
                 format!("expected stopped event, received {other:?}"),
             )),
             Ok(Err(error)) if is_expected_peer_close(&error) => Ok(()),
             Ok(Err(error)) => Err(error),
             Err(error) => Err(EngineFailure::new(
                 "engine_stop_result_missing",
-                p2premote_remote_engine_protocol::EngineStage::Shutdown,
+                EngineStage::Shutdown,
                 format!("engine supervisor returned no stop result: {error}"),
             )),
         }
@@ -133,7 +551,7 @@ impl DesktopEngineTask {
             worker.join().map_err(|_| {
                 EngineFailure::new(
                     "engine_supervisor_panicked",
-                    p2premote_remote_engine_protocol::EngineStage::Shutdown,
+                    EngineStage::Shutdown,
                     "desktop engine supervisor panicked after reporting its terminal event",
                 )
             })?;
@@ -162,10 +580,13 @@ pub(super) fn start_desktop_engine(
     config: SessionConfig,
 ) -> Result<DesktopEngineTask, EngineFailure> {
     let attempt_id = config.attempt_id.clone();
-    let executable = resolve_engine_executable()?;
-    let manager = EngineManager::current_session(executable);
-    let engine_role = privileged_engine_role(role)?;
-    let mut process = manager.start(engine_role, config)?;
+    let peer_device_id = config.peer_device_id;
+    let session_helper = resolve_desktop_session_helper()?;
+    info!(peer_device_id, attempt_id = %attempt_id, role = ?role, executable = %session_helper.display(),
+        "[DesktopEngine] starting process");
+    let mut process = DesktopCliProcess::start(&session_helper, role, &config)?;
+    info!(peer_device_id, attempt_id = %attempt_id, role = ?role, pid = process.id(),
+        "[DesktopEngine] process spawned");
     match role {
         DesktopEngineRole::Host => {
             process.wait_for_host_ready(ENGINE_START_TIMEOUT)?;
@@ -174,37 +595,31 @@ pub(super) fn start_desktop_engine(
             process.wait_for_streaming(ENGINE_START_TIMEOUT)?;
         }
     }
+    info!(peer_device_id, attempt_id = %attempt_id, role = ?role, pid = process.id(),
+        "[DesktopEngine] startup milestone reached");
     Ok(spawn_supervisor(attempt_id, role, process))
 }
 
 fn spawn_supervisor(
     attempt_id: String,
     role: DesktopEngineRole,
-    mut process: EngineProcess,
+    mut process: DesktopCliProcess,
 ) -> DesktopEngineTask {
     let (stop_tx, stop_rx) = std_mpsc::channel::<String>();
     let (outcome_tx, outcome_rx) = std_mpsc::channel();
-    let worker_attempt_id = attempt_id.clone();
     let worker = thread::spawn(move || loop {
         match stop_rx.try_recv() {
             Ok(reason) => {
-                let result =
-                    process
-                        .stop(reason, ENGINE_STOP_TIMEOUT)
-                        .map(|_| EngineEvent::Stopped {
-                            attempt_id: worker_attempt_id.clone(),
-                            reason: "stop_requested".into(),
-                        });
+                let result = process
+                    .stop(reason, ENGINE_STOP_TIMEOUT)
+                    .map(|_| EngineEvent::Stopped);
                 let _ = outcome_tx.send(result);
                 return;
             }
             Err(std_mpsc::TryRecvError::Disconnected) => {
                 let result = process
                     .stop("supervisor_owner_dropped", ENGINE_STOP_TIMEOUT)
-                    .map(|_| EngineEvent::Stopped {
-                        attempt_id: worker_attempt_id.clone(),
-                        reason: "supervisor_owner_dropped".into(),
-                    });
+                    .map(|_| EngineEvent::Stopped);
                 let _ = outcome_tx.send(result);
                 return;
             }
@@ -212,15 +627,14 @@ fn spawn_supervisor(
         }
         match process.poll_event(ENGINE_POLL_INTERVAL) {
             Ok(None) => {}
-            Ok(Some(event @ EngineEvent::Stopped { .. }))
-            | Ok(Some(event @ EngineEvent::Failed { .. })) => {
+            Ok(Some(event @ EngineEvent::Stopped)) => {
                 let _ = outcome_tx.send(Ok(event));
                 return;
             }
             Ok(Some(event)) => {
                 let _ = outcome_tx.send(Err(EngineFailure::new(
                     "unexpected_engine_event",
-                    p2premote_remote_engine_protocol::EngineStage::Streaming,
+                    EngineStage::Streaming,
                     format!("unexpected post-start event: {event:?}"),
                 )));
                 return;
@@ -240,58 +654,43 @@ fn spawn_supervisor(
     }
 }
 
-fn privileged_engine_role(role: DesktopEngineRole) -> Result<EngineRole, EngineFailure> {
-    #[cfg(any(windows, target_os = "linux"))]
-    {
-        Ok(match role {
-            DesktopEngineRole::Host => EngineRole::HostUserSession,
-            DesktopEngineRole::Controller => EngineRole::ControllerUserSession,
-        })
+fn resolve_desktop_session_helper() -> Result<PathBuf, EngineFailure> {
+    if let Some(path) = std::env::var_os("P2PREMOTE_DESKTOP_SESSION_HELPER_PATH") {
+        return validate_desktop_path(PathBuf::from(path));
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = role;
-        Err(EngineFailure::new(
-            "service_session_launcher_unsupported",
-            p2premote_remote_engine_protocol::EngineStage::SessionDiscovery,
-            "the privileged desktop-engine session launcher is not implemented on this platform",
-        ))
-    }
-}
-
-fn resolve_engine_executable() -> Result<PathBuf, EngineFailure> {
-    if let Some(path) = std::env::var_os("P2PREMOTE_DESKTOP_ENGINE_PATH") {
-        return validate_engine_path(PathBuf::from(path));
-    }
-    #[cfg(target_os = "linux")]
-    let path = crate::config::linux_resources_dir().join("p2premote-desktop-engine");
     #[cfg(windows)]
     let path = std::env::current_exe()
         .ok()
         .and_then(|path| {
-            path.parent()
-                .map(|parent| parent.join("p2premote-desktop-engine.exe"))
+            path.parent().map(|parent| {
+                parent
+                    .join("p2premote-desktop")
+                    .join("p2premote-desktop-session-helper.exe")
+            })
         })
         .ok_or_else(|| {
             EngineFailure::new(
                 "engine_path_resolution_failed",
-                p2premote_remote_engine_protocol::EngineStage::Configuration,
+                EngineStage::Configuration,
                 "cannot resolve the service executable directory",
             )
         })?;
-    #[cfg(target_os = "macos")]
-    let path = crate::config::macos_resources_dir().join("p2premote-desktop-engine");
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-    let path = PathBuf::from("p2premote-desktop-engine");
-    validate_engine_path(path)
+    #[cfg(not(windows))]
+    return Err(EngineFailure::new(
+        "desktop_platform_unsupported",
+        EngineStage::Configuration,
+        "the RustDesk-based desktop component currently supports Windows only",
+    ));
+    #[cfg(windows)]
+    validate_desktop_path(path)
 }
 
-fn validate_engine_path(path: PathBuf) -> Result<PathBuf, EngineFailure> {
+fn validate_desktop_path(path: PathBuf) -> Result<PathBuf, EngineFailure> {
     if !path.is_file() {
         return Err(EngineFailure::new(
-            "engine_not_found",
-            p2premote_remote_engine_protocol::EngineStage::Configuration,
-            format!("desktop engine executable not found: {}", path.display()),
+            "desktop_session_helper_not_found",
+            EngineStage::Configuration,
+            format!("desktop session helper not found: {}", path.display()),
         ));
     }
     Ok(path)
@@ -306,8 +705,12 @@ pub(super) async fn start_active_desktop_session(
         return Err(anyhow!("desktop_controller_requires_active_tunnel"));
     }
     let attempt_id = Uuid::new_v4().to_string();
+    info!(peer_device_id, attempt_id = %attempt_id, peer_virtual_ip = %session.peer_virtual_ip,
+        "[Desktop] active start initialized");
     let reservation = reserve_desktop_start(shared, peer_device_id, &attempt_id)?;
     let session_secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    info!(peer_device_id, attempt_id = %attempt_id, port = DESKTOP_PORT,
+        "[Desktop] sending DesktopStart over tunnel control channel");
     match request_desktop_control(
         shared,
         peer_device_id,
@@ -322,7 +725,9 @@ pub(super) async fn start_active_desktop_session(
     {
         TunnelControlMessage::DesktopReady {
             attempt_id: response_id,
-        } if response_id == attempt_id => {}
+        } if response_id == attempt_id => {
+            info!(peer_device_id, attempt_id = %attempt_id, "[Desktop] received DesktopReady");
+        }
         TunnelControlMessage::DesktopFailed {
             error_code,
             message,
@@ -411,6 +816,8 @@ pub(super) async fn start_passive_desktop_host(
     session_secret: String,
     port: u16,
 ) -> Result<()> {
+    info!(peer_device_id, attempt_id = %attempt_id, port,
+        "[Desktop] host received validated DesktopStart");
     if port != DESKTOP_PORT {
         return Err(anyhow!(
             "desktop_port_mismatch: expected {DESKTOP_PORT}, received {port}"
@@ -432,6 +839,7 @@ pub(super) async fn start_passive_desktop_host(
             .map_err(|error| anyhow!("desktop_host_start_task_failed: {error}"))?
             .map_err(|error| anyhow!(error.to_string()))?;
     reservation.commit(task);
+    info!(peer_device_id, "[Desktop] host engine ready");
     Ok(())
 }
 
@@ -446,6 +854,8 @@ pub(super) async fn handle_tunnel_desktop_request(
             session_secret,
             port,
         } => {
+            info!(peer_device_id, attempt_id = %attempt_id, port,
+                "[Desktop] processing DesktopStart");
             match start_passive_desktop_host(
                 shared,
                 peer_device_id,
@@ -455,12 +865,20 @@ pub(super) async fn handle_tunnel_desktop_request(
             )
             .await
             {
-                Ok(()) => TunnelControlMessage::DesktopReady { attempt_id },
-                Err(error) => TunnelControlMessage::DesktopFailed {
-                    attempt_id,
-                    error_code: desktop_error_code(&error),
-                    message: error.to_string(),
-                },
+                Ok(()) => {
+                    info!(peer_device_id, attempt_id = %attempt_id, "[Desktop] returning DesktopReady");
+                    TunnelControlMessage::DesktopReady { attempt_id }
+                }
+                Err(error) => {
+                    let error_code = desktop_error_code(&error);
+                    error!(peer_device_id, attempt_id = %attempt_id, error_code = %error_code,
+                        error = %error, "[Desktop] returning DesktopFailed");
+                    TunnelControlMessage::DesktopFailed {
+                        attempt_id,
+                        error_code,
+                        message: error.to_string(),
+                    }
+                }
             }
         }
         TunnelControlMessage::DesktopStop { attempt_id, reason } => {
@@ -629,7 +1047,7 @@ fn session_config(
     local_virtual_ip: &str,
     peer_virtual_ip: &str,
     port: u16,
-    session_secret: String,
+    _session_secret: String,
 ) -> SessionConfig {
     SessionConfig {
         attempt_id,
@@ -637,12 +1055,6 @@ fn session_config(
         local_virtual_ip: local_virtual_ip.to_owned(),
         peer_virtual_ip: peer_virtual_ip.to_owned(),
         port,
-        session_secret,
-        frames_per_second: 30,
-        bitrate_kbps: 4_000,
-        decoder_threads: 2,
-        display_id: None,
-        linux_display: None,
     }
 }
 
@@ -654,8 +1066,8 @@ mod tests {
     fn missing_configured_engine_is_an_explicit_error() {
         let missing =
             std::env::temp_dir().join(format!("p2premote-missing-engine-{}", std::process::id()));
-        let error = validate_engine_path(missing).unwrap_err();
-        assert_eq!(error.code, "engine_not_found");
+        let error = validate_desktop_path(missing).unwrap_err();
+        assert_eq!(error.code, "desktop_session_helper_not_found");
     }
 
     #[test]
@@ -675,14 +1087,14 @@ mod tests {
     fn peer_close_after_remote_stop_is_not_reported_as_cleanup_failure() {
         let expected = EngineFailure::new(
             "clipboard_read_failed",
-            p2premote_remote_engine_protocol::EngineStage::Streaming,
+            EngineStage::Streaming,
             "transport I/O failed: 远程主机强迫关闭了一个现有的连接。 (os error 10054)",
         );
         assert!(is_expected_peer_close(&expected));
 
         let unrelated = EngineFailure::new(
             "capture_frame_failed",
-            p2premote_remote_engine_protocol::EngineStage::Streaming,
+            EngineStage::Streaming,
             "DXGI access denied",
         );
         assert!(!is_expected_peer_close(&unrelated));

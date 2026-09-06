@@ -20,8 +20,8 @@ pub mod subnet_router;
 pub mod tunnel_control;
 pub mod tunnel_view;
 pub mod update;
-pub mod ws;
 pub mod wol;
+pub mod ws;
 
 pub mod gonc_ffi;
 pub mod wgvpn;

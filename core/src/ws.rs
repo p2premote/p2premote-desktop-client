@@ -25,7 +25,11 @@ pub enum WsSendType {
         access_grant: String,
         data: String,
     },
-	WOLResult { request_id: String, success: bool, code: String },
+    WOLResult {
+        request_id: String,
+        success: bool,
+        code: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,10 +83,19 @@ pub enum WsMessage {
     },
     #[serde(rename = "temp_password_consumed")]
     TempPasswordConsumed { device_id: i64 },
-	#[serde(rename = "wol_request")]
-	WOLRequest { request_id: String, macs: Vec<String>, target_ipv4: String, prefix_len: u8 },
-	#[serde(rename = "wol_result")]
-	WOLResult { request_id: String, success: bool, code: String },
+    #[serde(rename = "wol_request")]
+    WOLRequest {
+        request_id: String,
+        macs: Vec<String>,
+        target_ipv4: String,
+        prefix_len: u8,
+    },
+    #[serde(rename = "wol_result")]
+    WOLResult {
+        request_id: String,
+        success: bool,
+        code: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -109,7 +122,12 @@ pub enum WsEvent {
     TempPasswordConsumed {
         device_id: i64,
     },
-	WOLRequest { request_id: String, macs: Vec<String>, target_ipv4: String, prefix_len: u8 },
+    WOLRequest {
+        request_id: String,
+        macs: Vec<String>,
+        target_ipv4: String,
+        prefix_len: u8,
+    },
 }
 
 const WS_PING_INTERVAL_SECS: u64 = 20;
@@ -266,10 +284,10 @@ impl ServiceWsClient {
                                     }
                                 }
                             }
-							WsSendType::WOLResult { request_id, success, code } => {
-								let ws_msg=WsMessage::WOLResult{request_id,success,code};
-								if let Ok(json)=serde_json::to_string(&ws_msg){let _=write.send(Message::Text(json.into())).await;}
-							}
+                            WsSendType::WOLResult { request_id, success, code } => {
+                                let ws_msg=WsMessage::WOLResult{request_id,success,code};
+                                if let Ok(json)=serde_json::to_string(&ws_msg){let _=write.send(Message::Text(json.into())).await;}
+                            }
                         }
                     }
                     msg = read.next() => {
@@ -349,7 +367,7 @@ impl ServiceWsClient {
                                             warn!("[ServiceWS] p2p_notify rejected: message_id={}, error={:?}", message_id, error);
                                         }
                                     }
-									WsMessage::WOLRequest { request_id, macs, target_ipv4, prefix_len } => { let _=event_tx.send(WsEvent::WOLRequest{request_id,macs,target_ipv4,prefix_len}); }
+                                    WsMessage::WOLRequest { request_id, macs, target_ipv4, prefix_len } => { let _=event_tx.send(WsEvent::WOLRequest{request_id,macs,target_ipv4,prefix_len}); }
                                     _ => {}
                                 }
                             }
@@ -437,8 +455,23 @@ impl ServiceWsClient {
         }
     }
 
-    pub async fn send_wol_result(&self, request_id:String, success:bool, code:String) -> Result<(),String> {
-        self.send_channel.lock().await.as_ref().ok_or_else(||"websocket not connected".to_string())?.send(WsSendType::WOLResult{request_id,success,code}).map_err(|e|e.to_string())
+    pub async fn send_wol_result(
+        &self,
+        request_id: String,
+        success: bool,
+        code: String,
+    ) -> Result<(), String> {
+        self.send_channel
+            .lock()
+            .await
+            .as_ref()
+            .ok_or_else(|| "websocket not connected".to_string())?
+            .send(WsSendType::WOLResult {
+                request_id,
+                success,
+                code,
+            })
+            .map_err(|e| e.to_string())
     }
 
     pub async fn send_p2p_notify(

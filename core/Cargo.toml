@@ -36,8 +36,6 @@ rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-p2premote-remote-engine-manager = { path = "../../remoteDesk/remote-desktop-engine/crates/remote-engine-manager" }
-p2premote-remote-engine-protocol = { path = "../../remoteDesk/remote-desktop-engine/crates/remote-engine-protocol" }
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "0.2"

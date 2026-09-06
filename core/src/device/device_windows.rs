@@ -8,14 +8,14 @@ use serde::Deserialize;
 #[cfg(windows)]
 use tracing::{debug, error};
 #[cfg(windows)]
-use winreg::enums::*;
-#[cfg(windows)]
-use winreg::RegKey;
-#[cfg(windows)]
 use windows_service::{
     service::{ServiceAccess, ServiceState},
     service_manager::{ServiceManager, ServiceManagerAccess},
 };
+#[cfg(windows)]
+use winreg::enums::*;
+#[cfg(windows)]
+use winreg::RegKey;
 
 use super::RemoteAccessInfo;
 
