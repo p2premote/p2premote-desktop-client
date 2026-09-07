@@ -99,6 +99,14 @@ RUN curl --http1.1 --fail --location --retry 10 --retry-delay 5 \
     && cargo --version \
     && rustfmt --version
 
+# The headless Rust binaries (service/cli) and the Rust punch static library
+# link against musl, so the toolchain needs the matching target std.
+RUN case "$(uname -m)" in \
+        x86_64) rustup target add x86_64-unknown-linux-musl ;; \
+        aarch64) rustup target add aarch64-unknown-linux-musl ;; \
+        *) echo "Unsupported target architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac
+
 # The standalone desktop Engine targets glibc 2.27 independently from this
 # Debian 10/glibc 2.28 builder. Zig provides that explicit ABI baseline.
 RUN case "$(uname -m)" in \

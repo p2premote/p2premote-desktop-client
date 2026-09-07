@@ -92,6 +92,8 @@ BUILD_VERSION="${VERSION}-${GIT_COMMIT}"
 OUT_DIR="$APP_DIR/build/linux/headless"
 DIST_DIR="$APP_DIR/build/linux/dist/headless"
 PUNCH_LIB="$APP_DIR/src-tauri/resources/libp2premote-punch.a"
+# wireguard-go 仍从 Go 仓库构建（build-wireguard-go.sh）；打洞 FFI 已切换到 Rust 重写版。
+PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs"
 PUNCH_SOURCE_DIR="$REPO_ROOT/../p2premote-punch"
 ENGINE_SOURCE_DIR="$REPO_ROOT/../remoteDesk/remote-desktop-engine"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
@@ -103,6 +105,7 @@ case "$TARGET_ARCH" in
   aarch64|arm64)
     ENGINE_ARCH="aarch64"
     LINUX_ARCH="arm64"
+    RUST_TARGET="aarch64-unknown-linux-musl"
     TARGET_LABEL="aarch64-linux-gnu"
     DEB_ARCH="arm64"
     RPM_ARCH="aarch64"
@@ -110,6 +113,7 @@ case "$TARGET_ARCH" in
   x86_64|amd64)
     ENGINE_ARCH="x86_64"
     LINUX_ARCH="amd64"
+    RUST_TARGET="x86_64-unknown-linux-musl"
     TARGET_LABEL="x86_64-linux-gnu"
     DEB_ARCH="amd64"
     RPM_ARCH="x86_64"
@@ -137,7 +141,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     exit 1
   fi
 
-  BUILDER_IMAGE="p2premote-linux-builder:glibc2.28-packages-v3-${LINUX_ARCH}"
+  BUILDER_IMAGE="p2premote-linux-builder:glibc2.28-packages-v4-${LINUX_ARCH}"
   if ! docker image inspect "$BUILDER_IMAGE" >/dev/null 2>&1; then
     echo "==> Builder image $BUILDER_IMAGE not found; building it first (one-time)"
     PROXY_ARGS=()
@@ -183,8 +187,13 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}'"
 fi
 
+if [[ ! -d "$PUNCH_RS_SOURCE_DIR" ]]; then
+  echo "p2premote-punch-rs source directory not found: $PUNCH_RS_SOURCE_DIR" >&2
+  exit 1
+fi
 if [[ ! -d "$PUNCH_SOURCE_DIR" ]]; then
   echo "p2premote-punch source directory not found: $PUNCH_SOURCE_DIR" >&2
+  echo "(still required by build-wireguard-go.sh)" >&2
   exit 1
 fi
 if [[ ! -x "$ENGINE_BUILD_SCRIPT" ]]; then
@@ -213,8 +222,8 @@ rm -rf "$OUT_DIR"
 rm -f "$CURRENT_TAR" "$CURRENT_DEB" "$CURRENT_RPM"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
 
-echo "==> Building static p2premote-punch"
-"$APP_DIR/scripts/build-p2premote-punch.sh" -o "$PUNCH_LIB" -a "$LINUX_ARCH" -s "$PUNCH_SOURCE_DIR"
+echo "==> Building static p2premote-punch (Rust rewrite)"
+"$APP_DIR/scripts/build-p2premote-punch-rs.sh" -o "$PUNCH_LIB" -a "$LINUX_ARCH" -s "$PUNCH_RS_SOURCE_DIR"
 
 echo "==> Building userspace WireGuard implementation"
 bash "$APP_DIR/scripts/build-wireguard-go.sh" -o "$WIREGUARD_GO" -a "$LINUX_ARCH" -s "$PUNCH_SOURCE_DIR"
@@ -246,14 +255,17 @@ else
   )
 fi
 
-echo "==> Building Rust headless binaries"
+echo "==> Building Rust headless binaries ($RUST_TARGET)"
 (
   cd "$REPO_ROOT"
-  P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" cargo build --release -p p2premote-service -p p2premote-cli
+  # LTO must stay off: thin-LTO internalizes std/ring symbols that are
+  # referenced only by the native punch archive, breaking its link.
+  P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" CARGO_PROFILE_RELEASE_LTO=false \
+    cargo build --release --target "$RUST_TARGET" -p p2premote-service -p p2premote-cli
 )
 
 rust_release_dir() {
-  echo "$REPO_ROOT/target/release"
+  echo "$REPO_ROOT/target/$RUST_TARGET/release"
 }
 
 prepare_prefix_root() {

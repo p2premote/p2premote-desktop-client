@@ -12,7 +12,7 @@ fn main() {
         .unwrap_or_else(|| manifest_dir.join("..").join("src-tauri").join("resources"));
     let punch_library = resources_dir.join(punch_library_name(&target_os));
     println!("cargo:rustc-link-search=native={}", resources_dir.display());
-    emit_link_flags(&target_os);
+    emit_link_flags(&target_os, &punch_library);
     println!("cargo:rerun-if-changed={}", punch_library.display());
 
     if !punch_library.exists() {
@@ -29,9 +29,17 @@ fn main() {
     }
 }
 
-fn emit_link_flags(target_os: &str) {
+fn emit_link_flags(target_os: &str, punch_library: &Path) {
     if target_os == "linux" {
-        println!("cargo:rustc-link-lib=static=p2premote-punch");
+        // The punch .a (Rust rewrite) is std-external: scripts/strip-rustlib.sh
+        // removed its bundled rustlib members so it cannot collide with the
+        // host's std. It must be linked whole: cargo would otherwise fold it
+        // into this rlib, where archive pull order leaves the punch members'
+        // own references unresolved. These link args apply to this crate's
+        // own test binaries; service/cli emit the same triple for their bins.
+        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
+        println!("cargo:rustc-link-arg={}", punch_library.display());
+        println!("cargo:rustc-link-arg=-Wl,-no-whole-archive");
     }
 }
 
