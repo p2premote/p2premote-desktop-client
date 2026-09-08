@@ -241,59 +241,38 @@ pub struct RequiredClientFile {
     pub path: String,
 }
 
-fn resolve_binary_from_install_layout(
-    app: &AppHandle,
-    binary_name: &str,
-    extra_candidates: Vec<PathBuf>,
-) -> Result<PathBuf, String> {
-    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe_dir = current_exe
-        .parent()
-        .ok_or_else(|| crate::commands::localized("errors.resolve_install_dir", &[]))?;
-
-    let mut candidates = Vec::new();
-    candidates.extend(extra_candidates);
-
-    candidates.push(exe_dir.join(binary_name));
-    candidates.push(exe_dir.join("resources").join(binary_name));
-    candidates.push(exe_dir.join("deps").join(binary_name));
-    candidates.push(exe_dir.join("service").join(binary_name));
-
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join(binary_name));
-        candidates.push(resource_dir.join("resources").join(binary_name));
-        candidates.push(resource_dir.join("deps").join(binary_name));
+fn require_bundled_binary(app: &AppHandle, binary_name: &str) -> Result<PathBuf, String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("failed to resolve application resource directory: {error}"))?;
+    let path = resource_dir.join("resources").join(binary_name);
+    if !path.is_file() {
+        return Err(format!(
+            "required bundled file is missing: {}",
+            path.display()
+        ));
     }
-
-    candidates.push(PathBuf::from(binary_name));
-    candidates.push(PathBuf::from("deps").join(binary_name));
-
-    for candidate in candidates {
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    let dir_display = exe_dir.display().to_string();
-    Err(crate::commands::localized(
-        "errors.binary_not_found",
-        &[("name", binary_name), ("path", &dir_display)],
-    ))
+    Ok(path)
 }
 
-/// 解析 service 可执行文件路径：在 exe 同级目录及常见安装布局下搜索。
-///
-/// 复用 [`resolve_binary_from_install_layout`]（候选列表最全），并额外注入
-/// Linux 下 `default_service_path()` 作为首选候选。config.rs 的开机自启逻辑
-/// 也走此函数，避免两份候选列表漂移。
+/// 解析 service 的唯一规范路径。安装不完整时直接报错，不搜索旧版或工作目录文件。
 pub(crate) fn resolve_service_executable(app: &AppHandle) -> Result<PathBuf, String> {
-    let binary_name = default_service_binary_name();
-    // Linux 下额外把 default_service_path() 作为首选候选
-    #[cfg(not(windows))]
-    let extra = vec![p2premote_core::config::default_service_path()];
     #[cfg(windows)]
-    let extra = Vec::new();
-    resolve_binary_from_install_layout(app, &binary_name, extra)
+    {
+        let service = require_bundled_binary(app, default_service_binary_name())?;
+        require_bundled_binary(app, p2premote_core::config::default_p2p_punch_binary_name())?;
+        Ok(service)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let path = p2premote_core::config::default_service_path();
+        if !path.is_file() {
+            return Err(format!("service executable is missing: {}", path.display()));
+        }
+        Ok(path)
+    }
 }
 
 #[tauri::command]
@@ -307,24 +286,27 @@ pub fn check_required_client_files(app: AppHandle) -> Result<Vec<RequiredClientF
     });
 
     let cli_name = platform_executable_name("p2premote-cli");
-    let cli_path = resolve_binary_from_install_layout(&app, &cli_name, Vec::new())?;
+    let cli_path = require_bundled_binary(&app, &cli_name)?;
     files.push(RequiredClientFile {
         name: cli_name,
         path: cli_path.to_string_lossy().to_string(),
     });
 
+    #[cfg(windows)]
+    {
+        let notifier_name = "p2premote-notifier.exe";
+        let notifier_path = require_bundled_binary(&app, notifier_name)?;
+        files.push(RequiredClientFile {
+            name: notifier_name.to_string(),
+            path: notifier_path.to_string_lossy().to_string(),
+        });
+    }
+
     Ok(files)
 }
 
-async fn maybe_notify_service(command: Data) -> bool {
-    // 优先用持久连接，失败则回退到一次性连接
-    if send_via_persistent(command.clone()).await.is_err() {
-        if let Err(err) = send_command(command).await {
-            warn!("[service] notify service failed: {}", err);
-            return false;
-        }
-    }
-    true
+async fn notify_service(command: Data) -> Result<(), String> {
+    send_via_persistent(command).await
 }
 
 async fn collect_service_status() -> Result<ServiceStatusResponse, String> {
@@ -339,11 +321,15 @@ async fn collect_service_status() -> Result<ServiceStatusResponse, String> {
             Ok(Data::CommandResponse {
                 status: Some(s), ..
             }) => Some(s),
-            Ok(Data::CommandResponse { .. }) => None,
-            Ok(_) => None,
+            Ok(Data::CommandResponse { .. }) => {
+                return Err("service status response is missing runtime status".to_string())
+            }
+            Ok(other) => return Err(format!("unexpected service response: {other:?}")),
             Err(err) => {
                 if service.running {
-                    warn!("[service] query runtime status failed: {}", err);
+                    return Err(format!(
+                        "service is running but runtime status query failed: {err}"
+                    ));
                 }
                 None
             }
@@ -355,15 +341,6 @@ async fn collect_service_status() -> Result<ServiceStatusResponse, String> {
         if service.raw_state.is_empty() {
             service.raw_state = "ForegroundIpc".to_string();
         }
-    }
-
-    // SCM 说 running 但 IPC 实际不通 → 进程已坏，降级为 not running
-    if service.running && runtime.is_none() {
-        warn!(
-            "[service] SCM reports running but IPC unavailable, marking as not running (raw_state={})",
-            service.raw_state
-        );
-        service.running = false;
     }
 
     // machine_logged_in 从 service 运行时状态派生（不读受保护的 machine config）
@@ -442,8 +419,8 @@ pub async fn acknowledge_device_identity_notification() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn sync_service_runtime_config() -> Result<ServiceStatusResponse, String> {
-    maybe_notify_service(Data::UpdateAuth).await;
-    maybe_notify_service(Data::ReloadConfig).await;
+    notify_service(Data::UpdateAuth).await?;
+    notify_service(Data::ReloadConfig).await?;
     collect_service_status().await
 }
 
@@ -519,11 +496,7 @@ async fn ensure_background_service_session_inner(
             debug!("[service] attempting SCM start...");
             match start_service() {
                 Ok(()) => debug!("[service] SCM start returned Ok"),
-                Err(err) => {
-                    warn!("[service] SCM start failed: {:#}", err);
-                    #[cfg(target_os = "macos")]
-                    return Err(err.to_string());
-                }
+                Err(err) => return Err(format!("failed to start background service: {err:#}")),
             }
         } else {
             debug!("[service] SCM reports running, waiting for IPC...");
@@ -560,18 +533,16 @@ async fn ensure_background_service_session_inner(
         }
 
         if !ipc_ready {
-            warn!("[service] IPC unavailable after 10s");
+            let status = query_service_status().map_err(|error| error.to_string())?;
+            return Err(format!(
+                "background service IPC unavailable after 10s (service state: {})",
+                status.raw_state
+            ));
         }
     } else {
-        // service 未安装 — 客户端安装包一定会装 service，走到这里说明安装异常
-        // 不尝试 IPC 通知，直接返回当前状态
-        debug!("[service] service not installed, skipping IPC notifications");
-        let result = collect_service_status().await;
-        debug!(
-            "[service] === ensure_background_service_session end (not installed), running={} ===",
-            result.as_ref().map(|r| r.service.running).unwrap_or(false)
+        return Err(
+            "background service is not installed; the installation is incomplete".to_string(),
         );
-        return result;
     }
 
     let result = collect_service_status().await;
@@ -639,12 +610,9 @@ pub fn cleanup_background_service_on_app_exit() {
     debug!("[service] === cleanup on app exit done ===");
 }
 
-/// 持久连接发送命令（带响应），失败则回退到一次性连接
+/// 通过持久连接发送命令（带响应）。连接异常直接返回，由 UI 明确提示。
 pub(crate) async fn send_command_responsive(data: Data) -> Result<Data, String> {
-    match send_req_via_persistent(data.clone()).await {
-        Ok(resp) => Ok(resp),
-        Err(_) => send_command(data).await.map_err(|e| e.to_string()),
-    }
+    send_req_via_persistent(data).await
 }
 
 #[tauri::command]

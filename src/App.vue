@@ -1593,6 +1593,10 @@ async function bootstrapApp() {
     if (!preflightOk) {
       return
     }
+    // 后续命令只使用持久 IPC；连接失败直接进入启动错误页。
+    await setStartupStep(t('app.startup_status.connecting_events'), 91)
+    await invoke('listen_service_events')
+
     // 初次启动也要把 localStorage/系统探测得到的语言同步给 service。
     // 否则英文系统在用户手动切换语言之前，后端状态消息仍会使用中文。
     await setLocale(locale.value)
@@ -1607,21 +1611,9 @@ async function bootstrapApp() {
 
     // 加载设置（开机自启状态、日志级别、版本号）
     await setStartupStep(t('app.startup_status.loading_settings'), 92)
-    try {
-      const settings = await invoke<{ auto_start: boolean; version: string }>('get_settings')
-      autoStart.value = settings.auto_start
-      appVersion.value = settings.version
-    } catch (e) {
-      console.warn('[App] 加载设置失败:', e)
-    }
-
-    // 建立到 service 的持久 IPC 连接，监听推送事件
-    await setStartupStep(t('app.startup_status.connecting_events'), 94)
-    try {
-      await invoke('listen_service_events')
-    } catch (e) {
-      console.warn('[App] listen service events failed:', e)
-    }
+    const settings = await invoke<{ auto_start: boolean; version: string }>('get_settings')
+    autoStart.value = settings.auto_start
+    appVersion.value = settings.version
     let identityRebuildNotified = false
     let sessionExpiredNotified = false
     await listen<{
@@ -1693,44 +1685,22 @@ async function bootstrapApp() {
       invoke<string>('try_auto_login'),
       10_000,
       t('app.startup_errors.login_check_timeout')
-    ).catch(error => {
-      console.warn('[App] 自动登录失败，切换到登录页:', error)
-      authStore.resetSession()
-      void router.push('/login')
-      if (!sessionExpiredNotified) {
-        sessionExpiredNotified = true
-        ElNotification({
-          title: t('app.notification.session_expired_title'),
-          message: t('app.notification.session_expired_body'),
-          type: 'warning',
-          duration: 8000,
-        })
-      }
-      return ''
-    })
+    )
     if (token) {
       try {
         await restoreServiceSession(token, '自动登录')
       } catch (e) {
-        console.warn('[App] 自动登录后刷新用户信息失败，token 可能已失效:', e)
-        // 瞬时网络/服务端故障不应清除"记住密码/自动登录"，仅回登录页，
-        // 下次启动仍可自动登录；凭据只有在用户显式登出时才清除。
-        authStore.resetSession()
-        router.push('/login')
+        throw new Error(`自动登录后恢复前端会话失败: ${normalizeError(e)}`)
       }
     } else {
-      const serviceLoggedIn = await invoke<boolean>('is_logged_in').catch(() => {
-        return Boolean(backgroundServiceStatus.value?.runtime?.logged_in)
-      })
+      const serviceLoggedIn = await invoke<boolean>('is_logged_in')
       // GUI 关闭窗口或进程重开时允许接管仍在运行的 service 会话。
       // 保存但未启用自动登录的 refresh token 只能在登录页由用户手动恢复。
       if (serviceLoggedIn) {
         try {
           await restoreServiceSession('__service_session__', '后台 service 已登录状态')
         } catch (e) {
-          console.warn('[App] 后台 service 已登录，但恢复前端会话失败:', e)
-          authStore.resetSession()
-          router.push('/login')
+          throw new Error(`后台 service 会话恢复失败: ${normalizeError(e)}`)
         }
       }
     }

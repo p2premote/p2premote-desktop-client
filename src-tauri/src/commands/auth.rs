@@ -56,12 +56,12 @@ pub async fn login(identifier: String, password: String) -> Result<serde_json::V
     };
 
     // 从响应中提取 user info 更新内存状态（仅用于 UI 展示）
-    if let Ok(info) = serde_json::from_value::<UserInfo>(user_json.clone()) {
-        let mut auth = AUTH_STATE.lock();
-        // 用占位符表示已登录，不存真实 token
-        auth.token = Some(SERVICE_SESSION_PLACEHOLDER.to_string());
-        auth.user_info = Some(info);
-    }
+    let info = serde_json::from_value::<UserInfo>(user_json.clone())
+        .map_err(|error| format!("invalid user information returned by service: {error}"))?;
+    let mut auth = AUTH_STATE.lock();
+    // 用占位符表示已登录，不存真实 token
+    auth.token = Some(SERVICE_SESSION_PLACEHOLDER.to_string());
+    auth.user_info = Some(info);
 
     info!("[Login] 登录成功: {}", identifier);
     // 返回结构对齐前端 LoginResponse，但 data 只含 user（不含 token）
@@ -83,8 +83,15 @@ pub async fn login(identifier: String, password: String) -> Result<serde_json::V
 pub async fn logout() -> Result<(), String> {
     info!("Logout request");
 
-    let _ = send_command(Data::Logout).await;
-    let _ = stop_service();
+    match send_command(Data::Logout)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Data::CommandResponse { ok: true, .. } => {}
+        Data::CommandResponse { message, .. } => return Err(message),
+        other => return Err(format!("unexpected service response: {other:?}")),
+    }
+    stop_service().map_err(|error| error.to_string())?;
 
     let mut auth = AUTH_STATE.lock();
     auth.token = None;
@@ -104,7 +111,8 @@ pub async fn register_by_email_code(
 ) -> Result<serde_json::Value, String> {
     debug!("RegisterByEmailCode request for: {}", email);
 
-    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    let config = p2premote_core::config::load_machine_config()
+        .map_err(|error| format!("failed to load machine config: {error}"))?;
     debug!(
         "[RegisterByEmailCode] server base_url: {}",
         config.server_url
@@ -135,7 +143,8 @@ pub async fn register_by_email_code(
 pub async fn send_registration_verification_code(
     email: String,
 ) -> Result<serde_json::Value, String> {
-    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    let config = p2premote_core::config::load_machine_config()
+        .map_err(|error| format!("failed to load machine config: {error}"))?;
     let response =
         p2premote_core::auth::send_verification_code(&config.server_url, &email, "register")
             .await
@@ -150,7 +159,8 @@ pub async fn send_registration_verification_code(
 pub async fn send_reset_password_verification_code(
     email: String,
 ) -> Result<serde_json::Value, String> {
-    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    let config = p2premote_core::config::load_machine_config()
+        .map_err(|error| format!("failed to load machine config: {error}"))?;
     let response =
         p2premote_core::auth::send_verification_code(&config.server_url, &email, "reset_password")
             .await
@@ -167,7 +177,8 @@ pub async fn reset_password_by_email_code(
     verification_code: String,
     new_password: String,
 ) -> Result<serde_json::Value, String> {
-    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    let config = p2premote_core::config::load_machine_config()
+        .map_err(|error| format!("failed to load machine config: {error}"))?;
     let response = p2premote_core::auth::reset_password_by_email_code(
         &config.server_url,
         &email,
@@ -187,19 +198,20 @@ pub async fn reset_password_by_email_code(
 /// 先查内存 AUTH_STATE（登录后立即生效）；内存为空时通过 IPC 查 service 的
 /// RuntimeStatus.logged_in（不读受保护的 machine config，避免权限失败返回假阴性）。
 #[tauri::command]
-pub async fn is_logged_in() -> bool {
+pub async fn is_logged_in() -> Result<bool, String> {
     // 先检查内存状态（确保 MutexGuard 不跨 await）
     let in_memory = { AUTH_STATE.lock().token.is_some() };
     if in_memory {
-        return true;
+        return Ok(true);
     }
 
     // 内存为空则查 service 运行时状态
     match send_command_responsive(Data::Status).await {
         Ok(Data::CommandResponse {
             status: Some(s), ..
-        }) => s.logged_in,
-        _ => false,
+        }) => Ok(s.logged_in),
+        Ok(other) => Err(format!("unexpected service response: {other:?}")),
+        Err(error) => Err(error),
     }
 }
 
@@ -211,39 +223,42 @@ pub async fn is_logged_in() -> bool {
 #[tauri::command]
 pub async fn try_auto_login() -> Result<String, String> {
     debug!("[TryAutoLogin] 委托 service 自动登录");
-    let resp = match send_command_responsive(Data::TryAutoLogin).await {
-        Ok(r) => r,
-        Err(e) => {
-            error!("[TryAutoLogin] IPC 失败: {}", e);
-            return Ok(String::new());
-        }
-    };
+    let resp = send_command_responsive(Data::TryAutoLogin)
+        .await
+        .map_err(|error| {
+            error!("[TryAutoLogin] IPC 失败: {}", error);
+            error
+        })?;
 
-    let Data::CommandResponse {
-        ok: true,
-        data: Some(d),
-        ..
-    } = resp
-    else {
-        return Ok(String::new());
+    let d = match resp {
+        Data::CommandResponse {
+            ok: true,
+            data: Some(data),
+            ..
+        } => data,
+        Data::CommandResponse {
+            ok: false, message, ..
+        } => return Err(message),
+        other => return Err(format!("unexpected service response: {other:?}")),
     };
 
     let logged_in = d
         .get("logged_in")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .ok_or_else(|| "auto-login response missing boolean field: logged_in".to_string())?;
     if !logged_in {
         return Ok(String::new());
     }
 
     // 同步 user info 到内存状态
-    if let Some(user) = d.get("user") {
-        if let Ok(info) = serde_json::from_value::<UserInfo>(user.clone()) {
-            let mut auth = AUTH_STATE.lock();
-            auth.token = Some(SERVICE_SESSION_PLACEHOLDER.to_string());
-            auth.user_info = Some(info);
-        }
-    }
+    let user = d
+        .get("user")
+        .ok_or_else(|| "auto-login response missing user information".to_string())?;
+    let info = serde_json::from_value::<UserInfo>(user.clone())
+        .map_err(|error| format!("invalid user information returned by service: {error}"))?;
+    let mut auth = AUTH_STATE.lock();
+    auth.token = Some(SERVICE_SESSION_PLACEHOLDER.to_string());
+    auth.user_info = Some(info);
     info!("[TryAutoLogin] 自动登录成功");
     Ok(SERVICE_SESSION_PLACEHOLDER.to_string())
 }
@@ -267,17 +282,18 @@ pub async fn resume_saved_session(auto_login: bool) -> Result<(), String> {
     if !d
         .get("logged_in")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+        .ok_or_else(|| "saved-session response missing boolean field: logged_in".to_string())?
     {
         return Err("saved session was not resumed".to_string());
     }
-    if let Some(user) = d.get("user") {
-        if let Ok(info) = serde_json::from_value::<UserInfo>(user.clone()) {
-            let mut auth = AUTH_STATE.lock();
-            auth.token = Some(SERVICE_SESSION_PLACEHOLDER.to_string());
-            auth.user_info = Some(info);
-        }
-    }
+    let user = d
+        .get("user")
+        .ok_or_else(|| "saved-session response missing user information".to_string())?;
+    let info = serde_json::from_value::<UserInfo>(user.clone())
+        .map_err(|error| format!("invalid user information returned by service: {error}"))?;
+    let mut auth = AUTH_STATE.lock();
+    auth.token = Some(SERVICE_SESSION_PLACEHOLDER.to_string());
+    auth.user_info = Some(info);
     info!("[ResumeSavedSession] saved session resumed");
     Ok(())
 }
@@ -299,18 +315,16 @@ pub async fn fetch_user_profile() -> Result<Option<UserInfo>, String> {
             data: Some(d),
             ..
         } => {
-            if let Ok(info) = serde_json::from_value::<UserInfo>(d.clone()) {
-                let mut auth = AUTH_STATE.lock();
-                auth.user_info = Some(info.clone());
-                Ok(Some(info))
-            } else {
-                Ok(None)
-            }
+            let info = serde_json::from_value::<UserInfo>(d)
+                .map_err(|error| format!("invalid user profile returned by service: {error}"))?;
+            let mut auth = AUTH_STATE.lock();
+            auth.user_info = Some(info.clone());
+            Ok(Some(info))
         }
         Data::CommandResponse {
             ok: false, message, ..
         } => Err(message),
-        _ => Ok(None),
+        other => Err(format!("unexpected service response: {other:?}")),
     }
 }
 
@@ -327,9 +341,14 @@ pub async fn get_invite_info() -> Result<Option<InviteInfo>, String> {
             .map(Some)
             .map_err(|e| e.to_string()),
         Data::CommandResponse {
+            ok: true,
+            data: None,
+            ..
+        } => Ok(None),
+        Data::CommandResponse {
             ok: false, message, ..
         } => Err(message),
-        _ => Ok(None),
+        other => Err(format!("unexpected service response: {other:?}")),
     }
 }
 
@@ -348,7 +367,20 @@ pub async fn get_saved_login() -> Result<Option<serde_json::Value>, String> {
             }
             Ok(Some(d))
         }
-        _ => Ok(None),
+        Data::CommandResponse {
+            ok: true,
+            data: Some(d),
+            ..
+        } if d.is_null() => Ok(None),
+        Data::CommandResponse {
+            ok: true,
+            data: None,
+            ..
+        } => Ok(None),
+        Data::CommandResponse {
+            ok: false, message, ..
+        } => Err(message),
+        other => Err(format!("unexpected service response: {other:?}")),
     }
 }
 

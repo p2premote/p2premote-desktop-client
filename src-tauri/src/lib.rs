@@ -71,33 +71,29 @@ use commands::{
 };
 
 /// 初始化日志系统（对齐 Go: logs/p2premote-YYYY-MM-DD.log）
-fn init_logging() {
+fn init_logging() -> Result<(), String> {
     use tracing_subscriber::fmt::time::ChronoLocal;
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     // 日志输出目录：由 core 统一按平台解析
     let log_dir = app_log_dir();
-    let file_writer = p2premote_core::logging::DailyLogWriter::new(log_dir, "p2premote").ok();
+    let file_writer = p2premote_core::logging::DailyLogWriter::new(log_dir, "p2premote")
+        .map_err(|error| format!("failed to initialize application log file: {error}"))?;
 
-    let file_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("p2premote_lib=debug,hyper=info,reqwest=info,tokio=info,info")
-    });
+    let file_filter = EnvFilter::new("p2premote_lib=debug,hyper=info,reqwest=info,tokio=info,info");
 
-    let file_layer = file_writer.map(|file_writer| {
-        fmt::layer()
-            .with_writer(file_writer)
-            .with_ansi(false)
-            .with_target(true)
-            .with_thread_ids(false)
-            .with_file(true)
-            .with_line_number(true)
-            .with_level(true)
-            .with_timer(ChronoLocal::rfc_3339())
-    });
+    let file_layer = fmt::layer()
+        .with_writer(file_writer)
+        .with_ansi(false)
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_file(true)
+        .with_line_number(true)
+        .with_level(true)
+        .with_timer(ChronoLocal::rfc_3339());
 
-    let console_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("p2premote_lib=debug,hyper=info,reqwest=info,tokio=info,info")
-    });
+    let console_filter =
+        EnvFilter::new("p2premote_lib=debug,hyper=info,reqwest=info,tokio=info,info");
 
     let console_layer = fmt::layer()
         .with_ansi(true)
@@ -114,20 +110,27 @@ fn init_logging() {
         .with(console_layer)
         .with(file_layer);
 
-    tracing::subscriber::set_global_default(subscriber).expect("failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber)
+        .map_err(|error| format!("failed to set tracing subscriber: {error}"))
 }
 
 /// 初始化运行时数据目录。
-fn init_config_dir() {
+fn init_config_dir() -> Result<(), String> {
     let data_dir = p2premote_core::config::install_data_dir();
-    let _ = std::fs::create_dir_all(&data_dir);
+    std::fs::create_dir_all(&data_dir).map_err(|error| {
+        format!(
+            "failed to create application data directory {}: {error}",
+            data_dir.display()
+        )
+    })?;
     debug!("[p2premote.config] Data directory: {:?}", data_dir);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    init_logging();
-    init_config_dir();
+    init_logging().expect("application logging initialization failed");
+    init_config_dir().expect("application data directory initialization failed");
 
     debug!("[p2premote] configuration is managed by background service");
 
@@ -193,16 +196,6 @@ pub fn run() {
             #[cfg(windows)]
             if let Err(err) = commands::config::ensure_notifier_running(&app.handle()) {
                 warn!("[p2premote] Failed to start notifier: {}", err);
-            }
-
-            // 后台对账开机自启注册表：重装/升级后注册表项可能被卸载阶段清掉，
-            // 而 machine config 仍记录 auto_start=true。不阻塞启动。
-            #[cfg(windows)]
-            {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    commands::config::reconcile_auto_start_registry(&handle).await;
-                });
             }
 
             let logout_item = MenuItem::with_id(app, "logout", "退出登录", true, None::<&str>)?;

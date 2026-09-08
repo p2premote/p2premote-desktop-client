@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::APP_VERSION;
 use p2premote_core::control::Data;
@@ -138,106 +138,6 @@ fn expected_run_entries(app: &AppHandle) -> Result<[(&'static str, String); 2], 
     ])
 }
 
-/// 开机自启对账（应用启动时调用）：HKCU Run 注册表项 + Windows 服务启动类型。
-///
-/// 重装/升级的卸载阶段会删除 HKCU Run 自启动项（Tauri NSIS 模板删主程序项、
-/// installer.nsh 的 PREUNINSTALL 删 notifier 项），也可能让 SCM 里的服务缺失或
-/// 丢失 AutoStart；而 auto_start 状态持久化在 data/config.json，默认跨安装保留
-/// ——出现"开关显示开启、实际不自启"的漂移。安装器 POSTINSTALL 会恢复；这里
-/// 兜底其余场景（安装器运行账户与桌面用户不一致、安装路径变化等）。
-#[cfg(windows)]
-pub async fn reconcile_auto_start_registry(app: &AppHandle) {
-    // 服务未安装时读不到 machine config（data 目录仅 SYSTEM/Admins 可读，只能走
-    // service IPC），对账无从谈起；做一次不弹 UAC 的直接安装尝试后退出。
-    match p2premote_core::service_control::query_service_status() {
-        Ok(status) if !status.installed => {
-            warn!("[config] 服务未安装，尝试直接重装服务");
-            try_setup_service_direct(app);
-            return;
-        }
-        Err(err) => {
-            warn!("[config] 自启对账跳过：查询服务状态失败：{}", err);
-            return;
-        }
-        _ => {}
-    }
-
-    // service 可能尚未就绪（刚开机/刚装完），带重试查询，总计约 60s。
-    let mut enabled = None;
-    for _ in 0..12 {
-        match crate::commands::service::send_command_responsive(Data::GetLoginPreferences).await {
-            Ok(Data::CommandResponse {
-                data: Some(data), ..
-            }) => {
-                enabled = data.get("auto_start").and_then(|value| value.as_bool());
-                break;
-            }
-            _ => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
-        }
-    }
-    if enabled != Some(true) {
-        debug!("[config] 自启对账跳过：auto_start 未开启或查询失败");
-        return;
-    }
-
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
-    use winreg::RegKey;
-
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let run_key = match hkcu.open_subkey_with_flags(
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-        KEY_SET_VALUE | KEY_QUERY_VALUE,
-    ) {
-        Ok(key) => key,
-        Err(err) => {
-            warn!("[config] 自启对账失败：无法打开 HKCU Run 键：{}", err);
-            return;
-        }
-    };
-    let entries = match expected_run_entries(app) {
-        Ok(entries) => entries,
-        Err(err) => {
-            warn!("[config] 自启对账失败：{}", err);
-            return;
-        }
-    };
-    for (name, command) in &entries {
-        let current: String = run_key.get_value(name).unwrap_or_default();
-        if current != *command {
-            match run_key.set_value(name, command) {
-                Ok(()) => info!("[config] 已修复开机自启注册表项 {} -> {}", name, command),
-                Err(err) => warn!("[config] 修复开机自启注册表项 {} 失败：{}", name, err),
-            }
-        }
-    }
-
-    // auto_start 开启但服务非 AutoStart（重装把启动类型冲掉等）→ 直接修复。
-    // 仅尝试 direct 路径（不弹 UAC）：普通非提权进程通常无 SCM 权限，失败即记日志，
-    // 主修复责任在安装器 POSTINSTALL。
-    match p2premote_core::service_control::query_service_status() {
-        Ok(status) if status.installed && !status.enabled => {
-            info!("[config] 服务非 AutoStart 但 auto_start 已开启，尝试直接修复");
-            try_setup_service_direct(app);
-        }
-        _ => {}
-    }
-}
-
-/// 尝试 install + enable + start 服务（direct-only，不触发 UAC）。
-#[cfg(windows)]
-fn try_setup_service_direct(app: &AppHandle) {
-    match crate::commands::service::resolve_service_executable(app) {
-        Ok(service_exe) => match p2premote_core::service_control::try_setup_direct(&service_exe) {
-            Ok(()) => info!("[config] 服务直接修复成功"),
-            Err(err) => warn!(
-                "[config] 服务直接修复失败（非提权进程无 SCM 权限属预期）：{}",
-                err
-            ),
-        },
-        Err(err) => warn!("[config] 服务直接修复失败：{}", err),
-    }
-}
-
 fn set_service_auto_start(app: &AppHandle, enabled: bool) -> Result<(), String> {
     if enabled {
         let service_exe = crate::commands::service::resolve_service_executable(app)?;
@@ -275,15 +175,16 @@ fn set_service_auto_start(app: &AppHandle, enabled: bool) -> Result<(), String> 
     }
 }
 
-async fn load_service_auto_start() -> bool {
+async fn load_service_auto_start() -> Result<bool, String> {
     match crate::commands::service::send_command_responsive(Data::GetLoginPreferences).await {
         Ok(Data::CommandResponse {
             data: Some(data), ..
         }) => data
             .get("auto_start")
             .and_then(|value| value.as_bool())
-            .unwrap_or(false),
-        _ => false,
+            .ok_or_else(|| "service response missing boolean field: auto_start".to_string()),
+        Ok(other) => Err(format!("unexpected service response: {other:?}")),
+        Err(error) => Err(error),
     }
 }
 
@@ -329,8 +230,16 @@ pub async fn set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String>
 
         let app_name = "p2premote";
         let notifier_name = "p2premote-notifier";
-        let previous_value = run_key.get_value::<String, _>(app_name).ok();
-        let previous_notifier_value = run_key.get_value::<String, _>(notifier_name).ok();
+        let read_previous = |name: &str| match run_key.get_value::<String, _>(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "failed to read startup registry value {name}: {error}"
+            )),
+        };
+        let previous_value = read_previous(app_name)?;
+        let previous_notifier_value = read_previous(notifier_name)?;
+        let previous_auto_start = load_service_auto_start().await?;
 
         if enabled {
             let entries = expected_run_entries(&app)?;
@@ -344,11 +253,17 @@ pub async fn set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String>
             }
             info!("[config] 已注册开机自启: {}", entries[0].1);
         } else {
-            let _ = run_key.delete_value(app_name); // 不存在时不报错
-            let _ = run_key.delete_value(notifier_name);
+            for name in [app_name, notifier_name] {
+                if let Err(error) = run_key.delete_value(name) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        return Err(format!(
+                            "failed to remove startup registry value {name}: {error}"
+                        ));
+                    }
+                }
+            }
             info!("[config] 已移除开机自启");
         }
-        let previous_auto_start = load_service_auto_start().await;
         if let Err(err) = set_service_auto_start(&app, enabled) {
             if let Some(previous_value) = previous_value {
                 let _ = run_key.set_value(app_name, &previous_value);
@@ -490,7 +405,8 @@ pub struct UpdateCheckResponse {
 #[tauri::command]
 pub async fn check_update() -> Result<UpdateCheckResponse, String> {
     info!("[config] 检查更新...");
-    let config = p2premote_core::config::load_machine_config().unwrap_or_default();
+    let config = p2premote_core::config::load_machine_config()
+        .map_err(|error| format!("failed to load machine config for update check: {error}"))?;
     match p2premote_core::update::fetch_version_policy(&config.server_url).await {
         Ok(data) => {
             let evaluation = p2premote_core::update::evaluate_version_policy(APP_VERSION, &data);
@@ -509,19 +425,6 @@ pub async fn check_update() -> Result<UpdateCheckResponse, String> {
                 error: None,
             })
         }
-        Err(error) => {
-            warn!("[config] 检查更新失败: {:?}", error);
-            let message = error.localized_message(config.locale.as_deref());
-            Ok(UpdateCheckResponse {
-                mode: "none".to_string(),
-                has_update: false,
-                force_update: false,
-                current: APP_VERSION.to_string(),
-                latest: String::new(),
-                min_supported: String::new(),
-                release_notes: String::new(),
-                error: Some(message),
-            })
-        }
+        Err(error) => Err(error.localized_message(config.locale.as_deref())),
     }
 }
