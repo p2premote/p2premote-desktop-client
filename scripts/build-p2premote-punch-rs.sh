@@ -8,13 +8,14 @@ set -euo pipefail
 umask 022
 
 usage() {
-  echo "Usage: $0 -o <output-path> -a <amd64|arm64> -s <p2premote-punch-rs-dir>" >&2
+  echo "Usage: $0 -o <output-path> -a <amd64|arm64> -s <p2premote-punch-rs-dir> [--no-sccache]" >&2
 }
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR=""
 OUT_PATH=""
 ARCH_VALUE=""
+USE_SCCACHE=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +43,10 @@ while [[ $# -gt 0 ]]; do
       ARCH_VALUE="$2"
       shift 2
       ;;
+    --no-sccache)
+      USE_SCCACHE=0
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -52,6 +57,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$USE_SCCACHE" == "1" ]]; then
+  command -v sccache >/dev/null 2>&1 || { echo "sccache is required by default; install it or pass --no-sccache" >&2; exit 1; }
+  export RUSTC_WRAPPER=sccache
+  echo "==> sccache enabled (use --no-sccache to disable)"
+else
+  export RUSTC_WRAPPER=""
+  echo "==> sccache disabled; Rust will compile locally"
+fi
 
 if [[ -z "$OUT_PATH" ]]; then
   usage
@@ -91,6 +105,7 @@ echo "==> Building p2premote-punch static library for linux/$ARCH_VALUE (Rust, $
   # The crate pins its toolchain via rust-toolchain.toml (same 1.94.1 as the
   # client) — the stripped archive requires the host to use that same std.
   cargo build --release --lib --target "$RUST_TARGET"
+  if [[ "$USE_SCCACHE" == "1" ]]; then sccache --show-stats; fi
 )
 
 BUILT="$SRC_DIR/target/$RUST_TARGET/release/libp2premote_punch.a"

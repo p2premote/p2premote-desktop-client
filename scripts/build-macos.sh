@@ -2,14 +2,20 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: scripts/build-macos.sh -v <version>"
+  echo "Usage: scripts/build-macos.sh -v <version> [--no-sccache]"
 }
 
 version=""
-while getopts ":v:h" option; do
-  case "$option" in
-    v) version="$OPTARG" ;;
-    h) usage; exit 0 ;;
+use_sccache=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v)
+      [[ $# -ge 2 && -n "$2" ]] || { usage >&2; exit 2; }
+      version="$2"
+      shift 2
+      ;;
+    --no-sccache) use_sccache=0; shift ;;
+    -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
@@ -35,6 +41,14 @@ trap 'rm -rf "$build_dir"' EXIT
 for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
 done
+if [[ "$use_sccache" == 1 ]]; then
+  command -v sccache >/dev/null 2>&1 || { echo "sccache is required by default; install it or pass --no-sccache" >&2; exit 1; }
+  export RUSTC_WRAPPER=sccache
+  echo "==> sccache enabled (use --no-sccache to disable)"
+else
+  export RUSTC_WRAPPER=""
+  echo "==> sccache disabled; Rust will compile locally"
+fi
 
 mkdir -p "$resources_dir"
 [[ -x "$engine_build_script" ]] || { echo "macOS Engine build script not found or not executable: $engine_build_script" >&2; exit 1; }

@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)]
     [Alias('v')]
     [string]$Version,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$NoSccache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,6 +65,16 @@ if ($SkipBuild) {
     exit 0
 }
 
+if ($NoSccache) {
+    $env:RUSTC_WRAPPER = ''
+    Write-Host "sccache disabled; Rust will compile locally"
+}
+else {
+    $null = Get-Command sccache -ErrorAction Stop
+    $env:RUSTC_WRAPPER = "sccache"
+    Write-Host "sccache enabled (use -NoSccache to disable)"
+}
+
 $punchSource = Join-Path $projectRoot '..\p2premote-punch'
 if (-not (Test-Path -LiteralPath $punchSource -PathType Container)) {
     throw "p2premote-punch source directory not found: $punchSource"
@@ -106,6 +117,7 @@ finally {
     $env:P2PREMOTE_CLIENT_VERSION = $previousClientVersion
     $env:P2PREMOTE_PUNCH_DIR = $previousPunchDir
 }
+if (-not $NoSccache) { & sccache --show-stats }
 
 # Tauri normally includes x64 in the NSIS filename, but normalize it here so
 # every Windows package produced by this script is accepted by package

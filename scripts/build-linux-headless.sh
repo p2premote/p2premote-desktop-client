@@ -4,12 +4,13 @@ set -euo pipefail
 umask 022
 
 usage() {
-  echo "Usage: $0 -v <version> [--arch <x86_64|aarch64>] [--proxy <http-proxy-url>]" >&2
+  echo "Usage: $0 -v <version> [--arch <x86_64|aarch64>] [--proxy <http-proxy-url>] [--no-sccache]" >&2
 }
 
 VERSION=""
 TARGET_ARCH="${P2PREMOTE_LINUX_ARCH:-}"
 BUILDER_PROXY="${P2PREMOTE_BUILDER_PROXY:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}"
+USE_SCCACHE=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -v)
@@ -42,6 +43,10 @@ while [[ $# -gt 0 ]]; do
       fi
       BUILDER_PROXY="$2"
       shift 2
+      ;;
+    --no-sccache)
+      USE_SCCACHE=0
+      shift
       ;;
     -h|--help)
       usage
@@ -158,7 +163,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     if [[ -n "${P2PREMOTE_NODE_DOWNLOAD_BASE:-}" ]]; then
       PROXY_ARGS+=(--build-arg "NODE_DOWNLOAD_BASE=${P2PREMOTE_NODE_DOWNLOAD_BASE}")
     fi
-    docker build --platform "$DOCKER_PLATFORM" -t "$BUILDER_IMAGE" "${DOCKER_HOST_ARGS[@]}" ${PROXY_ARGS+"${PROXY_ARGS[@]}"} "$APP_DIR/packaging/linux/builder"
+    docker build --network host --platform "$DOCKER_PLATFORM" -t "$BUILDER_IMAGE" "${DOCKER_HOST_ARGS[@]}" ${PROXY_ARGS+"${PROXY_ARGS[@]}"} "$APP_DIR/packaging/linux/builder"
   fi
 
   RUN_ENV=(-e "P2PREMOTE_IN_BUILDER_CONTAINER=1")
@@ -171,8 +176,38 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
   fi
 
   WORKSPACE_DIR="$(cd "$REPO_ROOT/.." && pwd)"
+  SCCACHE_RUN_ARGS=()
+  INNER_SCCACHE_ARG=""
+  if [[ "$USE_SCCACHE" == "1" ]]; then
+    SCCACHE_BIN="$(command -v sccache || true)"
+    if [[ -z "$SCCACHE_BIN" && -x "${HOME}/.cargo/bin/sccache" ]]; then
+      SCCACHE_BIN="${HOME}/.cargo/bin/sccache"
+    fi
+    SCCACHE_CONFIG="${SCCACHE_CONF:-${HOME}/.config/sccache/config}"
+    if [[ -z "$SCCACHE_BIN" || ! -f "$SCCACHE_CONFIG" ]]; then
+      echo "sccache binary/config is required by default; install/configure it or pass --no-sccache" >&2
+      exit 1
+    fi
+    docker volume create "p2p-sccache-${LINUX_ARCH}" >/dev/null
+    SCCACHE_RUN_ARGS=(
+      -v "$SCCACHE_BIN:/usr/local/bin/sccache:ro"
+      -v "$SCCACHE_CONFIG:/tmp/sccache-config:ro"
+      -v "p2p-sccache-${LINUX_ARCH}:/root/.cache/sccache"
+      -e "RUSTC_WRAPPER=/usr/local/bin/sccache"
+      -e "SCCACHE_CONF=/tmp/sccache-config"
+      -e "SCCACHE_DIR=/root/.cache/sccache"
+      -e "SCCACHE_CACHE_SIZE=5G"
+      -e "SCCACHE_SERVER_PORT=4228"
+      -e "SCCACHE_WEBDAV_KEY_PREFIX=sccache/linux-docker-${LINUX_ARCH}"
+    )
+    echo "==> Using sccache with local 5G L0 and WebDAV L1"
+  else
+    INNER_SCCACHE_ARG=" --no-sccache"
+    echo "==> sccache disabled; Rust will compile locally"
+  fi
   echo "==> Building inside $BUILDER_IMAGE (glibc 2.28 baseline, cached toolchains in volumes)"
   exec docker run --rm \
+    --network host \
     --platform "$DOCKER_PLATFORM" \
     "${DOCKER_HOST_ARGS[@]}" \
     -v "$WORKSPACE_DIR:/workspace" \
@@ -181,10 +216,19 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     -v p2p-npm-cache:/root/.npm \
     -v p2p-go-mod:/root/go \
     -v p2p-go-build:/root/.cache/go-build \
+    "${SCCACHE_RUN_ARGS[@]}" \
     -w /workspace/p2premote-desktop-client \
     "${RUN_ENV[@]}" \
     "$BUILDER_IMAGE" \
-    bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}'"
+    bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}'${INNER_SCCACHE_ARG}"
+fi
+
+if [[ "$USE_SCCACHE" == "1" ]]; then
+  command -v sccache >/dev/null 2>&1 || { echo "sccache is required by default; install it or pass --no-sccache" >&2; exit 1; }
+  export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
+  echo "==> sccache enabled (use --no-sccache to disable)"
+else
+  export RUSTC_WRAPPER=""
 fi
 
 if [[ ! -d "$PUNCH_RS_SOURCE_DIR" ]]; then
@@ -257,6 +301,9 @@ echo "==> Building Rust headless binaries ($RUST_TARGET)"
 (
   cd "$REPO_ROOT"
   P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" cargo build --release --target "$RUST_TARGET" -p p2premote-service -p p2premote-cli
+  if command -v sccache >/dev/null 2>&1; then
+    sccache --show-stats
+  fi
 )
 
 rust_release_dir() {
