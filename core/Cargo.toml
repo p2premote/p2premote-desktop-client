@@ -6,9 +6,6 @@ build = "build.rs"
 
 [dependencies]
 anyhow = "1"
-# 源码集成（社区标准做法：单一 Rust 世界，无 staticlib 符号冲突）：
-# 打洞库直接以 path 依赖编译进客户端，musl 静态目标由客户端构建统一保证。
-p2premote-punch = { path = "../../p2premote-punch-rs" }
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 base64 = "0.22"
@@ -42,6 +39,11 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# 源码集成（社区标准做法：单一 Rust 世界，无 staticlib 符号冲突）：
+# 打洞库直接以 path 依赖编译进客户端，musl 静态目标由客户端构建统一保证。
+p2premote-punch = { path = "../../p2premote-punch-rs" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
