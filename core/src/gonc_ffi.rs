@@ -1,5 +1,10 @@
 //! gonc FFI client for wgvpn key exchange and UDP data tunnel.
 
+// Linux 通过源码 path 依赖集成打洞库：extern "C" 声明不构成 crate 依赖引用，
+// 需要这一行把 p2premote-punch 的 rlib 带进链接图（Windows/macOS 仍运行时加载 Go 库）。
+#[cfg(target_os = "linux")]
+use p2premote_punch as _;
+
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};

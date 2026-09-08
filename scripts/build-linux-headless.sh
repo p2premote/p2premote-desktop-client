@@ -91,8 +91,8 @@ fi
 BUILD_VERSION="${VERSION}-${GIT_COMMIT}"
 OUT_DIR="$APP_DIR/build/linux/headless"
 DIST_DIR="$APP_DIR/build/linux/dist/headless"
-PUNCH_LIB="$APP_DIR/src-tauri/resources/libp2premote-punch.a"
-# wireguard-go 仍从 Go 仓库构建（build-wireguard-go.sh）；打洞 FFI 已切换到 Rust 重写版。
+# wireguard-go 仍从 Go 仓库构建（build-wireguard-go.sh）；打洞 FFI 以源码 path
+# 依赖（core/Cargo.toml）编译进客户端，无需预构建产物。
 PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs"
 PUNCH_SOURCE_DIR="$REPO_ROOT/../p2premote-punch"
 ENGINE_SOURCE_DIR="$REPO_ROOT/../remoteDesk/remote-desktop-engine"
@@ -189,6 +189,7 @@ fi
 
 if [[ ! -d "$PUNCH_RS_SOURCE_DIR" ]]; then
   echo "p2premote-punch-rs source directory not found: $PUNCH_RS_SOURCE_DIR" >&2
+  echo "(required as the source path dependency of p2premote-core)" >&2
   exit 1
 fi
 if [[ ! -d "$PUNCH_SOURCE_DIR" ]]; then
@@ -221,9 +222,6 @@ CURRENT_RPM="$DIST_DIR/p2premote-headless-${VERSION}-1.${GIT_COMMIT}.${RPM_ARCH}
 rm -rf "$OUT_DIR"
 rm -f "$CURRENT_TAR" "$CURRENT_DEB" "$CURRENT_RPM"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
-
-echo "==> Building static p2premote-punch (Rust rewrite)"
-"$APP_DIR/scripts/build-p2premote-punch-rs.sh" -o "$PUNCH_LIB" -a "$LINUX_ARCH" -s "$PUNCH_RS_SOURCE_DIR"
 
 echo "==> Building userspace WireGuard implementation"
 bash "$APP_DIR/scripts/build-wireguard-go.sh" -o "$WIREGUARD_GO" -a "$LINUX_ARCH" -s "$PUNCH_SOURCE_DIR"
@@ -258,10 +256,7 @@ fi
 echo "==> Building Rust headless binaries ($RUST_TARGET)"
 (
   cd "$REPO_ROOT"
-  # LTO must stay off: thin-LTO internalizes std/ring symbols that are
-  # referenced only by the native punch archive, breaking its link.
-  P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" CARGO_PROFILE_RELEASE_LTO=false \
-    cargo build --release --target "$RUST_TARGET" -p p2premote-service -p p2premote-cli
+  P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" cargo build --release --target "$RUST_TARGET" -p p2premote-service -p p2premote-cli
 )
 
 rust_release_dir() {
