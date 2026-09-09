@@ -631,6 +631,11 @@ fn spawn_supervisor(
                 let _ = outcome_tx.send(Ok(event));
                 return;
             }
+            // The CLI reports lifecycle milestones to every interested reader. In
+            // particular, a host reports `Streaming` only after its controller has
+            // connected, which is later than the `HostReady` milestone used by
+            // start_desktop_engine(). These are status updates, not terminal events.
+            Ok(Some(event)) if is_runtime_progress_event(&event) => {}
             Ok(Some(event)) => {
                 let _ = outcome_tx.send(Err(EngineFailure::new(
                     "unexpected_engine_event",
@@ -652,6 +657,16 @@ fn spawn_supervisor(
         outcome_rx,
         worker: Some(worker),
     }
+}
+
+fn is_runtime_progress_event(event: &EngineEvent) -> bool {
+    matches!(
+        event,
+        EngineEvent::Starting
+            | EngineEvent::HostReady
+            | EngineEvent::Connecting
+            | EngineEvent::Streaming
+    )
 }
 
 fn resolve_desktop_session_helper() -> Result<PathBuf, EngineFailure> {
@@ -1098,6 +1113,15 @@ mod tests {
             "DXGI access denied",
         );
         assert!(!is_expected_peer_close(&unrelated));
+    }
+
+    #[test]
+    fn repeated_cli_milestones_are_valid_runtime_progress() {
+        assert!(is_runtime_progress_event(&EngineEvent::Starting));
+        assert!(is_runtime_progress_event(&EngineEvent::HostReady));
+        assert!(is_runtime_progress_event(&EngineEvent::Connecting));
+        assert!(is_runtime_progress_event(&EngineEvent::Streaming));
+        assert!(!is_runtime_progress_event(&EngineEvent::Stopped));
     }
 
     #[tokio::test]
