@@ -2,10 +2,11 @@
 ; perMachine install mode runs as admin, no UAC needed
 
 ; Overwrite-install convenience: a bare double-click of the setup exe on a
-; machine that already has p2pRemote skips the wizard and reruns itself with
-; /S /UPDATE /R (silent update, no WebView2 download, restart app as the
-; logged-in user after install). Fresh installs and launches that already
-; carry /S or /P (service- or app-triggered updates) keep their behavior.
+; machine that already has p2pRemote first warns that existing tunnels will be
+; disconnected, then reruns itself with /S /UPDATE /R after confirmation
+; (silent update, no WebView2 download, restart app as the logged-in user after
+; install). Fresh installs and launches that already carry /S or /P
+; (service- or app-triggered updates) keep their behavior.
 ; This file is included before the template defines PRODUCTNAME and its Vars,
 ; so the function below must not reference them: the registry key and binary
 ; name are spelled out and must match tauri.conf.json
@@ -26,6 +27,14 @@ Function P2PRemoteAutoSilentUpdateInit
   ReadRegStr $0 HKLM "Software\p2premote\p2pRemote" ""
   StrCmp $0 "" p2pr_asu_done
   IfFileExists "$0\p2premote.exe" 0 p2pr_asu_done
+
+  ; Updating replaces and restarts the tunnel-owning service, so require an
+  ; explicit acknowledgement before switching to the unattended update flow.
+  MessageBox MB_YESNO|MB_ICONEXCLAMATION \
+    "The update will disconnect existing tunnel connections. After the update is complete, please reconnect the tunnels." \
+    IDYES p2pr_asu_confirmed IDNO p2pr_asu_done
+
+  p2pr_asu_confirmed:
 
   ; Relaunch as silent updater; the child inherits this process's elevated
   ; token, so no second UAC prompt appears.
