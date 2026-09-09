@@ -1,15 +1,25 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "p2pRemote",
-  "version": "1.10.9-b6ccfc",
-  "identifier": "top.p2premote.client",
+  "$schema": "https://schema.tauri.app/config/1",
+  "package": {
+    "productName": "p2pRemote",
+    "version": "1.10.19-df0d40"
+  },
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devPath": "http://localhost:1420",
     "beforeBuildCommand": "npm run build && node scripts/prepare-web-resources.mjs",
-    "frontendDist": "../dist"
+    "distDir": "../dist"
   },
-  "app": {
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "open": true
+      },
+      "window": {
+        "all": true
+      }
+    },
     "windows": [
       {
         "title": "p2pRemote",
@@ -18,43 +28,51 @@
         "minWidth": 960,
         "minHeight": 600,
         "center": true,
-        "decorations": false,
-        "devtools": true
+        "decorations": false
       }
     ],
     "security": {
       "csp": null
-    }
-  },
-  "bundle": {
-    "active": true,
-    "targets": [
-      "nsis"
-    ],
-    "resources": [
-      "resources/p2premote-service.exe",
-      "resources/p2premote-cli.exe",
-      "resources/p2premote-notifier.exe",
-      "resources/p2premote-desktop/**/*",
-      "resources/wintun.dll",
-      "resources/p2premote-punch.dll",
-      "resources/.p2premote_default.json",
-      "resources/web/**/*"
-    ],
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
-    "windows": {
-      "certificateThumbprint": null,
-      "digestAlgorithm": "sha256",
-      "timestampUrl": "",
-      "nsis": {
-        "installMode": "perMachine",
-        "installerHooks": "./installer.nsh"
+    },
+    "systemTray": {
+      "iconPath": "icons/icon.ico",
+      "iconAsTemplate": false,
+      "menuOnLeftClick": false
+    },
+    "bundle": {
+      "active": true,
+      "targets": [
+        "nsis"
+      ],
+      "identifier": "top.p2premote.client",
+      "resources": [
+        "resources/p2premote-service.exe",
+        "resources/p2premote-cli.exe",
+        "resources/p2premote-notifier.exe",
+        "resources/p2premote-desktop/**/*",
+        "resources/wintun.dll",
+        "resources/p2premote-punch.dll",
+        "resources/.p2premote_default.json",
+        "resources/web/**/*"
+      ],
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "windows": {
+        "certificateThumbprint": null,
+        "digestAlgorithm": "sha256",
+        "timestampUrl": "",
+        "webviewInstallMode": {
+          "type": "downloadBootstrapper",
+          "silent": true
+        },
+        "nsis": {
+          "installMode": "perMachine"
+        }
       }
     }
   }

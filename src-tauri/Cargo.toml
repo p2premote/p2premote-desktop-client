@@ -1,6 +1,6 @@
 [package]
 name = "p2premote"
-version = "1.10.9-b6ccfc"
+version = "1.10.19-df0d40"
 description = "P2P Remote Desktop Client - Tauri Version"
 authors = ["p2premote"]
 edition = "2021"
@@ -9,13 +9,15 @@ edition = "2021"
 name = "p2premote_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "=1.5.6", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-opener = "2"
-tauri-plugin-single-instance = "2"
+tauri = { version = "=1.8.3", features = ["shell-open", "system-tray", "window-all"] }
+tauri-plugin-single-instance = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "1e407ed56455558cf751022fd68eca3b9e3713a0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

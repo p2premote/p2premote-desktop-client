@@ -50,12 +50,14 @@ let titleResetTimer: ReturnType<typeof window.setTimeout> | null = null
 let titleBeforeFlash: string | null = null
 
 export function isTauriRuntime(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+  return typeof window !== 'undefined' && (
+    '__TAURI_IPC__' in window || '__TAURI_METADATA__' in window || '__TAURI__' in window
+  )
 }
 
 export async function invoke<T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   if (isTauriRuntime()) {
-    const tauri = await import('@tauri-apps/api/core')
+    const tauri = await import('@tauri-apps/api/tauri')
     return tauri.invoke<T>(command, args)
   }
 
@@ -229,8 +231,8 @@ export async function listen<T = unknown>(event: string, handler: EventHandler<T
 
 export async function openExternal(url: string): Promise<void> {
   if (isTauriRuntime()) {
-    const opener = await import('@tauri-apps/plugin-opener')
-    await opener.openUrl(url)
+    const shell = await import('@tauri-apps/api/shell')
+    await shell.open(url)
     return
   }
 
@@ -246,19 +248,19 @@ export async function minimizeWindow(): Promise<void> {
     return
   }
   const tauriWindow = await import('@tauri-apps/api/window')
-  await tauriWindow.getCurrentWindow().minimize()
+  await tauriWindow.appWindow.minimize()
 }
 
 export async function startWindowDragging(): Promise<void> {
   if (!isTauriRuntime()) return
   const tauriWindow = await import('@tauri-apps/api/window')
-  await tauriWindow.getCurrentWindow().startDragging()
+  await tauriWindow.appWindow.startDragging()
 }
 
 export async function toggleMaximizeWindow(): Promise<boolean> {
   if (!isTauriRuntime()) return false
   const tauriWindow = await import('@tauri-apps/api/window')
-  const window = tauriWindow.getCurrentWindow()
+  const window = tauriWindow.appWindow
   await window.toggleMaximize()
   return window.isMaximized()
 }
@@ -266,7 +268,7 @@ export async function toggleMaximizeWindow(): Promise<boolean> {
 export async function isWindowMaximized(): Promise<boolean> {
   if (!isTauriRuntime()) return false
   const tauriWindow = await import('@tauri-apps/api/window')
-  return tauriWindow.getCurrentWindow().isMaximized()
+  return tauriWindow.appWindow.isMaximized()
 }
 
 export async function closeWindow(): Promise<void> {
@@ -275,7 +277,7 @@ export async function closeWindow(): Promise<void> {
     return
   }
   const tauriWindow = await import('@tauri-apps/api/window')
-  await tauriWindow.getCurrentWindow().close()
+  await tauriWindow.appWindow.close()
 }
 
 function ensureWebSocket() {

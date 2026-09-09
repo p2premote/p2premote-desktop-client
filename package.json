@@ -1,7 +1,7 @@
 {
   "name": "p2premote",
   "private": true,
-  "version": "1.10.9-b6ccfc",
+  "version": "1.10.19-df0d40",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,8 +11,7 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
-    "@tauri-apps/api": "~2.10",
-    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/api": "1.6.0",
     "element-plus": "^2.13.6",
     "pinia": "^3.0.4",
     "vue": "^3.5.13",
@@ -21,7 +20,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
-    "@tauri-apps/cli": "~2.10",
+    "@tauri-apps/cli": "1.6.3",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",

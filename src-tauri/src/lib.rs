@@ -8,9 +8,8 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use tauri::Manager;
 use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder},
-    AppHandle, UserAttentionType,
+    AppHandle, CustomMenuItem, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem,
+    UserAttentionType,
 };
 use tracing::{debug, info, warn};
 
@@ -20,7 +19,7 @@ pub(crate) fn app_log_dir() -> std::path::PathBuf {
 }
 
 fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -30,7 +29,7 @@ fn show_main_window(app: &AppHandle) {
 #[tauri::command]
 fn flash_main_window(app: AppHandle) -> Result<(), String> {
     let window = app
-        .get_webview_window("main")
+        .get_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
     #[cfg(target_os = "macos")]
     {
@@ -51,8 +50,16 @@ fn launch_windows_rdp(address: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+        let current_user = RegKey::predef(HKEY_CURRENT_USER);
+        let (defaults, _) = current_user
+            .create_subkey(r"Software\Microsoft\Terminal Server Client\Default")
+            .map_err(|error| format!("failed to open Remote Desktop history: {error}"))?;
+        defaults
+            .set_value("MRU0", &address)
+            .map_err(|error| format!("failed to prefill Remote Desktop address: {error}"))?;
         std::process::Command::new("mstsc.exe")
-            .arg(format!("/v:{address}"))
             .spawn()
             .map(|_| ())
             .map_err(|error| format!("failed to start Windows Remote Desktop: {error}"))
@@ -147,18 +154,64 @@ fn init_config_dir() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_logging().expect("application logging initialization failed");
     init_config_dir().expect("application data directory initialization failed");
 
     debug!("[p2premote] configuration is managed by background service");
 
+    let tray_menu = SystemTrayMenu::new()
+        .add_item(CustomMenuItem::new("logout", "退出登录"))
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("quit", "完全关闭"));
+    let tray = SystemTray::new().with_menu(tray_menu);
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        .system_tray(tray)
+        .on_system_tray_event(|app, event| match event {
+            SystemTrayEvent::LeftClick { .. } => show_main_window(app),
+            SystemTrayEvent::MenuItemClick { id, .. } if id.as_str() == "logout" => {
+                if let Err(err) = tauri::async_runtime::block_on(logout()) {
+                    warn!("[p2premote] Failed to log out from tray menu: {}", err);
+                    return;
+                }
+                if let Err(err) = p2premote_core::service_control::restart_service() {
+                    warn!(
+                        "[p2premote] Failed to restart background service after tray logout: {}",
+                        err
+                    );
+                    return;
+                }
+                if let Err(err) = tauri::async_runtime::block_on(
+                    commands::service::ensure_background_service_session(app.clone()),
+                ) {
+                    warn!(
+                        "[p2premote] Background service IPC was not ready after tray logout: {}",
+                        err
+                    );
+                    return;
+                }
+                show_main_window(app);
+                if let Some(main_window) = app.get_window("main") {
+                    let _ = main_window.eval("window.location.reload()");
+                }
+            }
+            SystemTrayEvent::MenuItemClick { id, .. } if id.as_str() == "quit" => {
+                if let Err(err) = tauri::async_runtime::block_on(mark_current_device_offline()) {
+                    warn!(
+                        "[p2premote] Failed to mark current device offline on quit: {}",
+                        err
+                    );
+                }
+                commands::config::stop_notifier();
+                commands::service::cleanup_background_service_on_app_exit();
+                app.exit(0);
+            }
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             login,
             logout,
@@ -175,7 +228,7 @@ pub fn run() {
             try_auto_login,
             resume_saved_session,
             get_device_list,
-			wake_device,
+            wake_device,
             parse_invite_info,
             update_device_alias,
             delete_device,
@@ -219,70 +272,9 @@ pub fn run() {
                 warn!("[p2premote] Failed to start notifier: {}", err);
             }
 
-            let logout_item = MenuItem::with_id(app, "logout", "退出登录", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "完全关闭", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&logout_item, &quit_item])?;
-
-            let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("p2pRemote")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| {
-                    if event.id() == "logout" {
-                        if let Err(err) = tauri::async_runtime::block_on(logout()) {
-                            warn!("[p2premote] Failed to log out from tray menu: {}", err);
-                            return;
-                        }
-                        if let Err(err) = p2premote_core::service_control::restart_service() {
-                            warn!(
-                                "[p2premote] Failed to restart background service after tray logout: {}",
-                                err
-                            );
-                            return;
-                        }
-                        if let Err(err) = tauri::async_runtime::block_on(
-                            commands::service::ensure_background_service_session(app.clone()),
-                        ) {
-                            warn!(
-                                "[p2premote] Background service IPC was not ready after tray logout: {}",
-                                err
-                            );
-                            return;
-                        }
-                        show_main_window(app);
-                        if let Some(main_window) = app.get_webview_window("main") {
-                            let _ = main_window.eval("window.location.reload()");
-                        }
-                    } else if event.id() == "quit" {
-                        if let Err(err) =
-                            tauri::async_runtime::block_on(mark_current_device_offline())
-                        {
-                            warn!(
-                                "[p2premote] Failed to mark current device offline on quit: {}",
-                                err
-                            );
-                        }
-                        commands::config::stop_notifier();
-                        commands::service::cleanup_background_service_on_app_exit();
-                        app.exit(0);
-                    }
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
-                    }
-                })
-                .build(app)?;
-
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
-                if let Some(main_window) = app.get_webview_window("main") {
+                if let Some(main_window) = app.get_window("main") {
                     let main_window_for_close = main_window.clone();
                     main_window.on_window_event(move |event| {
                         if let tauri::WindowEvent::CloseRequested { api, .. } = event {

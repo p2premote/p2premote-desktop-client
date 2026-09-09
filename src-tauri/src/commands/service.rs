@@ -5,7 +5,7 @@ use std::sync::Arc;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
@@ -88,7 +88,7 @@ async fn ensure_persistent_connection(app: &AppHandle) -> Result<(), String> {
         // [P2] 连接断开，清空缓存状态，避免 UI 显示过期数据
         *get_last_known_status().lock() = None;
         // 通知 UI 连接已断开，触发重连
-        let _ = app_clone.emit("service-connection-lost", ());
+        let _ = app_clone.emit_all("service-connection-lost", ());
         debug!("[ServiceIPC] persistent connection closed");
     });
 
@@ -117,7 +117,7 @@ async fn run_connection_loop(
                 match data {
                     Data::StatusChanged(status) => {
                         *get_last_known_status().lock() = Some(status.clone());
-                        let _ = app.emit("service-status-changed", &status);
+                        let _ = app.emit_all("service-status-changed", &status);
                     }
                     Data::CommandResponse { .. } => {
                         match pending_queue.pop_front() {
@@ -239,9 +239,9 @@ pub struct RequiredClientFile {
 
 fn require_bundled_binary(app: &AppHandle, binary_name: &str) -> Result<PathBuf, String> {
     let resource_dir = app
-        .path()
+        .path_resolver()
         .resource_dir()
-        .map_err(|error| format!("failed to resolve application resource directory: {error}"))?;
+        .ok_or_else(|| "failed to resolve application resource directory".to_string())?;
     let path = resource_dir.join("resources").join(binary_name);
     if !path.is_file() {
         return Err(format!(
@@ -759,7 +759,7 @@ pub async fn start_service_active_tunnel(
         temporary_password.as_ref().map(|v| !v.is_empty()).unwrap_or(false),
         lan_cidrs.as_ref().map(|v| v.len()).unwrap_or(0)
     );
-    let _ = app.emit(
+    let _ = app.emit_all(
         "active-tunnel-stage",
         serde_json::json!({
             "target_device_id": target_device_id,
@@ -772,7 +772,7 @@ pub async fn start_service_active_tunnel(
         target_device_id
     );
     let _ = ensure_background_service_session(app.clone()).await?;
-    let _ = app.emit(
+    let _ = app.emit_all(
         "active-tunnel-stage",
         serde_json::json!({
             "target_device_id": target_device_id,
@@ -784,7 +784,7 @@ pub async fn start_service_active_tunnel(
         "[service] background service ready, sending StartActiveTunnelJob IPC: target_device_id={}",
         target_device_id
     );
-    let _ = app.emit(
+    let _ = app.emit_all(
         "active-tunnel-stage",
         serde_json::json!({
             "target_device_id": target_device_id,
@@ -808,7 +808,7 @@ pub async fn start_service_active_tunnel(
                 "[service] StartActiveTunnelJob IPC succeeded: target_device_id={}",
                 target_device_id
             );
-            let _ = app.emit(
+            let _ = app.emit_all(
                 "active-tunnel-stage",
                 serde_json::json!({
                     "target_device_id": target_device_id,
@@ -823,7 +823,7 @@ pub async fn start_service_active_tunnel(
                 "[service] StartActiveTunnelJob IPC returned failure: target_device_id={}, message={}",
                 target_device_id, message
             );
-            let _ = app.emit(
+            let _ = app.emit_all(
                 "active-tunnel-stage",
                 serde_json::json!({
                     "target_device_id": target_device_id,
@@ -841,7 +841,7 @@ pub async fn start_service_active_tunnel(
                 "[service] StartActiveTunnelJob IPC returned unexpected response: target_device_id={}, response={:?}",
                 target_device_id, other
             );
-            let _ = app.emit(
+            let _ = app.emit_all(
                 "active-tunnel-stage",
                 serde_json::json!({
                     "target_device_id": target_device_id,
@@ -856,7 +856,7 @@ pub async fn start_service_active_tunnel(
                 "[service] StartActiveTunnelJob IPC failed: target_device_id={}, error={}",
                 target_device_id, err
             );
-            let _ = app.emit(
+            let _ = app.emit_all(
                 "active-tunnel-stage",
                 serde_json::json!({
                     "target_device_id": target_device_id,
@@ -883,7 +883,7 @@ pub async fn start_service_anonymous_active_tunnel(
         connect_code
     );
     let _status = ensure_background_service_session(app.clone()).await?;
-    let _ = app.emit(
+    let _ = app.emit_all(
         "active-tunnel-stage",
         serde_json::json!({
             "stage": "service_ipc",

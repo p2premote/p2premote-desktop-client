@@ -2,7 +2,7 @@
 //! 对应原 Go: internal/config 和设置相关的命令
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tracing::{debug, info};
 
 use crate::APP_VERSION;
@@ -34,10 +34,10 @@ mod tests {
 
 #[cfg(windows)]
 pub fn notifier_executable(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    app.path()
+    app.path_resolver()
         .resource_dir()
         .map(|dir| notifier_executable_in(&dir))
-        .map_err(|err| err.to_string())
+        .ok_or_else(|| "failed to resolve application resource directory".to_string())
 }
 
 #[cfg(windows)]
