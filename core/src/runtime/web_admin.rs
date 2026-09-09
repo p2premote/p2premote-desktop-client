@@ -995,15 +995,70 @@ async fn handle_web_command(
                 .ok_or_else(|| "missing boolean argument: enabled".to_string())?;
             set_web_auto_start(enabled, state).await
         }
-        "check_update" => check_update_for_web().await,
-        "register_by_email_code" => register_by_email_code_for_web(args).await,
+        "check_update" => {
+            let resp = dispatch_web_data(
+                Data::CheckUpdate {
+                    current_version: client_version(),
+                },
+                state,
+            )
+            .await?;
+            command_data(resp)
+        }
+        "register_by_email_code" => {
+            let resp = dispatch_web_data(
+                Data::RegisterByEmailCode {
+                    username: arg_string(&args, &["username"])?,
+                    email: arg_string(&args, &["email"])?,
+                    password: arg_string(&args, &["password"])?,
+                    verification_code: arg_string(
+                        &args,
+                        &["verificationCode", "verification_code"],
+                    )?,
+                    invite_code: arg_optional_string(&args, &["inviteCode", "invite_code"]),
+                },
+                state,
+            )
+            .await?;
+            command_data(resp)
+        }
         "send_registration_verification_code" => {
-            send_registration_verification_code_for_web(args).await
+            let resp = dispatch_web_data(
+                Data::SendVerificationCode {
+                    email: arg_string(&args, &["email"])?,
+                    purpose: "register".to_string(),
+                },
+                state,
+            )
+            .await?;
+            command_data(resp)
         }
         "send_reset_password_verification_code" => {
-            send_reset_password_verification_code_for_web(args).await
+            let resp = dispatch_web_data(
+                Data::SendVerificationCode {
+                    email: arg_string(&args, &["email"])?,
+                    purpose: "reset_password".to_string(),
+                },
+                state,
+            )
+            .await?;
+            command_data(resp)
         }
-        "reset_password_by_email_code" => reset_password_by_email_code_for_web(args).await,
+        "reset_password_by_email_code" => {
+            let resp = dispatch_web_data(
+                Data::ResetPasswordByEmailCode {
+                    email: arg_string(&args, &["email"])?,
+                    verification_code: arg_string(
+                        &args,
+                        &["verificationCode", "verification_code"],
+                    )?,
+                    new_password: arg_string(&args, &["newPassword", "new_password"])?,
+                },
+                state,
+            )
+            .await?;
+            command_data(resp)
+        }
         "login" => {
             let identifier = arg_string(&args, &["identifier"])?;
             let password = arg_string(&args, &["password"])?;
@@ -1340,148 +1395,12 @@ fn web_service_info() -> WebServiceInfo {
     }
 }
 
-async fn register_by_email_code_for_web(
-    args: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let username = arg_string(&args, &["username"])?;
-    let email = arg_string(&args, &["email"])?;
-    let password = arg_string(&args, &["password"])?;
-    let verification_code = arg_string(&args, &["verificationCode", "verification_code"])?;
-    let invite_code = arg_optional_string(&args, &["inviteCode", "invite_code"]);
-    let config = load_machine_config().unwrap_or_default();
-    let response = crate::auth::register_by_email_code(
-        &config.server_url,
-        &username,
-        &email,
-        &password,
-        &verification_code,
-        invite_code.as_deref(),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    let message = if response.code == 0 {
-        response.msg.clone()
-    } else {
-        response.localized_error_message(config.locale.as_deref())
-    };
-    Ok(serde_json::json!({
-        "code": response.code,
-        "msg": message,
-        "data": response.data,
-    }))
-}
-
-async fn send_registration_verification_code_for_web(
-    args: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let email = arg_string(&args, &["email"])?;
-    let config = load_machine_config().unwrap_or_default();
-    let response = crate::auth::send_verification_code(&config.server_url, &email, "register")
-        .await
-        .map_err(|e| e.to_string())?;
-    if response.code != 0 {
-        return Err(response.localized_error_message(config.locale.as_deref()));
-    }
-    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
-}
-
-async fn send_reset_password_verification_code_for_web(
-    args: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let email = arg_string(&args, &["email"])?;
-    let config = load_machine_config().unwrap_or_default();
-    let response =
-        crate::auth::send_verification_code(&config.server_url, &email, "reset_password")
-            .await
-            .map_err(|e| e.to_string())?;
-    if response.code != 0 {
-        return Err(response.localized_error_message(config.locale.as_deref()));
-    }
-    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
-}
-
-async fn reset_password_by_email_code_for_web(
-    args: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let email = arg_string(&args, &["email"])?;
-    let verification_code = arg_string(&args, &["verificationCode", "verification_code"])?;
-    let new_password = arg_string(&args, &["newPassword", "new_password"])?;
-    let config = load_machine_config().unwrap_or_default();
-    let response = crate::auth::reset_password_by_email_code(
-        &config.server_url,
-        &email,
-        &verification_code,
-        &new_password,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    if response.code != 0 {
-        return Err(response.localized_error_message(config.locale.as_deref()));
-    }
-    Ok(serde_json::json!({ "code": response.code, "msg": response.msg }))
-}
-
-async fn check_update_for_web() -> Result<serde_json::Value, String> {
-    let config = load_machine_config().unwrap_or_default();
-    let current = client_version();
-    let data = match crate::update::fetch_version_policy(&config.server_url).await {
-        Ok(data) => data,
-        Err(error) => {
-            let message = error.localized_message(config.locale.as_deref());
-            return Ok(update_response(
-                "none",
-                false,
-                false,
-                &current,
-                "",
-                "",
-                "",
-                Some(&message),
-            ));
-        }
-    };
-    let evaluation = crate::update::evaluate_version_policy(&current, &data);
-    Ok(update_response(
-        evaluation.mode,
-        evaluation.has_update,
-        evaluation.force_update,
-        &current,
-        &data.latest_version,
-        &data.min_supported_version,
-        &data.release_notes,
-        None,
-    ))
-}
-
 fn client_version() -> String {
     std::env::var("P2PREMOTE_CLIENT_VERSION")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| option_env!("P2PREMOTE_CLIENT_VERSION").map(|value| value.to_string()))
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn update_response(
-    mode: &str,
-    has_update: bool,
-    force_update: bool,
-    current: &str,
-    latest: &str,
-    min_supported: &str,
-    release_notes: &str,
-    error: Option<&str>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "mode": mode,
-        "has_update": has_update,
-        "force_update": force_update,
-        "current": current,
-        "latest": latest,
-        "min_supported": min_supported,
-        "release_notes": release_notes,
-        "error": error,
-    })
 }
 
 fn arg_value<'a>(args: &'a serde_json::Value, names: &[&str]) -> Option<&'a serde_json::Value> {

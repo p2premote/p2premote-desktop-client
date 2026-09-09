@@ -295,6 +295,10 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::GenerateConnectCode { .. } => "GenerateConnectCode",
         Data::MarkCurrentDeviceOffline => "MarkCurrentDeviceOffline",
         Data::Login { .. } => "Login",
+        Data::RegisterByEmailCode { .. } => "RegisterByEmailCode",
+        Data::SendVerificationCode { .. } => "SendVerificationCode",
+        Data::ResetPasswordByEmailCode { .. } => "ResetPasswordByEmailCode",
+        Data::CheckUpdate { .. } => "CheckUpdate",
         Data::TryAutoLogin => "TryAutoLogin",
         Data::ResumeSavedSession { .. } => "ResumeSavedSession",
         Data::GetUserProfile => "GetUserProfile",
@@ -616,6 +620,130 @@ pub(super) async fn handle_data(
             }
             Err(err) => Some(cmd_response(false, &err.to_string(), None)),
         },
+        Data::RegisterByEmailCode {
+            username,
+            email,
+            password,
+            verification_code,
+            invite_code,
+        } => {
+            let config = match load_machine_config() {
+                Ok(config) => config,
+                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            };
+            match register_by_email_code(
+                &config.server_url,
+                &username,
+                &email,
+                &password,
+                &verification_code,
+                invite_code.as_deref(),
+            )
+            .await
+            {
+                Ok(response) => {
+                    let message = if response.code == 0 {
+                        response.msg.clone()
+                    } else {
+                        response.localized_error_message(config.locale.as_deref())
+                    };
+                    Some(cmd_response_with_data(
+                        true,
+                        "ok",
+                        None,
+                        serde_json::json!({
+                            "code": response.code,
+                            "msg": message,
+                            "data": response.data,
+                        }),
+                    ))
+                }
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
+        }
+        Data::SendVerificationCode { email, purpose } => {
+            let config = match load_machine_config() {
+                Ok(config) => config,
+                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            };
+            match send_verification_code(&config.server_url, &email, &purpose).await {
+                Ok(response) if response.code == 0 => Some(cmd_response_with_data(
+                    true,
+                    "ok",
+                    None,
+                    serde_json::json!({ "code": response.code, "msg": response.msg }),
+                )),
+                Ok(response) => Some(cmd_response(
+                    false,
+                    &response.localized_error_message(config.locale.as_deref()),
+                    None,
+                )),
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
+        }
+        Data::ResetPasswordByEmailCode {
+            email,
+            verification_code,
+            new_password,
+        } => {
+            let config = match load_machine_config() {
+                Ok(config) => config,
+                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            };
+            match reset_password_by_email_code(
+                &config.server_url,
+                &email,
+                &verification_code,
+                &new_password,
+            )
+            .await
+            {
+                Ok(response) if response.code == 0 => Some(cmd_response_with_data(
+                    true,
+                    "ok",
+                    None,
+                    serde_json::json!({ "code": response.code, "msg": response.msg }),
+                )),
+                Ok(response) => Some(cmd_response(
+                    false,
+                    &response.localized_error_message(config.locale.as_deref()),
+                    None,
+                )),
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
+        }
+        Data::CheckUpdate { current_version } => {
+            let config = match load_machine_config() {
+                Ok(config) => config,
+                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            };
+            match crate::update::fetch_version_policy(&config.server_url).await {
+                Ok(data) => {
+                    let evaluation =
+                        crate::update::evaluate_version_policy(&current_version, &data);
+                    Some(cmd_response_with_data(
+                        true,
+                        "ok",
+                        None,
+                        serde_json::json!({
+                            "mode": evaluation.mode.to_string(),
+                            "has_update": evaluation.has_update,
+                            "force_update": evaluation.force_update,
+                            "current": current_version,
+                            "latest": data.latest_version,
+                            "min_supported": data.min_supported_version,
+                            "release_notes": data.release_notes,
+                            "error": null,
+                        }),
+                    ))
+                }
+                Err(err) => Some(cmd_response(
+                    false,
+                    &err.localized_message(config.locale.as_deref()),
+                    None,
+                )),
+            }
+        }
         Data::TryAutoLogin => {
             // 仅在用户开启自动登录且有保存的 refresh token 时恢复会话。
             // 登出会保留"记住密码/自动登录"偏好（仅清除 token），此处对

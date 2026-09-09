@@ -405,26 +405,18 @@ pub struct UpdateCheckResponse {
 #[tauri::command]
 pub async fn check_update() -> Result<UpdateCheckResponse, String> {
     info!("[config] 检查更新...");
-    let config = p2premote_core::config::load_machine_config()
-        .map_err(|error| format!("failed to load machine config for update check: {error}"))?;
-    match p2premote_core::update::fetch_version_policy(&config.server_url).await {
-        Ok(data) => {
-            let evaluation = p2premote_core::update::evaluate_version_policy(APP_VERSION, &data);
-            info!(
-                "[config] 版本检查完成: current={}, latest={}, min_supported={}, mode={}",
-                APP_VERSION, data.latest_version, data.min_supported_version, evaluation.mode
-            );
-            Ok(UpdateCheckResponse {
-                mode: evaluation.mode.to_string(),
-                has_update: evaluation.has_update,
-                force_update: evaluation.force_update,
-                current: APP_VERSION.to_string(),
-                latest: data.latest_version,
-                min_supported: data.min_supported_version,
-                release_notes: data.release_notes,
-                error: None,
-            })
-        }
-        Err(error) => Err(error.localized_message(config.locale.as_deref())),
+    match crate::commands::service::send_command_responsive(Data::CheckUpdate {
+        current_version: APP_VERSION.to_string(),
+    })
+    .await
+    {
+        Ok(Data::CommandResponse {
+            ok: true,
+            data: Some(data),
+            ..
+        }) => serde_json::from_value(data).map_err(|error| error.to_string()),
+        Ok(Data::CommandResponse { message, .. }) => Err(message),
+        Ok(other) => Err(format!("unexpected service response: {other:?}")),
+        Err(error) => Err(error),
     }
 }

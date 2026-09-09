@@ -127,6 +127,25 @@ pub enum Data {
         identifier: String,
         password: String,
     },
+    RegisterByEmailCode {
+        username: String,
+        email: String,
+        password: String,
+        verification_code: String,
+        invite_code: Option<String>,
+    },
+    SendVerificationCode {
+        email: String,
+        purpose: String,
+    },
+    ResetPasswordByEmailCode {
+        email: String,
+        verification_code: String,
+        new_password: String,
+    },
+    CheckUpdate {
+        current_version: String,
+    },
     /// 自动登录：service 用已保存 refresh token 恢复会话
     TryAutoLogin,
     /// 用户手动确认使用已保存的 refresh token 恢复会话。

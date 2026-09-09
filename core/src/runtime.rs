@@ -5,7 +5,10 @@
 //! - 握手验证后进入消息循环
 //! - 状态变化时通过持久连接推送 StatusChanged
 
-use crate::auth::{fetch_invite_info, fetch_profile, login_and_persist, refresh_with_config};
+use crate::auth::{
+    fetch_invite_info, fetch_profile, login_and_persist, refresh_with_config,
+    register_by_email_code, reset_password_by_email_code, send_verification_code,
+};
 use crate::config::{
     clear_machine_credentials, derive_control_secret, ensure_machine_config, load_machine_config,
     save_machine_config,
