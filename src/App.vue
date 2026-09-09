@@ -708,6 +708,17 @@ function closeTextContextMenu() {
   textContextMenu.value.visible = false
 }
 
+function handleSelectAllShortcut(event: KeyboardEvent) {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return
+
+  const target = event.target
+  const isEditable = target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || (target instanceof HTMLElement && target.isContentEditable)
+
+  if (!isEditable) event.preventDefault()
+}
+
 function handleAppContextMenu(event: MouseEvent) {
   event.preventDefault()
   closeTextContextMenu()
@@ -1736,6 +1747,7 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', handleActiveTunnelJobForeground)
   document.addEventListener('contextmenu', handleAppContextMenu)
   document.addEventListener('mousedown', closeTextContextMenu)
+  document.addEventListener('keydown', handleSelectAllShortcut)
   window.addEventListener('blur', closeTextContextMenu)
   window.addEventListener('resize', closeTextContextMenu)
   window.addEventListener('scroll', closeTextContextMenu, true)
@@ -1754,6 +1766,7 @@ onUnmounted(() => {
   document.removeEventListener('contextmenu', handleAppContextMenu)
   window.removeEventListener('p2premote-web-auth-required', requireWebAuthentication)
   document.removeEventListener('mousedown', closeTextContextMenu)
+  document.removeEventListener('keydown', handleSelectAllShortcut)
   window.removeEventListener('blur', closeTextContextMenu)
   window.removeEventListener('resize', closeTextContextMenu)
   window.removeEventListener('scroll', closeTextContextMenu, true)
