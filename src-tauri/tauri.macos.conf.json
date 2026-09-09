@@ -1,6 +1,6 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "app": {
+  "$schema": "https://schema.tauri.app/config/1",
+  "tauri": {
     "windows": [
       {
         "title": "p2pRemote",
@@ -10,28 +10,22 @@
         "minHeight": 600,
         "center": true,
         "decorations": true,
-        "titleBarStyle": "Visible",
-        "hiddenTitle": false,
-        "devtools": true
+        "titleBarStyle": "Visible"
       }
-    ]
-  },
-  "bundle": {
-    "targets": ["dmg"],
-    "resources": [
-      "resources/p2premote-service",
-      "resources/p2premote-cli",
-      "resources/libp2premote-punch.dylib",
-      "resources/.p2premote_default.json",
-      "resources/web/**/*"
     ],
-    "macOS": {
-      "minimumSystemVersion": "13.0",
-      "signingIdentity": "-",
-      "hardenedRuntime": true,
-      "entitlements": "Entitlements.plist",
-      "files": {
-        "Library/LaunchDaemons/top.p2premote.service.plist": "macos/top.p2premote.service.plist"
+    "bundle": {
+      "targets": ["app"],
+      "resources": [
+        "resources/p2premote-service",
+        "resources/p2premote-cli",
+        "resources/p2premote-desktop-engine",
+        "resources/libp2premote-punch.dylib",
+        "resources/.p2premote_default.json",
+        "resources/web/**/*"
+      ],
+      "macOS": {
+        "minimumSystemVersion": "13.0",
+        "entitlements": "Entitlements.plist"
       }
     }
   }

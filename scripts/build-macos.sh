@@ -38,7 +38,7 @@ engine_artifact="$engine_dir/artifacts/macos-universal/p2premote-desktop-engine"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/p2premote-macos.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
-for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun; do
+for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun hdiutil; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
 done
 if [[ "$use_sccache" == 1 ]]; then
@@ -119,24 +119,26 @@ fi
   P2PREMOTE_PUNCH_DIR="$punch_dir" \
   P2PREMOTE_PREBUILT_RESOURCES=1 \
   APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" \
-    npx tauri build --target universal-apple-darwin --config "{\"version\":\"$version\"}"
+    npx tauri build --target universal-apple-darwin --bundles app --config "{\"package\":{\"version\":\"$version\"}}"
 )
 
-dmg_path="$(find "$repo_dir/target/universal-apple-darwin/release/bundle/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
-if [[ -z "$dmg_path" ]]; then
-  echo "Universal DMG was not produced." >&2
-  exit 1
-fi
-
 app_path="$(find "$repo_dir/target/universal-apple-darwin/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
-if [[ -n "$app_path" ]]; then
-  lipo "$app_path/Contents/MacOS/p2pRemote" -verify_arch x86_64 arm64
-  for artifact in p2premote-service p2premote-cli p2premote-desktop-engine libp2premote-punch.dylib; do
-    lipo "$app_path/Contents/Resources/resources/$artifact" -verify_arch x86_64 arm64
-  done
-  test -f "$app_path/Contents/Library/LaunchDaemons/top.p2premote.service.plist"
-  codesign --verify --deep --strict --verbose=2 "$app_path"
-fi
+[[ -n "$app_path" ]] || { echo "Universal app bundle was not produced." >&2; exit 1; }
+mkdir -p "$app_path/Contents/Library/LaunchDaemons"
+cp "$repo_dir/src-tauri/macos/top.p2premote.service.plist" \
+  "$app_path/Contents/Library/LaunchDaemons/top.p2premote.service.plist"
+codesign --force --deep --timestamp --options runtime \
+  --entitlements "$repo_dir/src-tauri/Entitlements.plist" \
+  --sign "$APPLE_SIGNING_IDENTITY" "$app_path"
+lipo "$app_path/Contents/MacOS/p2pRemote" -verify_arch x86_64 arm64
+for artifact in p2premote-service p2premote-cli p2premote-desktop-engine libp2premote-punch.dylib; do
+  lipo "$app_path/Contents/Resources/resources/$artifact" -verify_arch x86_64 arm64
+done
+codesign --verify --deep --strict --verbose=2 "$app_path"
+
+dmg_path="$repo_dir/target/p2pRemote_${version}_macos-universal.dmg"
+rm -f "$dmg_path"
+hdiutil create -volname p2pRemote -srcfolder "$app_path" -ov -format UDZO "$dmg_path"
 
 if [[ -n "${APPLE_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
   xcrun notarytool submit "$dmg_path" \
@@ -159,6 +161,4 @@ if [[ -n "$app_path" ]]; then
 fi
 spctl --assess --type open --context context:primary-signature -v "$dmg_path"
 
-release_name="p2pRemote_${version}_universal.dmg"
-cp "$dmg_path" "$repo_dir/target/$release_name"
-echo "Created $repo_dir/target/$release_name"
+echo "Created $dmg_path"
