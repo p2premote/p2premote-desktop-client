@@ -566,6 +566,10 @@ mod win_impl {
     }
 
     pub fn query_service_status() -> Result<ServiceStatus> {
+        query_named_service_status(SERVICE_NAME)
+    }
+
+    pub fn query_named_service_status(service_name: &str) -> Result<ServiceStatus> {
         let not_installed = ServiceStatus {
             installed: false,
             running: false,
@@ -582,7 +586,7 @@ mod win_impl {
             }
         };
 
-        let service = manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS);
+        let service = manager.open_service(service_name, ServiceAccess::QUERY_STATUS);
 
         let service = match service {
             Ok(s) => s,
@@ -596,7 +600,7 @@ mod win_impl {
         };
 
         let enabled = manager
-            .open_service(SERVICE_NAME, ServiceAccess::QUERY_CONFIG)
+            .open_service(service_name, ServiceAccess::QUERY_CONFIG)
             .ok()
             .and_then(|service| service.query_config().ok())
             .map(|c| c.start_type == ServiceStartType::AutoStart)

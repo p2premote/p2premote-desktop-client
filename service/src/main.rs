@@ -151,6 +151,17 @@ fn handle_scm_command() -> anyhow::Result<()> {
         None
     };
 
+    let desktop_exe = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.join("p2premote-desktop").join("p2premote-desktop.exe")));
+    let run_desktop = |arguments: &[&str]| -> anyhow::Result<()> {
+        let executable = desktop_exe.as_ref().ok_or_else(|| anyhow::anyhow!("cannot resolve desktop service executable"))?;
+        if !executable.is_file() { return Err(anyhow::anyhow!("desktop service executable missing: {}", executable.display())); }
+        let status = std::process::Command::new(executable).args(arguments).status()?;
+        if !status.success() { return Err(anyhow::anyhow!("desktop service command {:?} failed with {}", arguments, status)); }
+        Ok(())
+    };
+
     let result = match action.as_str() {
         "install" => install_exe
             .ok_or_else(|| anyhow::anyhow!("install requires exe_path argument"))
@@ -185,7 +196,12 @@ fn handle_scm_command() -> anyhow::Result<()> {
             p2premote_core::service_control::direct::enable_service()
         }),
         "disable" => run_scm_step("disable", || {
-            p2premote_core::service_control::direct::disable_service()
+            p2premote_core::service_control::direct::disable_service()?;
+            if let Err(error) = run_desktop(&["--service-start-type", "demand"]) {
+                let _ = p2premote_core::service_control::direct::enable_service();
+                return Err(error);
+            }
+            Ok(())
         }),
         // 复合操作：install + enable + start，一次 UAC 完成
         "setup" => install_exe
@@ -221,6 +237,13 @@ fn handle_scm_command() -> anyhow::Result<()> {
                 if let Some(e) = start_err {
                     scm_trace(&format!("setup.start failed after retries: {}", e));
                     return Err(e);
+                }
+                if let Err(error) = run_desktop(&["--ensure-service"])
+                    .and_then(|_| run_desktop(&["--service-start-type", "auto"]))
+                    .and_then(|_| run_desktop(&["--start-service"]))
+                {
+                    let _ = p2premote_core::service_control::direct::disable_service();
+                    return Err(error);
                 }
                 Ok(())
             }),

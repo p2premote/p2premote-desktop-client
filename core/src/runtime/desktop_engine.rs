@@ -97,6 +97,7 @@ pub(super) struct SessionConfig {
     local_virtual_ip: String,
     peer_virtual_ip: String,
     port: u16,
+    session_secret: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,11 +116,13 @@ struct DesktopCliEvent {
 struct DesktopCliProcess {
     child: Child,
     events: Receiver<Result<EngineEvent, EngineFailure>>,
+    executable: PathBuf,
+    role: DesktopEngineRole,
 }
 
 impl DesktopCliProcess {
     fn start(
-        session_helper: &Path,
+        executable: &Path,
         role: DesktopEngineRole,
         config: &SessionConfig,
     ) -> Result<Self, EngineFailure> {
@@ -129,14 +132,36 @@ impl DesktopCliProcess {
                 format!("{}:{}", config.peer_virtual_ip, config.port)
             }
         };
-        let mut command = Command::new(session_helper);
-        command.arg("--");
+        let mut command = Command::new(executable);
         match role {
             DesktopEngineRole::Host => {
-                command.args(["host", "--listen", &address, "--machine-readable"]);
+                let expires_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|error| EngineFailure::new(
+                        "system_clock_error",
+                        EngineStage::Configuration,
+                        error.to_string(),
+                    ))?
+                    .as_secs()
+                    + 120;
+                command.args([
+                    "service-host",
+                    "--listen",
+                    &address,
+                    "--peer",
+                    &config.peer_virtual_ip,
+                    "--attempt-id",
+                    &config.attempt_id,
+                    "--secret",
+                    &config.session_secret,
+                    "--expires-at",
+                    &expires_at.to_string(),
+                    "--machine-readable",
+                ]);
             }
             DesktopEngineRole::Controller => {
                 command.args(["connect", "--address", &address, "--machine-readable"]);
+                command.env("P2PREMOTE_DESKTOP_SESSION_SECRET", &config.session_secret);
             }
         }
         let mut child = command
@@ -203,6 +228,8 @@ impl DesktopCliProcess {
         Ok(Self {
             child,
             events: event_rx,
+            executable: executable.to_owned(),
+            role,
         })
     }
 
@@ -321,6 +348,26 @@ impl DesktopCliProcess {
     }
 
     fn stop(mut self, _reason: impl Into<String>, timeout: Duration) -> Result<(), EngineFailure> {
+        if self.role == DesktopEngineRole::Host {
+            let status = Command::new(&self.executable)
+                .arg("service-host-stop")
+                .status()
+                .map_err(|error| {
+                    EngineFailure::io(
+                        "desktop_service_host_stop_failed",
+                        EngineStage::Shutdown,
+                        "request RustDesk service host shutdown",
+                        error,
+                    )
+                })?;
+            if !status.success() {
+                return Err(EngineFailure::new(
+                    "desktop_service_host_stop_failed",
+                    EngineStage::Shutdown,
+                    format!("RustDesk service host shutdown exited with {status}"),
+                ));
+            }
+        }
         self.child.kill().map_err(|error| {
             EngineFailure::io(
                 "desktop_process_terminate_failed",
@@ -581,10 +628,10 @@ pub(super) fn start_desktop_engine(
 ) -> Result<DesktopEngineTask, EngineFailure> {
     let attempt_id = config.attempt_id.clone();
     let peer_device_id = config.peer_device_id;
-    let session_helper = resolve_desktop_session_helper()?;
-    info!(peer_device_id, attempt_id = %attempt_id, role = ?role, executable = %session_helper.display(),
+    let executable = resolve_desktop_executable()?;
+    info!(peer_device_id, attempt_id = %attempt_id, role = ?role, executable = %executable.display(),
         "[DesktopEngine] starting process");
-    let mut process = DesktopCliProcess::start(&session_helper, role, &config)?;
+    let mut process = DesktopCliProcess::start(&executable, role, &config)?;
     info!(peer_device_id, attempt_id = %attempt_id, role = ?role, pid = process.id(),
         "[DesktopEngine] process spawned");
     match role {
@@ -669,8 +716,8 @@ fn is_runtime_progress_event(event: &EngineEvent) -> bool {
     )
 }
 
-fn resolve_desktop_session_helper() -> Result<PathBuf, EngineFailure> {
-    if let Some(path) = std::env::var_os("P2PREMOTE_DESKTOP_SESSION_HELPER_PATH") {
+fn resolve_desktop_executable() -> Result<PathBuf, EngineFailure> {
+    if let Some(path) = std::env::var_os("P2PREMOTE_DESKTOP_PATH") {
         return validate_desktop_path(PathBuf::from(path));
     }
     #[cfg(windows)]
@@ -680,7 +727,7 @@ fn resolve_desktop_session_helper() -> Result<PathBuf, EngineFailure> {
             path.parent().map(|parent| {
                 parent
                     .join("p2premote-desktop")
-                    .join("p2premote-desktop-session-helper.exe")
+                    .join("p2premote-desktop.exe")
             })
         })
         .ok_or_else(|| {
@@ -703,9 +750,9 @@ fn resolve_desktop_session_helper() -> Result<PathBuf, EngineFailure> {
 fn validate_desktop_path(path: PathBuf) -> Result<PathBuf, EngineFailure> {
     if !path.is_file() {
         return Err(EngineFailure::new(
-            "desktop_session_helper_not_found",
+            "desktop_executable_not_found",
             EngineStage::Configuration,
-            format!("desktop session helper not found: {}", path.display()),
+            format!("desktop executable not found: {}", path.display()),
         ));
     }
     Ok(path)
@@ -1062,7 +1109,7 @@ fn session_config(
     local_virtual_ip: &str,
     peer_virtual_ip: &str,
     port: u16,
-    _session_secret: String,
+    session_secret: String,
 ) -> SessionConfig {
     SessionConfig {
         attempt_id,
@@ -1070,6 +1117,7 @@ fn session_config(
         local_virtual_ip: local_virtual_ip.to_owned(),
         peer_virtual_ip: peer_virtual_ip.to_owned(),
         port,
+        session_secret,
     }
 }
 
@@ -1082,7 +1130,7 @@ mod tests {
         let missing =
             std::env::temp_dir().join(format!("p2premote-missing-engine-{}", std::process::id()));
         let error = validate_desktop_path(missing).unwrap_err();
-        assert_eq!(error.code, "desktop_session_helper_not_found");
+        assert_eq!(error.code, "desktop_executable_not_found");
     }
 
     #[test]

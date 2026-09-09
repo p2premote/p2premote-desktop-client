@@ -7,7 +7,6 @@ use tracing::{debug, info};
 
 use crate::APP_VERSION;
 use p2premote_core::control::Data;
-use p2premote_core::service_control::disable_service;
 
 /// 配置响应（包含版本号）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +114,21 @@ pub async fn get_settings() -> Result<SettingsResponse, String> {
     let remember_me = required_bool("remember_me")?;
     let auto_login = required_bool("auto_login")?;
     let auto_start = required_bool("auto_start")?;
+    #[cfg(windows)]
+    {
+        let main = p2premote_core::service_control::query_service_status()
+            .map_err(|error| format!("failed to query p2pRemote service: {error}"))?;
+        let desktop = p2premote_core::service_control::query_named_service_status(
+            "p2premote-desktop-service",
+        )
+        .map_err(|error| format!("failed to query desktop service: {error}"))?;
+        if !main.installed || !desktop.installed || main.enabled != desktop.enabled || main.enabled != auto_start {
+            return Err(format!(
+                "autostart service state is inconsistent (main: installed={}, enabled={}; desktop: installed={}, enabled={}; configured={}); reapply the autostart switch to repair it",
+                main.installed, main.enabled, desktop.installed, desktop.enabled, auto_start
+            ));
+        }
+    }
 
     Ok(SettingsResponse {
         auto_start,
@@ -144,10 +158,6 @@ fn set_service_auto_start(app: &AppHandle, enabled: bool) -> Result<(), String> 
         #[cfg(windows)]
         {
             use p2premote_core::service_control::runas_scm_elevated_once;
-            let direct = p2premote_core::service_control::try_setup_direct(&service_exe);
-            if direct.is_ok() {
-                return Ok(());
-            }
             runas_scm_elevated_once("setup", &service_exe).map_err(|e| e.to_string())
         }
 
@@ -159,10 +169,6 @@ fn set_service_auto_start(app: &AppHandle, enabled: bool) -> Result<(), String> 
                 .map_err(|e| e.to_string())
         }
     } else {
-        let direct = disable_service();
-        if direct.is_ok() {
-            return Ok(());
-        }
         #[cfg(windows)]
         {
             p2premote_core::service_control::runas_scm_elevated("disable", None)

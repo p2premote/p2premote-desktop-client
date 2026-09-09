@@ -15,11 +15,11 @@ Vue                  Active Service            Passive Service            Host E
  |------------------------->| validate WGVPN/control |                         |                    |
  |                          | DesktopStart(v4, id, secret, 39090)              |                    |
 |                          |==== WGVPN health/control TCP ====================>| validate peer IP  |
- |                          |                         | session-helper host     |                    |
+|                          |                         | protected service IPC  |                    |
  |                          |                         |------------------------>|                    |
  |                          |                         |<---------- host_ready --|                    |
  |                          |<== DesktopReady =========|                         |                    |
- |                          | session-helper connect  |                         |                    |
+ |                          | direct executable connect                       |                    |
  |                          |--------------------------------------------------------------->|
  |                          |<-------------------------------- FirstFrame + Streaming --------|
  |<-- success (native) -----|                         |                         |                    |
@@ -29,23 +29,23 @@ Vue                  Active Service            Passive Service            Host E
 
 ## 本地进程管理
 
-- Service 只启动 `p2premote-desktop-session-helper.exe -- host/connect ... --machine-readable`，逐行读取 stdout JSON，stderr 独立排空。
+- Host 通过同一份 `p2premote-desktop.exe service-host ...` 经 RustDesk 受保护 Service IPC 启动；Controller 直接运行 `p2premote-desktop.exe connect ...`。不再使用自研 Session Supervisor。
 - Host 必须在 30 秒内到达 `host_ready`；Controller 必须在 30 秒内收到首帧并到达 `streaming`。
 - 监督线程每 200 ms 响应停止，同时检查组件退出和终态事件；协议错误、进程退出及超时均返回稳定错误码。
-- Helper 使用 Windows Job Object；Service 终止 Helper 时，当前用户 Session 中的主程序同步退出并被回收，不允许孤儿进程。
+- RustDesk 原生 Windows Service 负责 `--server` 的 Session 迁移和崩溃恢复；p2pRemote supervisor 只维护控制命令生命周期。
 - Service 停隧道、登出和整体退出前先停止所有关联 Engine。
 
 ## 图形 Session
 
-- Windows：Service 运行于 LocalSystem。Session Helper 只接受唯一 `WTSActive` 会话，使用用户 token、用户环境和 `CreateProcessAsUserW` 在 `winsta0\\default` 创建组件；没有活动会话或存在多个活动会话均明确失败。
+- Windows：`p2premote-desktop-service` 运行于 LocalSystem，直接复用 RustDesk 的 Session 枚举、`launch_server` 和登录/锁屏/RDP Session 迁移逻辑。
 - Linux/macOS：首期不提供新组件；调用明确返回 `desktop_platform_unsupported`，不运行旧 Engine 兜底。
 
 ## 安装资源
 
 - 独立仓库固定产物目录：`remoteDesk/p2premote-desktop/dist/windows-x64-release`。
 - Windows 安装包复制整个运行目录到 `resources/p2premote-desktop/`，不能只复制 exe。
-- `P2PREMOTE_DESKTOP_SESSION_HELPER_PATH` 只用于开发/测试覆盖 Helper 精确路径。
-- `P2PREMOTE_DESKTOP_ARTIFACT_DIR` 仅供 CI 覆盖固定产物目录；缺少主程序或 Helper 时构建立即失败。
+- `P2PREMOTE_DESKTOP_PATH` 只用于开发/测试覆盖桌面可执行文件精确路径。
+- `P2PREMOTE_DESKTOP_ARTIFACT_DIR` 仅供 CI 覆盖固定产物目录；缺少主程序时构建立即失败。
 - Linux/macOS 安装包不再包含旧自研 Engine。
 
 ## 关键实现位置
@@ -59,6 +59,6 @@ Vue                  Active Service            Passive Service            Host E
 
 ## 尚需实机证明的门槛
 
-1. 安装后的 Windows LocalSystem Service 能通过 Helper 启动 Host 和 Controller，并由 Job 完整回收。
+1. 安装后的 Windows LocalSystem 双服务能够保持相同启动类型，并由 RustDesk Service 在登录界面、锁屏、控制台和 RDP Session 启动 Host。
 2. Windows 双机验证双向画面、鼠标、键盘、Unicode 文本剪贴板、文件剪贴板、连续多帧和断线重连。
 3. Controller 错误只在客户端状态/UI 展示；Vue 永不创建远程画面窗口。

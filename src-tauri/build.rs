@@ -47,10 +47,7 @@ fn validate_prebuilt_resources() {
     ];
     if target_os == "windows" {
         required.push(main_binary_name("p2premote-notifier", &target_os));
-        for name in [
-            "p2premote-desktop/p2premote-desktop.exe",
-            "p2premote-desktop/p2premote-desktop-session-helper.exe",
-        ] {
+        for name in ["p2premote-desktop/p2premote-desktop.exe"] {
             let path = resources_dir.join(name);
             if !path.is_file() {
                 panic!("required prebuilt resource is missing: {}", path.display());
@@ -354,10 +351,7 @@ fn copy_desktop_engine_into_resources() {
             source.display()
         );
     }
-    for required in [
-        "p2premote-desktop.exe",
-        "p2premote-desktop-session-helper.exe",
-    ] {
+    for required in ["p2premote-desktop.exe"] {
         if !source.join(required).is_file() {
             panic!(
                 "required desktop artifact is missing: {}",
