@@ -66,10 +66,6 @@
         "certificateThumbprint": null,
         "digestAlgorithm": "sha256",
         "timestampUrl": "",
-        "webviewInstallMode": {
-          "type": "downloadBootstrapper",
-          "silent": true
-        },
         "nsis": {
           "installMode": "perMachine",
           "template": "./installer-v1.nsi"

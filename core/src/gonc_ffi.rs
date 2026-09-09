@@ -283,7 +283,7 @@ pub struct SubnetRouterResult {
 
 #[cfg_attr(windows, link(name = "p2premote-punch", kind = "raw-dylib"))]
 #[cfg_attr(target_os = "macos", link(name = "p2premote-punch"))]
-unsafe extern "C" {
+extern "C" {
     fn StartUdpTunnel(input: *const c_char) -> *mut c_char;
     fn StopUdpTunnel(input: *const c_char) -> *mut c_char;
     fn StartSubnetRouter(input: *const c_char) -> *mut c_char;

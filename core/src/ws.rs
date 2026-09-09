@@ -171,7 +171,7 @@ impl HeartbeatTracker {
     }
 
     fn check_timeout(&mut self, now: Instant) -> Option<u8> {
-        if self.pong_deadline.is_none_or(|deadline| now < deadline) {
+        if self.pong_deadline.map_or(true, |deadline| now < deadline) {
             return None;
         }
         self.waiting_sequence = None;

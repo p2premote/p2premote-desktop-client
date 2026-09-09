@@ -3,7 +3,9 @@ param(
     [Alias('v')]
     [string]$Version,
     [switch]$SkipBuild,
-    [switch]$NoSccache
+    [switch]$NoSccache,
+    [string]$TauriConfig,
+    [string]$PackageTarget = 'windows-x64'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,7 +109,9 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "npm ci failed with exit code $LASTEXITCODE"
     }
-    & npx tauri build
+    $tauriArgs = @('tauri', 'build')
+    if ($TauriConfig) { $tauriArgs += @('--config', $TauriConfig) }
+    & npx @tauriArgs
     if ($LASTEXITCODE -ne 0) {
         throw "tauri build failed with exit code $LASTEXITCODE"
     }
@@ -132,4 +136,12 @@ if (-not (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
     }
     Move-Item -LiteralPath $candidates[0].FullName -Destination $expectedInstallerPath
 }
-Write-Host "Generated Windows x64 installer: $expectedInstallerPath"
+$targetInstallerPath = Join-Path $nsisDirectory "p2pRemote_${buildVersion}_${PackageTarget}-setup.exe"
+if ($PackageTarget -ne 'windows-x64') {
+    Move-Item -LiteralPath $expectedInstallerPath -Destination $targetInstallerPath -Force
+} else {
+    $targetInstallerPath = $expectedInstallerPath
+}
+$installerHash = (Get-FileHash -LiteralPath $targetInstallerPath -Algorithm SHA256).Hash
+Write-Host "Generated $PackageTarget installer: $targetInstallerPath"
+Write-Host "SHA-256: $installerHash"

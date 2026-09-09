@@ -704,7 +704,7 @@ async fn web_admin_update_access(
             .web_admin_security_code
             .as_deref()
             .map(str::trim)
-            .is_none_or(str::is_empty)
+            .map_or(true, str::is_empty)
     {
         return web_access_error("security_code_required");
     }

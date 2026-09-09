@@ -475,7 +475,7 @@ pub(super) async fn handle_data(
                             if current
                                 .public_ip_location
                                 .as_deref()
-                                .is_none_or(|value| value.trim().is_empty())
+                                .map_or(true, |value| value.trim().is_empty())
                             {
                                 current.public_ip_location = Some(location);
                             }

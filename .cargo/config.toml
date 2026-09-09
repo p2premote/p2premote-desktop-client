@@ -1,0 +1,9 @@
+[resolver]
+incompatible-rust-versions = "fallback"
+
+[target.x86_64-pc-windows-msvc]
+# Release installers must run on a clean Windows installation without requiring
+# a separately installed Microsoft Visual C++ Redistributable. This also applies
+# to the service/CLI/notifier builds spawned by src-tauri/build.rs because they
+# inherit Cargo's target-specific flags.
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -4,6 +4,7 @@ version = "1.10.19-df0d40"
 description = "P2P Remote Desktop Client - Tauri Version"
 authors = ["p2premote"]
 edition = "2021"
+rust-version.workspace = true
 
 [lib]
 name = "p2premote_lib"

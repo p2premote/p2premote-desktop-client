@@ -208,6 +208,7 @@ ${StrLoc}
 !define WEBVIEW2INSTALLERARGS "{{webview2_installer_args}}"
 !define WEBVIEW2BOOTSTRAPPERPATH "{{webview2_bootstrapper_path}}"
 !define WEBVIEW2INSTALLERPATH "{{webview2_installer_path}}"
+!define MINIMUMWEBVIEW2VERSION "{{minimum_webview2_version}}"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
 !define MANUPRODUCTKEY "Software\${MANUFACTURER}\${PRODUCTNAME}"
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
@@ -618,8 +619,25 @@ Section WebView2
   ${EndIf}
   ReadRegStr $5 HKCU "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
 
-  StrCmp $4 "" 0 webview2_done
-  StrCmp $5 "" 0 webview2_done
+  StrCpy $7 $4
+  StrCmp $7 "" 0 +2
+  StrCpy $7 $5
+
+  ; The Win7 package pins WebView2 109. Treat an older installed runtime as
+  ; missing. Modern packages leave MINIMUMWEBVIEW2VERSION empty and retain the
+  ; normal Tauri v1 "install only when absent" behavior.
+  !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"
+    !if "${MINIMUMWEBVIEW2VERSION}" != ""
+      StrCmp $7 "" install_webview2_check_done
+      ${VersionCompare} $7 "${MINIMUMWEBVIEW2VERSION}" $0
+      StrCmp $0 "2" install_webview2_check_done webview2_done
+      install_webview2_check_done:
+    !else
+      StrCmp $7 "" 0 webview2_done
+    !endif
+  !else
+    StrCmp $7 "" 0 webview2_done
+  !endif
 
   ; Webview2 install modes
   !if "${INSTALLWEBVIEW2MODE}" == "downloadBootstrapper"

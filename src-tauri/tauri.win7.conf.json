@@ -1,0 +1,16 @@
+{
+  "tauri": {
+    "bundle": {
+      "targets": ["nsis"],
+      "windows": {
+        "webviewInstallMode": {
+          "type": "skip"
+        },
+        "nsis": {
+          "installMode": "perMachine",
+          "template": "./.generated/installer-win7.nsi"
+        }
+      }
+    }
+  }
+}

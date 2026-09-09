@@ -245,7 +245,7 @@ pub(super) fn monitor_generation_matches(
     peer_device_id: i64,
     expected_generation: Option<u64>,
 ) -> bool {
-    expected_generation.is_none_or(|generation| {
+    expected_generation.map_or(true, |generation| {
         state
             .wgvpn_health_controls
             .get(&peer_device_id)
