@@ -60,24 +60,20 @@ fn get_last_known_status() -> &'static Arc<Mutex<Option<RuntimeStatus>>> {
     LAST_KNOWN_STATUS.get_or_init(|| Arc::new(Mutex::new(None)))
 }
 
-/// 确保持久连接存在，不存在则创建。返回 true 表示已连接，false 表示 service 未运行
-async fn ensure_persistent_connection(app: &AppHandle) -> Result<bool, String> {
+/// 确保持久连接存在，不存在则创建。连接失败直接返回具体原因。
+async fn ensure_persistent_connection(app: &AppHandle) -> Result<(), String> {
     let holder = get_connection_holder();
     {
         let guard = holder.lock();
         if guard.is_some() {
-            return Ok(true);
+            return Ok(());
         }
     }
 
     // 尝试建立持久连接
-    let conn = match connect_with_handshake().await {
-        Ok(c) => c,
-        Err(e) => {
-            debug!("[ServiceIPC] service not available: {}", e);
-            return Ok(false);
-        }
-    };
+    let conn = connect_with_handshake()
+        .await
+        .map_err(|error| format!("failed to establish persistent service connection: {error}"))?;
 
     let (tx, rx) = mpsc::unbounded_channel::<PendingCommand>();
     let (req_tx, req_rx) = mpsc::unbounded_channel();
@@ -96,7 +92,7 @@ async fn ensure_persistent_connection(app: &AppHandle) -> Result<bool, String> {
         debug!("[ServiceIPC] persistent connection closed");
     });
 
-    Ok(true)
+    Ok(())
 }
 
 /// 持久连接的读写循环
@@ -401,11 +397,37 @@ pub async fn set_background_service_enabled(
     collect_service_status().await
 }
 
-/// UI 调用：建立到 service 的持久连接，监听服务端推送事件。返回 true=已连接, false=service 未运行
+/// UI 调用：建立到 service 的持久连接并监听服务端推送事件。
+/// service 的 IPC 监听可能仍在启动，间隔 1 秒最多尝试 3 次。
 #[tauri::command]
 pub async fn listen_service_events(app: AppHandle) -> Result<bool, String> {
     debug!("[service] listen_service_events called");
-    ensure_persistent_connection(&app).await
+    let mut last_error = String::new();
+    for attempt in 1..=3 {
+        match ensure_persistent_connection(&app).await {
+            Ok(()) => {
+                debug!(
+                    "[service] persistent connection established on attempt {}",
+                    attempt
+                );
+                return Ok(true);
+            }
+            Err(error) => {
+                last_error = error;
+                warn!(
+                    "[service] persistent connection attempt {}/3 failed: {}",
+                    attempt, last_error
+                );
+                if attempt < 3 {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "failed to establish persistent service connection after 3 attempts: {last_error}"
+    ))
 }
 
 #[tauri::command]

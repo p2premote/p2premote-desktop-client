@@ -1,10 +1,16 @@
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Serialize configuration and runtime-state persistence inside the service process.
+/// This covers the complete temp-file write and atomic replacement operation.
+static CONFIG_WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineConfig {
@@ -868,6 +874,8 @@ fn parse_ioplatform_uuid(output: &str) -> Option<String> {
 }
 
 pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let _write_guard = CONFIG_WRITE_LOCK.lock();
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory: {}", parent.display()))?;
@@ -891,15 +899,20 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     fs::write(&tmp_path, &json)
         .with_context(|| format!("failed to write temp file: {}", tmp_path.display()))?;
 
-    if let Err(e) = fs::rename(&tmp_path, path) {
-        // Windows: rename 失败时（目标文件被 service 持有），回退直接覆盖
-        tracing::debug!(
-            "[config] atomic rename failed: {}, falling back to direct write",
-            e
+    if let Err(error) = replace_file_atomically(&tmp_path, path) {
+        tracing::error!(
+            target = %path.display(),
+            temp = %tmp_path.display(),
+            error = %error,
+            "[config] atomic config replacement failed; temporary file retained"
         );
-        fs::write(path, &json)
-            .with_context(|| format!("failed to write config file: {}", path.display()))?;
-        let _ = fs::remove_file(&tmp_path);
+        return Err(error).with_context(|| {
+            format!(
+                "failed to atomically replace {} with {}; temporary file retained",
+                path.display(),
+                tmp_path.display()
+            )
+        });
     }
 
     #[cfg(unix)]
@@ -911,9 +924,63 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn replace_file_atomically(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let result = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            target_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target)
+}
+
 #[cfg(test)]
 mod wgvpn_tests {
     use super::*;
+
+    #[test]
+    fn concurrent_atomic_writes_always_leave_valid_json() {
+        let dir = std::env::temp_dir().join(format!(
+            "p2premote-config-write-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+
+        let writers: Vec<_> = (0..16)
+            .map(|value| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    atomic_write_json(&path, &serde_json::json!({ "value": value })).unwrap();
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        let persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(persisted.get("value").and_then(Value::as_i64).is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn parses_macos_ioplatform_uuid() {

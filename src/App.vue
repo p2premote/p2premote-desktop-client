@@ -1040,6 +1040,13 @@ async function runStartupPreflight(): Promise<boolean> {
     if (!isServiceReady(status)) {
       throw new Error(t('app.startup_errors.service_not_ready'))
     }
+
+    await setStartupStep(t('app.startup_status.connecting_events'), 40)
+    await withTimeout(
+      invoke<boolean>('listen_service_events'),
+      10_000,
+      t('app.startup_status.service_timeout')
+    )
     await setStartupStep(t('app.startup_status.checking_network'), 50)
 
     const refreshed = await invoke<BackgroundServiceStatus>('refresh_service_network_info')
@@ -1593,10 +1600,6 @@ async function bootstrapApp() {
     if (!preflightOk) {
       return
     }
-    // 后续命令只使用持久 IPC；连接失败直接进入启动错误页。
-    await setStartupStep(t('app.startup_status.connecting_events'), 91)
-    await invoke('listen_service_events')
-
     // 初次启动也要把 localStorage/系统探测得到的语言同步给 service。
     // 否则英文系统在用户手动切换语言之前，后端状态消息仍会使用中文。
     await setLocale(locale.value)

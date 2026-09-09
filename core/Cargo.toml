@@ -48,5 +48,5 @@ p2premote-punch = { path = "../../p2premote-punch-rs" }
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 windows-service = "0.7"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
 wmi = { version = "0.17", default-features = false }
