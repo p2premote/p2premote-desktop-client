@@ -71,7 +71,8 @@
           "silent": true
         },
         "nsis": {
-          "installMode": "perMachine"
+          "installMode": "perMachine",
+          "template": "./installer-v1.nsi"
         }
       }
     }

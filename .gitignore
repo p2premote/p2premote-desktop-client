@@ -29,6 +29,7 @@ src-tauri/resources/p2premote-service
 src-tauri/resources/p2premote-service.exe
 src-tauri/resources/p2premote-desktop-engine
 src-tauri/resources/p2premote-desktop-engine.exe
+src-tauri/resources/p2premote-desktop/
 
 # Editor directories and files
 .vscode/*
