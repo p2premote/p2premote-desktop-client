@@ -43,6 +43,26 @@ fn flash_main_window(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn launch_windows_rdp(address: String) -> Result<(), String> {
+    let address = address.trim();
+    if address.is_empty() || address.chars().any(char::is_whitespace) {
+        return Err("invalid Remote Desktop address".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("mstsc.exe")
+            .arg(format!("/v:{address}"))
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("failed to start Windows Remote Desktop: {error}"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Windows Remote Desktop is only available on Windows".to_string())
+    }
+}
+
 // 导入所有命令
 use commands::{
     auth::{
@@ -189,6 +209,7 @@ pub fn run() {
             refresh_service_network_info,
             refresh_tunnel_status,
             flash_main_window,
+            launch_windows_rdp,
         ])
         .setup(|app| {
             info!("[p2premote] Tauri app setup complete");

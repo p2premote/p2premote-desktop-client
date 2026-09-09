@@ -180,13 +180,35 @@
                   class="action-tile"
                   :disabled="!isTunnelConnected(selectedDevice)"
                   :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
-                  @click="handleRemoteDesktop(selectedDevice!)"
+                  @click="copyRemoteDesktopAddress(selectedDevice!)"
                 >
-                  <el-icon><Monitor /></el-icon>
+                  <el-icon><CopyDocument /></el-icon>
                   <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
                   <el-tooltip :content="remoteAccessTooltip(selectedDevice)" placement="top">
                     <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
                   </el-tooltip>
+                </button>
+
+                <button
+                  v-if="showWindowsRdpAction(selectedDevice)"
+                  type="button"
+                  class="action-tile"
+                  :disabled="!isTunnelConnected(selectedDevice)"
+                  @click="launchWindowsRdp(selectedDevice!)"
+                >
+                  <el-icon><Monitor /></el-icon>
+                  <span>{{ $t('devices.detail.connection.windows_rdp') }}</span>
+                </button>
+
+                <button
+                  v-if="showLocalProcessActions && supportsBuiltInDesktop(selectedDevice)"
+                  type="button"
+                  class="action-tile"
+                  :disabled="!isTunnelConnected(selectedDevice)"
+                  @click="launchP2pRemoteDesktop(selectedDevice!)"
+                >
+                  <el-icon><Monitor /></el-icon>
+                  <span>{{ $t('devices.detail.connection.p2premote_desktop') }}</span>
                 </button>
 
                 <button
@@ -303,7 +325,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { invoke, listen, type UnlistenFn } from '../runtime/bridge'
+import { invoke, isTauriRuntime, listen, type UnlistenFn } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import {
@@ -387,6 +409,8 @@ interface TunnelLifecycleStatus {
 
 const deviceStore = useDeviceStore()
 const authStore = useAuthStore()
+const showLocalProcessActions = isTauriRuntime()
+const isLocalWindows = /Windows/i.test(navigator.userAgent)
 
 const aliasDialogVisible = ref(false)
 const selectedDevice = ref<DeviceInfo | null>(null)
@@ -726,6 +750,17 @@ function remoteAccessPortLabel(device: DeviceInfo | null): string {
     : t('devices.detail.info.rdp_port')
 }
 
+function remoteDesktopAddress(device: DeviceInfo): string {
+  const virtualIp = tunnelVirtualIp(device)
+  const port = Number(device.remote_access?.port || device.service_port)
+  if (!virtualIp || !Number.isInteger(port) || port <= 0 || port > 65535) return ''
+  return `${virtualIp}:${port}`
+}
+
+function showWindowsRdpAction(device: DeviceInfo | null): boolean {
+  return showLocalProcessActions && isLocalWindows && remoteAccessProtocol(device) === 'rdp'
+}
+
 function isAndroidDevice(device: DeviceInfo | null): boolean {
   if (!device) return false
   const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
@@ -1036,15 +1071,37 @@ async function handleDisconnectTunnel(device: DeviceInfo) {
   }
 }
 
-async function handleRemoteDesktop(device: DeviceInfo) {
+async function copyRemoteDesktopAddress(device: DeviceInfo) {
   selectedDevice.value = device
   try {
-    const tunnel = tunnelStatusMap.value[device.device_id]
-    if (!tunnel) {
-      ElMessage.error(t('devices.message.no_active_tunnel'))
+    const address = remoteDesktopAddress(device)
+    if (!address) {
+      ElMessage.error(t('devices.message.no_rdp_address'))
       return
     }
+    await navigator.clipboard.writeText(address)
+    ElMessage.success(t('devices.message.rdp_address_copied', { address }))
+  } catch {
+    ElMessage.error(t('devices.message.copy_rdp_address_failed'))
+  }
+}
 
+async function launchWindowsRdp(device: DeviceInfo) {
+  const address = remoteDesktopAddress(device)
+  if (!address) {
+    ElMessage.error(t('devices.message.no_rdp_address'))
+    return
+  }
+  try {
+    await invoke('launch_windows_rdp', { address })
+    ElMessage.success(t('devices.message.windows_rdp_started'))
+  } catch (e) {
+    ElMessage.error(t('devices.message.connect_failed', { error: String(e) }))
+  }
+}
+
+async function launchP2pRemoteDesktop(device: DeviceInfo) {
+  try {
     await invoke('start_service_desktop_session', { peerDeviceId: device.device_id })
     ElMessage.success(t('devices.message.desktop_window_started'))
   } catch (e) {
