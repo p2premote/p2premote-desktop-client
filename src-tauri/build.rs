@@ -47,7 +47,7 @@ fn validate_prebuilt_resources() {
     ];
     if target_os == "windows" {
         required.push(main_binary_name("p2premote-notifier", &target_os));
-        for name in ["p2premote-desktop/p2premote-desktop.exe"] {
+        for name in ["RustDeskTiny/RustDeskTiny.exe"] {
             let path = resources_dir.join(name);
             if !path.is_file() {
                 panic!("required prebuilt resource is missing: {}", path.display());
@@ -343,15 +343,15 @@ fn copy_desktop_engine_into_resources() {
     let source = env::var_os("P2PREMOTE_DESKTOP_ARTIFACT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            manifest_dir.join("../../remoteDesk/p2premote-desktop/dist/windows-x64-release")
+            manifest_dir.join("../../remoteDesk/RustDeskTiny/dist/windows-x64-release")
         });
     if !source.is_dir() {
         panic!(
-            "p2premote-desktop artifact directory not found: {}; run remoteDesk/p2premote-desktop/scripts/build-windows.ps1 first",
+            "RustDeskTiny artifact directory not found: {}; run remoteDesk/RustDeskTiny/scripts/build-windows.ps1 first",
             source.display()
         );
     }
-    for required in ["p2premote-desktop.exe"] {
+    for required in ["RustDeskTiny.exe"] {
         if !source.join(required).is_file() {
             panic!(
                 "required desktop artifact is missing: {}",
@@ -359,7 +359,7 @@ fn copy_desktop_engine_into_resources() {
             );
         }
     }
-    let target = resources_dir.join("p2premote-desktop");
+    let target = resources_dir.join("RustDeskTiny");
     copy_directory(&source, &target);
 }
 

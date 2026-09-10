@@ -153,7 +153,7 @@ fn handle_scm_command() -> anyhow::Result<()> {
 
     let desktop_exe = std::env::current_exe()
         .ok()
-        .and_then(|path| path.parent().map(|dir| dir.join("p2premote-desktop").join("p2premote-desktop.exe")));
+        .and_then(|path| path.parent().map(|dir| dir.join("RustDeskTiny").join("RustDeskTiny.exe")));
     let run_desktop = |arguments: &[&str]| -> anyhow::Result<()> {
         let executable = desktop_exe.as_ref().ok_or_else(|| anyhow::anyhow!("cannot resolve desktop service executable"))?;
         if !executable.is_file() { return Err(anyhow::anyhow!("desktop service executable missing: {}", executable.display())); }

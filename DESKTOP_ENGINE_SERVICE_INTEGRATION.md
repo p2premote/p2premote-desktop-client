@@ -29,7 +29,7 @@ Vue                  Active Service            Passive Service            Host E
 
 ## 本地进程管理
 
-- Host 通过同一份 `p2premote-desktop.exe service-host ...` 经 RustDesk 受保护 Service IPC 启动；Controller 直接运行 `p2premote-desktop.exe connect ...`。不再使用自研 Session Supervisor。
+- Host 通过同一份 `RustDeskTiny.exe service-host ...` 经 RustDesk 受保护 Service IPC 启动；Controller 直接运行 `RustDeskTiny.exe connect ...`。不再使用自研 Session Supervisor。
 - Host 必须在 30 秒内到达 `host_ready`；Controller 必须在 30 秒内收到首帧并到达 `streaming`。
 - 监督线程每 200 ms 响应停止，同时检查组件退出和终态事件；协议错误、进程退出及超时均返回稳定错误码。
 - RustDesk 原生 Windows Service 负责 `--server` 的 Session 迁移和崩溃恢复；p2pRemote supervisor 只维护控制命令生命周期。
@@ -42,8 +42,8 @@ Vue                  Active Service            Passive Service            Host E
 
 ## 安装资源
 
-- 独立仓库固定产物目录：`remoteDesk/p2premote-desktop/dist/windows-x64-release`。
-- Windows 安装包复制整个运行目录到 `resources/p2premote-desktop/`，不能只复制 exe。
+- 独立仓库固定产物目录：`remoteDesk/RustDeskTiny/dist/windows-x64-release`。
+- Windows 安装包复制整个运行目录到 `resources/RustDeskTiny/`，不能只复制 exe。
 - `P2PREMOTE_DESKTOP_PATH` 只用于开发/测试覆盖桌面可执行文件精确路径。
 - `P2PREMOTE_DESKTOP_ARTIFACT_DIR` 仅供 CI 覆盖固定产物目录；缺少主程序时构建立即失败。
 - Linux/macOS 安装包不再包含旧自研 Engine。

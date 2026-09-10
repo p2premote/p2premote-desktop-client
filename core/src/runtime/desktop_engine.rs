@@ -726,8 +726,8 @@ fn resolve_desktop_executable() -> Result<PathBuf, EngineFailure> {
         .and_then(|path| {
             path.parent().map(|parent| {
                 parent
-                    .join("p2premote-desktop")
-                    .join("p2premote-desktop.exe")
+                    .join("RustDeskTiny")
+                    .join("RustDeskTiny.exe")
             })
         })
         .ok_or_else(|| {

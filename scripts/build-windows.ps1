@@ -81,8 +81,8 @@ $punchSource = Join-Path $projectRoot '..\p2premote-punch'
 if (-not (Test-Path -LiteralPath $punchSource -PathType Container)) {
     throw "p2premote-punch source directory not found: $punchSource"
 }
-$desktopArtifact = Join-Path $projectRoot '..\remoteDesk\p2premote-desktop\dist\windows-x64-release'
-$desktopExecutable = Join-Path $desktopArtifact 'p2premote-desktop.exe'
+$desktopArtifact = Join-Path $projectRoot '..\remoteDesk\RustDeskTiny\dist\windows-x64-release'
+$desktopExecutable = Join-Path $desktopArtifact 'RustDeskTiny.exe'
 $desktopSessionHelper = Join-Path $desktopArtifact 'p2premote-desktop-session-helper.exe'
 if (-not (Test-Path -LiteralPath $desktopExecutable -PathType Leaf)) {
     throw "p2pRemote Desktop artifact is missing: $desktopExecutable. Build the independent component first."
@@ -90,7 +90,7 @@ if (-not (Test-Path -LiteralPath $desktopExecutable -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $desktopSessionHelper -PathType Leaf)) {
     throw "p2pRemote Desktop session helper is missing: $desktopSessionHelper"
 }
-$desktopResource = Join-Path $projectRoot 'src-tauri\resources\p2premote-desktop'
+$desktopResource = Join-Path $projectRoot 'src-tauri\resources\RustDeskTiny'
 if (Test-Path -LiteralPath $desktopResource) {
     Remove-Item -LiteralPath $desktopResource -Recurse -Force
 }

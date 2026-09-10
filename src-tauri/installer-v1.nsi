@@ -76,7 +76,7 @@ FunctionEnd
   nsExec::ExecToLog 'taskkill /F /IM p2premote.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-service.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-notifier.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM p2premote-desktop.exe /T'
+  nsExec::ExecToLog 'taskkill /F /IM RustDeskTiny.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-desktop-session-helper.exe /T'
 !macroend
 
@@ -89,7 +89,7 @@ FunctionEnd
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote WGVPN Speed Test" dir=in action=allow protocol=UDP localport=48082 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-service.exe" profile=any enable=yes'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote Desktop Engine"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote Desktop"'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote Desktop" dir=in action=allow protocol=TCP localport=39090 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-desktop\p2premote-desktop.exe" profile=any enable=yes'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote Desktop" dir=in action=allow protocol=TCP localport=39090 remoteip=100.64.0.0/10 program="$INSTDIR\resources\RustDeskTiny\RustDeskTiny.exe" profile=any enable=yes'
 
   ; Probe the persisted auto_start flag before touching the service.
   ; The uninstall phase of a reinstall deletes the HKCU Run autostart entries
@@ -157,7 +157,7 @@ FunctionEnd
   nsExec::ExecToLog 'taskkill /F /IM p2premote-service.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-cli.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-notifier.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM p2premote-desktop.exe /T'
+  nsExec::ExecToLog 'taskkill /F /IM RustDeskTiny.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-desktop-session-helper.exe /T'
 
   ; Explicit cleanup for bundled helper binaries.
@@ -167,7 +167,7 @@ FunctionEnd
   Delete "$INSTDIR\resources\p2premote-cli.exe"
   Delete "$INSTDIR\resources\p2premote-notifier.exe"
   Delete "$INSTDIR\resources\p2premote-desktop-engine.exe"
-  RMDir /r "$INSTDIR\resources\p2premote-desktop"
+  RMDir /r "$INSTDIR\resources\RustDeskTiny"
   Delete "$INSTDIR\resources\wintun.dll"
   RMDir "$INSTDIR\resources"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "p2premote-notifier"
