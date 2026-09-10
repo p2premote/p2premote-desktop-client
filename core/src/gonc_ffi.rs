@@ -725,6 +725,38 @@ pub fn exchange_payload(
     Ok(resp.recv_data)
 }
 
+/// Native Rust Punch exchange for the Linux/Windows migration path.
+#[cfg(any(target_os = "linux", windows))]
+pub async fn exchange_payload_native(
+    token: &str,
+    mode: ExchangeMode,
+    send_data: &str,
+    timeout: Duration,
+) -> Result<String> {
+    if timeout.is_zero() {
+        return Err(anyhow!("exchange timeout must be greater than zero"));
+    }
+    let request = p2premote_punch::ExchangeInput {
+        token: token.to_string(),
+        exmode: mode.as_int(),
+        send_data: send_data.to_string(),
+        role_hint: String::new(),
+        timeout_secs: timeout.as_secs().min(i32::MAX as u64) as i32,
+    };
+    let result = p2premote_punch::api::exchange(request, timeout)
+        .await
+        .map_err(|error| anyhow!(error))?;
+    if !result.ok {
+        let error = if result.error.is_empty() {
+            "exchange failed".to_string()
+        } else {
+            result.error
+        };
+        return Err(anyhow!(error));
+    }
+    Ok(result.recv_data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

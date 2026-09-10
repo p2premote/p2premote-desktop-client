@@ -353,6 +353,26 @@ pub fn exchange_as_active(
     Ok(peer_payload)
 }
 
+/// Native Rust Punch variant of the active exchange. Kept alongside the
+/// legacy blocking FFI wrapper until both flow call sites are migrated.
+#[cfg(any(target_os = "linux", windows))]
+pub async fn exchange_as_active_native(
+    base_token: &str,
+    local_payload: &ExchangePayload,
+    timeout: Duration,
+) -> Result<ExchangePayload> {
+    let kx_token = derive_kx_token(base_token);
+    let send_data = local_payload.render()?;
+    let recv = crate::gonc_ffi::exchange_payload_native(
+        &kx_token,
+        crate::gonc_ffi::ExchangeMode::Mutual,
+        &send_data,
+        timeout,
+    )
+    .await?;
+    ExchangePayload::parse(&recv)
+}
+
 /// 被动端执行交换：先 WaitOnly 收主动端载荷，由调用方分配 IP，再 Reply 回传。
 ///
 /// `allocate` 闭包接收（对端 device_id, IP 范围），返回分配的 (assigned_ip, my_ip)。
