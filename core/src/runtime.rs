@@ -171,7 +171,6 @@ pub(super) struct SharedRuntimeState {
     p2p_attempt_waiters: HashMap<String, mpsc::UnboundedSender<P2PAttemptEvent>>,
     passive_p2p_attempts: HashMap<i64, PassiveP2PAttempt>,
     desktop_engine_starting: HashMap<i64, String>,
-    desktop_engine_tasks: HashMap<i64, desktop_engine::DesktopEngineTask>,
     /// Current in-memory account identity used to classify inbound attempts.
     current_user_id: Option<i64>,
     /// At most one temporary inbound approval can exist on a passive endpoint.
@@ -589,7 +588,6 @@ pub async fn run_service_foreground() -> Result<()> {
     let maintenance_lock = Arc::new(tokio::sync::Mutex::new(()));
     let mut refresh_tick = interval(Duration::from_secs(60));
     let mut bootstrap_tick = interval(Duration::from_secs(60));
-    let mut desktop_engine_tick = interval(Duration::from_millis(200));
 
     if let Err(err) = bootstrap_service(&shared, &ws_client, event_tx.clone()).await {
         info!("[ServiceRuntime] initial bootstrap failed: {}", err);
@@ -605,30 +603,6 @@ pub async fn run_service_foreground() -> Result<()> {
         }
 
         tokio::select! {
-            _ = desktop_engine_tick.tick() => {
-                for (peer_device_id, outcome) in desktop_engine::poll_desktop_engine_tasks(&shared) {
-                    match outcome {
-                        Ok(event) => info!(
-                            "[DesktopEngine] terminal event: peer_device_id={}, event={:?}",
-                            peer_device_id,
-                            event
-                        ),
-                        Err(error) => {
-                            error!(
-                                "[DesktopEngine] failed: peer_device_id={}, code={}, stage={:?}, error={}",
-                                peer_device_id,
-                                error.code,
-                                error.stage,
-                                error
-                            );
-                            set_last_error(&shared, format!(
-                                "desktop engine {} failed: {}",
-                                peer_device_id, error
-                            ));
-                        }
-                    }
-                }
-            }
             _ = bootstrap_tick.tick() => {
                 spawn_bootstrap_maintenance(
                     shared.clone(), ws_client.clone(), event_tx.clone(), maintenance_lock.clone(), "tick"

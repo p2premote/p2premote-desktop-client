@@ -13,7 +13,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../core/Cargo.toml");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PUNCH_DIR");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PREBUILT_RESOURCES");
-    println!("cargo:rerun-if-env-changed=P2PREMOTE_DESKTOP_ARTIFACT_DIR");
+    println!("cargo:rerun-if-env-changed=RUSTDESK_TINY_ARTIFACT_DIR");
 
     emit_macos_rpath();
 
@@ -338,16 +338,21 @@ fn copy_desktop_engine_into_resources() {
         return;
     }
     if target_arch != "amd64" {
-        panic!("p2premote-desktop currently supports Windows amd64 only");
+        panic!("RustDeskTiny integration currently supports Windows amd64 only");
     }
-    let source = env::var_os("P2PREMOTE_DESKTOP_ARTIFACT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            manifest_dir.join("../../remoteDesk/RustDeskTiny/dist/windows-x64-release")
-        });
+    let target = resources_dir.join("RustDeskTiny");
+    let Some(source) = env::var_os("RUSTDESK_TINY_ARTIFACT_DIR").map(PathBuf::from) else {
+        if target.join("RustDeskTiny.exe").is_file() {
+            return;
+        }
+        panic!(
+            "RustDeskTiny release artifact is missing; set RUSTDESK_TINY_ARTIFACT_DIR or populate {}",
+            target.display()
+        );
+    };
     if !source.is_dir() {
         panic!(
-            "RustDeskTiny artifact directory not found: {}; run remoteDesk/RustDeskTiny/scripts/build-windows.ps1 first",
+            "RustDeskTiny artifact directory not found: {}",
             source.display()
         );
     }
@@ -359,7 +364,15 @@ fn copy_desktop_engine_into_resources() {
             );
         }
     }
-    let target = resources_dir.join("RustDeskTiny");
+    if target.exists() {
+        fs::remove_dir_all(&target).unwrap_or_else(|err| {
+            panic!(
+                "failed to replace existing RustDeskTiny resource {}: {}",
+                target.display(),
+                err
+            )
+        });
+    }
     copy_directory(&source, &target);
 }
 

@@ -162,7 +162,11 @@ fn handle_scm_command() -> anyhow::Result<()> {
         Ok(())
     };
 
-    let result = match action.as_str() {
+    let main_service_before = p2premote_core::service_control::query_service_status().ok();
+    let desktop_service_before =
+        p2premote_core::service_control::query_named_service_status("RustDeskTinyService").ok();
+
+    let mut result = match action.as_str() {
         "install" => install_exe
             .ok_or_else(|| anyhow::anyhow!("install requires exe_path argument"))
             .and_then(|exe_path| {
@@ -249,6 +253,73 @@ fn handle_scm_command() -> anyhow::Result<()> {
             }),
         other => Err(anyhow::anyhow!("unknown scm action: {}", other)),
     };
+
+    if result.is_err() && matches!(action.as_str(), "setup" | "enable" | "disable") {
+        let mut rollback_errors = Vec::new();
+        if let Some(before) = main_service_before {
+            let rollback = (|| -> anyhow::Result<()> {
+                if !before.installed {
+                    if let Ok(current) = p2premote_core::service_control::query_service_status() {
+                        if current.running {
+                            let _ = p2premote_core::service_control::direct::stop_service();
+                        }
+                        if current.installed {
+                            p2premote_core::service_control::direct::uninstall_service()?;
+                        }
+                    }
+                    return Ok(());
+                }
+                if before.enabled {
+                    p2premote_core::service_control::direct::enable_service()?;
+                } else {
+                    p2premote_core::service_control::direct::disable_service()?;
+                }
+                if before.running {
+                    p2premote_core::service_control::direct::start_service()?;
+                } else {
+                    let _ = p2premote_core::service_control::direct::stop_service();
+                }
+                Ok(())
+            })();
+            if let Err(error) = rollback {
+                rollback_errors.push(format!("main service rollback failed: {error}"));
+            }
+        }
+        if let Some(before) = desktop_service_before {
+            let rollback = (|| -> anyhow::Result<()> {
+                if !before.installed {
+                    let _ = run_desktop(&["--stop-service"]);
+                    run_desktop(&["--uninstall-service"])?;
+                    return Ok(());
+                }
+                run_desktop(&["--ensure-service"])?;
+                run_desktop(&[
+                    "--service-start-type",
+                    if before.enabled { "auto" } else { "demand" },
+                ])?;
+                if before.running {
+                    run_desktop(&["--start-service"])?;
+                } else {
+                    run_desktop(&["--stop-service"])?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = rollback {
+                rollback_errors.push(format!("RustDeskTiny service rollback failed: {error}"));
+            }
+        }
+        if !rollback_errors.is_empty() {
+            let original = result
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "SCM transaction failed".to_string());
+            result = Err(anyhow::anyhow!(
+                "{original}; {}",
+                rollback_errors.join("; ")
+            ));
+        }
+    }
 
     // 将退出码写入临时文件（供 UI 进程读取）
     if let Some(ref path) = exit_code_file {

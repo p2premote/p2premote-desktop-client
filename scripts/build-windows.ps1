@@ -5,7 +5,8 @@ param(
     [switch]$SkipBuild,
     [switch]$NoSccache,
     [string]$TauriConfig,
-    [string]$PackageTarget = 'windows-x64'
+    [string]$PackageTarget = 'windows-x64',
+    [string]$RustDeskTinyArtifactDir = $env:RUSTDESK_TINY_ARTIFACT_DIR
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,22 +82,22 @@ $punchSource = Join-Path $projectRoot '..\p2premote-punch'
 if (-not (Test-Path -LiteralPath $punchSource -PathType Container)) {
     throw "p2premote-punch source directory not found: $punchSource"
 }
-$desktopArtifact = Join-Path $projectRoot '..\remoteDesk\RustDeskTiny\dist\windows-x64-release'
-$desktopExecutable = Join-Path $desktopArtifact 'RustDeskTiny.exe'
-$desktopSessionHelper = Join-Path $desktopArtifact 'p2premote-desktop-session-helper.exe'
-if (-not (Test-Path -LiteralPath $desktopExecutable -PathType Leaf)) {
-    throw "p2pRemote Desktop artifact is missing: $desktopExecutable. Build the independent component first."
-}
-if (-not (Test-Path -LiteralPath $desktopSessionHelper -PathType Leaf)) {
-    throw "p2pRemote Desktop session helper is missing: $desktopSessionHelper"
-}
 $desktopResource = Join-Path $projectRoot 'src-tauri\resources\RustDeskTiny'
-if (Test-Path -LiteralPath $desktopResource) {
-    Remove-Item -LiteralPath $desktopResource -Recurse -Force
+if (-not [string]::IsNullOrWhiteSpace($RustDeskTinyArtifactDir)) {
+    $desktopArtifact = [System.IO.Path]::GetFullPath($RustDeskTinyArtifactDir)
+    $desktopExecutable = Join-Path $desktopArtifact 'RustDeskTiny.exe'
+    if (-not (Test-Path -LiteralPath $desktopExecutable -PathType Leaf)) {
+        throw "RustDeskTiny artifact is missing: $desktopExecutable"
+    }
+    if (Test-Path -LiteralPath $desktopResource) {
+        Remove-Item -LiteralPath $desktopResource -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $desktopResource | Out-Null
+    Copy-Item -Path (Join-Path $desktopArtifact '*') -Destination $desktopResource -Recurse -Force
+    Write-Host "Copied RustDeskTiny release artifact: $desktopResource"
+} elseif (-not (Test-Path -LiteralPath (Join-Path $desktopResource 'RustDeskTiny.exe') -PathType Leaf)) {
+    throw "RustDeskTiny resource is missing. Pass -RustDeskTinyArtifactDir or set RUSTDESK_TINY_ARTIFACT_DIR."
 }
-New-Item -ItemType Directory -Path $desktopResource | Out-Null
-Copy-Item -Path (Join-Path $desktopArtifact '*') -Destination $desktopResource -Recurse -Force
-Write-Host "Copied p2pRemote Desktop runtime: $desktopResource"
 $previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
 $previousPunchDir = $env:P2PREMOTE_PUNCH_DIR
 $env:P2PREMOTE_CLIENT_VERSION = $buildVersion

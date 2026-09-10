@@ -72,11 +72,19 @@ FunctionEnd
     ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm stop' $0
     DetailPrint "p2premote-service stop exit code: $0"
 
+  ; RustDeskTiny is otherwise independent. Stop it only because its files are
+  ; about to be replaced by this install/upgrade operation.
+  nsExec::ExecToLog 'sc stop RustDeskTinyService'
+  ; Migrate installations made before the standalone service rename.
+  nsExec::ExecToLog 'sc stop p2premote-desktop-service'
+  nsExec::ExecToLog 'sc delete p2premote-desktop-service'
+
   ; Fallback cleanup. Missing processes are expected during first install.
   nsExec::ExecToLog 'taskkill /F /IM p2premote.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-service.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-notifier.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM RustDeskTiny.exe /T'
+  nsExec::ExecToLog 'taskkill /F /IM rustdesk-tiny-session-helper.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-desktop-session-helper.exe /T'
 !macroend
 
@@ -150,6 +158,8 @@ FunctionEnd
   ; Stop and uninstall the service before removing files
   ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm stop' $0
   ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm uninstall' $0
+  IfFileExists "$INSTDIR\resources\RustDeskTiny\RustDeskTiny.exe" 0 +2
+    ExecWait '"$INSTDIR\resources\RustDeskTiny\RustDeskTiny.exe" --uninstall-service' $0
 
   ; Make sure no process keeps installed files locked.
   nsExec::ExecToLog 'taskkill /F /IM p2premote.exe /T'
@@ -158,6 +168,7 @@ FunctionEnd
   nsExec::ExecToLog 'taskkill /F /IM p2premote-cli.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-notifier.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM RustDeskTiny.exe /T'
+  nsExec::ExecToLog 'taskkill /F /IM rustdesk-tiny-session-helper.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-desktop-session-helper.exe /T'
 
   ; Explicit cleanup for bundled helper binaries.

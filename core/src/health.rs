@@ -759,7 +759,6 @@ mod tests {
         ));
         conn.send(&TunnelControlMessage::DesktopStart {
             attempt_id: "desktop-1".into(),
-            session_secret: "secret".into(),
             port: 39090,
         })
         .await

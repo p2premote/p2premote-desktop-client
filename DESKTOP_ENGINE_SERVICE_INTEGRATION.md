@@ -1,4 +1,4 @@
-# 独立 p2premote-desktop 的桌面客户端集成
+# 独立 RustDeskTiny 的桌面客户端集成
 
 ## 产品边界
 
@@ -13,44 +13,42 @@
 Vue                  Active Service            Passive Service            Host Engine        Controller Engine
  | StartDesktopSession      |                         |                         |                    |
  |------------------------->| validate WGVPN/control |                         |                    |
- |                          | DesktopStart(v4, id, secret, 39090)              |                    |
-|                          |==== WGVPN health/control TCP ====================>| validate peer IP  |
+ |                          | DesktopStart(v5, id, 39090)                      |                    |
+|                          |==== WGVPN health/control TCP ====================>|                    |
 |                          |                         | protected service IPC  |                    |
  |                          |                         |------------------------>|                    |
  |                          |                         |<---------- host_ready --|                    |
  |                          |<== DesktopReady =========|                         |                    |
  |                          | direct executable connect                       |                    |
  |                          |--------------------------------------------------------------->|
- |                          |<-------------------------------- FirstFrame + Streaming --------|
- |<-- success (native) -----|                         |                         |                    |
+ |<-- launched (native) ----|                         |                         |                    |
 ```
 
-中心服务端只参与初始授权和打洞。隧道建立后，`DesktopStart/Ready/Failed/Stop/Stopped` 全部通过 WGVPN 内现有的 48082 健康控制长连接传输，不使用 WebSocket `p2p_notify`，也不依赖 `access_grant` 的有效期。任何一步失败即终止。HostReady 后 Controller 失败时，Active Service 发送 `DesktopStop`；该清理失败会与 Controller 原因合并返回。
+中心服务端只参与初始授权和打洞。隧道建立后，桌面启动通知通过 WGVPN 内现有的 48082 健康控制长连接传输。该协议不传递密码或自定义会话令牌；连接认证完全由 RustDeskTiny 的 RustDesk 临时密码或长期密码完成。
 
 ## 本地进程管理
 
 - Host 通过同一份 `RustDeskTiny.exe service-host ...` 经 RustDesk 受保护 Service IPC 启动；Controller 直接运行 `RustDeskTiny.exe connect ...`。不再使用自研 Session Supervisor。
-- Host 必须在 30 秒内到达 `host_ready`；Controller 必须在 30 秒内收到首帧并到达 `streaming`。
-- 监督线程每 200 ms 响应停止，同时检查组件退出和终态事件；协议错误、进程退出及超时均返回稳定错误码。
-- RustDesk 原生 Windows Service 负责 `--server` 的 Session 迁移和崩溃恢复；p2pRemote supervisor 只维护控制命令生命周期。
-- Service 停隧道、登出和整体退出前先停止所有关联 Engine。
+- Host 命令确认 Service 已在指定 IP 监听后退出；Controller 使用脱离进程方式启动。
+- p2pRemote 不保存子进程句柄、不读取长期状态输出、不轮询、不随隧道或自身退出而终止 RustDeskTiny。
+- RustDeskTiny 自己负责窗口、连接、Windows Service、Session 迁移和崩溃恢复。
+- 只有升级、卸载或替换运行文件时，安装流程才停止 RustDeskTiny。
 
 ## 图形 Session
 
-- Windows：`p2premote-desktop-service` 运行于 LocalSystem，直接复用 RustDesk 的 Session 枚举、`launch_server` 和登录/锁屏/RDP Session 迁移逻辑。
+- Windows：`RustDeskTinyService` 运行于 LocalSystem，直接复用 RustDesk 的 Session 枚举、`launch_server` 和登录/锁屏/RDP Session 迁移逻辑。
 - Linux/macOS：首期不提供新组件；调用明确返回 `desktop_platform_unsupported`，不运行旧 Engine 兜底。
 
 ## 安装资源
 
-- 独立仓库固定产物目录：`remoteDesk/RustDeskTiny/dist/windows-x64-release`。
 - Windows 安装包复制整个运行目录到 `resources/RustDeskTiny/`，不能只复制 exe。
-- `P2PREMOTE_DESKTOP_PATH` 只用于开发/测试覆盖桌面可执行文件精确路径。
-- `P2PREMOTE_DESKTOP_ARTIFACT_DIR` 仅供 CI 覆盖固定产物目录；缺少主程序时构建立即失败。
+- `RUSTDESK_TINY_PATH` 只用于开发/测试覆盖桌面可执行文件精确路径。
+- `RUSTDESK_TINY_ARTIFACT_DIR` 指向独立发布包的解压目录；构建不引用相邻源码仓库。
 - Linux/macOS 安装包不再包含旧自研 Engine。
 
 ## 关键实现位置
 
-- Service Engine 生命周期：`core/src/runtime/desktop_engine.rs`
+- 一次性命令行启动适配：`core/src/runtime/desktop_engine.rs`
 - 隧道内桌面控制信令：`core/src/tunnel_control.rs`、`core/src/health.rs`、`core/src/p2p.rs`
 - IPC 命令：`core/src/control.rs`、`core/src/runtime/ipc.rs`
 - Tauri 命令：`src-tauri/src/commands/service.rs`

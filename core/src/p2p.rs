@@ -862,7 +862,6 @@ mod tests {
             .send(TunnelDesktopCommand {
                 request: crate::tunnel_control::DesktopControlRequest::Start {
                     attempt_id: "desktop-1".into(),
-                    session_secret: "secret".into(),
                     port: 39090,
                 },
                 response: response_tx,

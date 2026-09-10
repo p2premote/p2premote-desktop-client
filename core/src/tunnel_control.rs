@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tokio_util::codec::Framed;
 
-pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 4;
+pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", content = "c")]
@@ -68,7 +68,6 @@ pub enum TunnelControlMessage {
     },
     DesktopStart {
         attempt_id: String,
-        session_secret: String,
         port: u16,
     },
     DesktopReady {
@@ -95,7 +94,6 @@ pub enum TunnelControlMessage {
 pub enum DesktopControlRequest {
     Start {
         attempt_id: String,
-        session_secret: String,
         port: u16,
     },
     Stop {
@@ -115,11 +113,9 @@ impl DesktopControlRequest {
         match self {
             Self::Start {
                 attempt_id,
-                session_secret,
                 port,
             } => TunnelControlMessage::DesktopStart {
                 attempt_id,
-                session_secret,
                 port,
             },
             Self::Stop { attempt_id, reason } => {
@@ -223,7 +219,6 @@ mod tests {
         let messages = [
             TunnelControlMessage::DesktopStart {
                 attempt_id: "attempt-1".into(),
-                session_secret: "secret".into(),
                 port: 39090,
             },
             TunnelControlMessage::DesktopReady {
