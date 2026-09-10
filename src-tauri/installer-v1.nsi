@@ -140,6 +140,14 @@ FunctionEnd
     ${EndIf}
   scm_setup_done:
   DetailPrint "p2premote-service setup exit code: $0 (attempts: $2)"
+  ${If} $0 != 0
+    Abort "p2pRemote services could not be installed"
+  ${EndIf}
+  nsExec::ExecToLog 'sc query RustDeskTiny'
+  Pop $0
+  ${If} $0 != 0
+    Abort "RustDeskTiny service was not created"
+  ${EndIf}
 
   ; Respect a persisted auto_start=off: setup force-enables AutoStart, so drop
   ; the boot autostart again 鈥?a reinstall must not silently revert the choice.
@@ -688,12 +696,26 @@ Section WebView2
     DetailPrint "$(installingWebview2)"
     ; $6 holds the path to the webview2 installer
     ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
-    ${If} $1 == 0
-      DetailPrint "$(webview2InstallSuccess)"
-    ${Else}
+    ${If} $1 != 0
       DetailPrint "$(webview2InstallError)"
       Abort "$(webview2AbortError)"
     ${EndIf}
+    !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"
+      ${If} ${RunningX64}
+        ReadRegStr $7 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+      ${Else}
+        ReadRegStr $7 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+      ${EndIf}
+      StrCmp $7 "" 0 +2
+      Abort "WebView2 Runtime was not installed"
+      !if "${MINIMUMWEBVIEW2VERSION}" != ""
+        ${VersionCompare} $7 "${MINIMUMWEBVIEW2VERSION}" $0
+        ${If} $0 == "2"
+          Abort "Installed WebView2 Runtime is older than ${MINIMUMWEBVIEW2VERSION}"
+        ${EndIf}
+      !endif
+    !endif
+    DetailPrint "$(webview2InstallSuccess)"
   webview2_done:
 SectionEnd
 

@@ -68,6 +68,14 @@ if ($SkipBuild) {
     exit 0
 }
 
+$nsisDirectory = Join-Path $projectRoot 'target\release\bundle\nsis'
+$expectedInstallerName = "p2pRemote_${buildVersion}_x64-setup.exe"
+$expectedInstallerPath = Join-Path $nsisDirectory $expectedInstallerName
+$modernInstallerBackup = "$expectedInstallerPath.windows-x64-backup"
+if ($PackageTarget -ne 'windows-x64' -and (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
+    Copy-Item -LiteralPath $expectedInstallerPath -Destination $modernInstallerBackup -Force
+}
+
 if ($NoSccache) {
     $env:RUSTC_WRAPPER = ''
     Write-Host "sccache disabled; Rust will compile locally"
@@ -127,9 +135,6 @@ if (-not $NoSccache) { & sccache --show-stats }
 # Tauri normally includes x64 in the NSIS filename, but normalize it here so
 # every Windows package produced by this script is accepted by package
 # management and cannot be mistaken for another architecture.
-$nsisDirectory = Join-Path $projectRoot 'target\release\bundle\nsis'
-$expectedInstallerName = "p2pRemote_${buildVersion}_x64-setup.exe"
-$expectedInstallerPath = Join-Path $nsisDirectory $expectedInstallerName
 if (-not (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
     $candidates = @(Get-ChildItem -LiteralPath $nsisDirectory -Filter "p2pRemote_${buildVersion}*.exe" -File)
     if ($candidates.Count -ne 1) {
@@ -140,6 +145,10 @@ if (-not (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
 $targetInstallerPath = Join-Path $nsisDirectory "p2pRemote_${buildVersion}_${PackageTarget}-setup.exe"
 if ($PackageTarget -ne 'windows-x64') {
     Move-Item -LiteralPath $expectedInstallerPath -Destination $targetInstallerPath -Force
+    if (Test-Path -LiteralPath $modernInstallerBackup -PathType Leaf) {
+        Move-Item -LiteralPath $modernInstallerBackup -Destination $expectedInstallerPath -Force
+        Write-Host "Preserved existing windows-x64 installer: $expectedInstallerPath"
+    }
 } else {
     $targetInstallerPath = $expectedInstallerPath
 }
