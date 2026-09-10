@@ -374,7 +374,7 @@ pub async fn start_active_wgvpn(
             udp_tunnel_request.remote_target_port,
         );
     let udp_punch_started_at = Instant::now();
-    let udp_tunnel = match gonc_ffi::start_udp_tunnel(Path::new(&punch_lib), &udp_tunnel_request) {
+    let udp_tunnel = match gonc_ffi::start_udp_tunnel_native(&udp_tunnel_request).await {
         Ok(tunnel) => {
             log_gonc_udp_punch_established(
                 "active",
@@ -623,7 +623,7 @@ pub async fn start_passive_wgvpn(
             udp_tunnel_request.remote_target_port,
         );
     let udp_punch_started_at = Instant::now();
-    let udp_tunnel = match gonc_ffi::start_udp_tunnel(Path::new(&punch_lib), &udp_tunnel_request) {
+    let udp_tunnel = match gonc_ffi::start_udp_tunnel_native(&udp_tunnel_request).await {
         Ok(tunnel) => {
             log_gonc_udp_punch_established(
                 "passive",

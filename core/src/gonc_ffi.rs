@@ -496,10 +496,46 @@ pub fn start_udp_tunnel(
     parse_udp_tunnel_result(&output)
 }
 
+/// Native Rust Punch path used by Linux/Windows once the crate is linked.
+/// The temporary JSON conversion keeps the existing core result contract
+/// stable while the strongly typed API is migrated at call sites.
+#[cfg(any(target_os = "linux", windows))]
+pub async fn start_udp_tunnel_native(request: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
+    let input = serde_json::to_string(request).context("failed to encode native udp tunnel request")?;
+    let native: p2premote_punch::UdpTunnelInput =
+        serde_json::from_str(&input).context("failed to convert native udp tunnel request")?;
+    let result = p2premote_punch::api::start_udp_tunnel(
+        native,
+        Duration::from_secs(request.timeout_secs.saturating_add(10)),
+    )
+    .await
+    .map_err(|error| anyhow!(error))?;
+    serde_json::from_value(serde_json::to_value(result)?)
+        .context("failed to convert native udp tunnel result")
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub async fn start_udp_tunnel_native(_request: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
+    Err(anyhow!("native Rust Punch is not enabled on this platform"))
+}
+
+#[cfg(any(target_os = "linux", windows))]
+pub fn stop_udp_tunnel_native(handle_id: &str) {
+    p2premote_punch::api::stop_udp_tunnel(handle_id);
+}
+
 pub fn stop_udp_tunnel(library_path: &Path, handle_id: &str) -> Result<()> {
     if handle_id.is_empty() {
         return Ok(());
     }
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        let _ = library_path;
+        stop_udp_tunnel_native(handle_id);
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
     validate_punch_library_available(library_path)?;
     let input = serde_json::to_string(&StopUdpTunnelRequest {
         handle_id: handle_id.to_string(),
@@ -519,6 +555,7 @@ pub fn stop_udp_tunnel(library_path: &Path, handle_id: &str) -> Result<()> {
         ));
     }
     Ok(())
+    }
 }
 
 pub fn start_subnet_router(
