@@ -151,20 +151,7 @@ fn handle_scm_command() -> anyhow::Result<()> {
         None
     };
 
-    let desktop_exe = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|dir| dir.join("RustDeskTiny").join("RustDeskTiny.exe")));
-    let run_desktop = |arguments: &[&str]| -> anyhow::Result<()> {
-        let executable = desktop_exe.as_ref().ok_or_else(|| anyhow::anyhow!("cannot resolve desktop service executable"))?;
-        if !executable.is_file() { return Err(anyhow::anyhow!("desktop service executable missing: {}", executable.display())); }
-        let status = std::process::Command::new(executable).args(arguments).status()?;
-        if !status.success() { return Err(anyhow::anyhow!("desktop service command {:?} failed with {}", arguments, status)); }
-        Ok(())
-    };
-
     let main_service_before = p2premote_core::service_control::query_service_status().ok();
-    let desktop_service_before =
-        p2premote_core::service_control::query_named_service_status("RustDeskTiny").ok();
 
     let mut result = match action.as_str() {
         "install" => install_exe
@@ -200,12 +187,7 @@ fn handle_scm_command() -> anyhow::Result<()> {
             p2premote_core::service_control::direct::enable_service()
         }),
         "disable" => run_scm_step("disable", || {
-            p2premote_core::service_control::direct::disable_service()?;
-            if let Err(error) = run_desktop(&["--service-start-type", "demand"]) {
-                let _ = p2premote_core::service_control::direct::enable_service();
-                return Err(error);
-            }
-            Ok(())
+            p2premote_core::service_control::direct::disable_service()
         }),
         // 复合操作：install + enable + start，一次 UAC 完成
         "setup" => install_exe
@@ -242,13 +224,6 @@ fn handle_scm_command() -> anyhow::Result<()> {
                     scm_trace(&format!("setup.start failed after retries: {}", e));
                     return Err(e);
                 }
-                if let Err(error) = run_desktop(&["--ensure-service"])
-                    .and_then(|_| run_desktop(&["--service-start-type", "auto"]))
-                    .and_then(|_| run_desktop(&["--start-service"]))
-                {
-                    let _ = p2premote_core::service_control::direct::disable_service();
-                    return Err(error);
-                }
                 Ok(())
             }),
         other => Err(anyhow::anyhow!("unknown scm action: {}", other)),
@@ -283,29 +258,6 @@ fn handle_scm_command() -> anyhow::Result<()> {
             })();
             if let Err(error) = rollback {
                 rollback_errors.push(format!("main service rollback failed: {error}"));
-            }
-        }
-        if let Some(before) = desktop_service_before {
-            let rollback = (|| -> anyhow::Result<()> {
-                if !before.installed {
-                    let _ = run_desktop(&["--stop-service"]);
-                    run_desktop(&["--uninstall-service"])?;
-                    return Ok(());
-                }
-                run_desktop(&["--ensure-service"])?;
-                run_desktop(&[
-                    "--service-start-type",
-                    if before.enabled { "auto" } else { "demand" },
-                ])?;
-                if before.running {
-                    run_desktop(&["--start-service"])?;
-                } else {
-                    run_desktop(&["--stop-service"])?;
-                }
-                Ok(())
-            })();
-            if let Err(error) = rollback {
-                rollback_errors.push(format!("RustDeskTiny service rollback failed: {error}"));
             }
         }
         if !rollback_errors.is_empty() {
@@ -428,7 +380,7 @@ fn main() -> anyhow::Result<()> {
     match windows_service::service_dispatcher::start(SERVICE_NAME, ffi_service_main) {
         Ok(()) => Ok(()),
         Err(err) => {
-            error!("failed to start service dispatcher: {}", err);
+            error!("failed to start service dispatcher: {} ({:?})", err, err);
             run_foreground()
         }
     }
@@ -459,12 +411,13 @@ fn run_foreground() -> anyhow::Result<()> {
 #[cfg(windows)]
 fn service_entry(_arguments: Vec<OsString>) {
     if let Err(err) = service_main() {
-        error!("service main failed: {}", err);
+        error!("service main failed: {:#?}", err);
     }
 }
 
 #[cfg(windows)]
 fn service_main() -> anyhow::Result<()> {
+    use anyhow::Context;
     use std::sync::mpsc;
     use windows_service::service::{
         ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
@@ -484,7 +437,7 @@ fn service_main() -> anyhow::Result<()> {
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
                 _ => ServiceControlHandlerResult::NotImplemented,
             },
-        )?;
+        ).context("register service control handler")?;
 
     // 报告 StartPending
     status_handle.set_service_status(ServiceStatus {
@@ -495,7 +448,7 @@ fn service_main() -> anyhow::Result<()> {
         checkpoint: 1,
         wait_hint: std::time::Duration::from_secs(5),
         process_id: None,
-    })?;
+    }).context("report StartPending")?;
 
     // 在独立线程运行 service 逻辑
     let service_result = std::thread::spawn(move || run_foreground());
@@ -509,7 +462,7 @@ fn service_main() -> anyhow::Result<()> {
         checkpoint: 0,
         wait_hint: std::time::Duration::from_secs(0),
         process_id: None,
-    })?;
+    }).context("report Running")?;
 
     loop {
         match shutdown_rx.try_recv() {
