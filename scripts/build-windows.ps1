@@ -3,10 +3,11 @@ param(
     [Alias('v')]
     [string]$Version,
     [switch]$SkipBuild,
+    [switch]$SkipNpmCi,
     [switch]$NoSccache,
     [string]$TauriConfig,
     [string]$PackageTarget = 'windows-x64',
-    [string]$RustDeskTinyArtifactDir = $env:RUSTDESK_TINY_ARTIFACT_DIR
+    [string]$RustDeskTinyInstaller = $env:RUSTDESK_TINY_INSTALLER
 )
 
 $ErrorActionPreference = 'Stop'
@@ -90,21 +91,16 @@ $punchSource = Join-Path $projectRoot '..\p2premote-punch'
 if (-not (Test-Path -LiteralPath $punchSource -PathType Container)) {
     throw "p2premote-punch source directory not found: $punchSource"
 }
-$desktopResource = Join-Path $projectRoot 'src-tauri\resources\RustDeskTiny'
-if (-not [string]::IsNullOrWhiteSpace($RustDeskTinyArtifactDir)) {
-    $desktopArtifact = [System.IO.Path]::GetFullPath($RustDeskTinyArtifactDir)
-    $desktopExecutable = Join-Path $desktopArtifact 'RustDeskTiny.exe'
-    if (-not (Test-Path -LiteralPath $desktopExecutable -PathType Leaf)) {
-        throw "RustDeskTiny artifact is missing: $desktopExecutable"
+$desktopResource = Join-Path $projectRoot 'src-tauri\resources\RustDeskTiny-install.exe'
+if (-not [string]::IsNullOrWhiteSpace($RustDeskTinyInstaller)) {
+    $desktopInstaller = [System.IO.Path]::GetFullPath($RustDeskTinyInstaller)
+    if (-not (Test-Path -LiteralPath $desktopInstaller -PathType Leaf)) {
+        throw "RustDeskTiny installer is missing: $desktopInstaller"
     }
-    if (Test-Path -LiteralPath $desktopResource) {
-        Remove-Item -LiteralPath $desktopResource -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $desktopResource | Out-Null
-    Copy-Item -Path (Join-Path $desktopArtifact '*') -Destination $desktopResource -Recurse -Force
-    Write-Host "Copied RustDeskTiny release artifact: $desktopResource"
-} elseif (-not (Test-Path -LiteralPath (Join-Path $desktopResource 'RustDeskTiny.exe') -PathType Leaf)) {
-    throw "RustDeskTiny resource is missing. Pass -RustDeskTinyArtifactDir or set RUSTDESK_TINY_ARTIFACT_DIR."
+    Copy-Item -LiteralPath $desktopInstaller -Destination $desktopResource -Force
+    Write-Host "Copied RustDeskTiny installer: $desktopResource"
+} elseif (-not (Test-Path -LiteralPath $desktopResource -PathType Leaf)) {
+    throw "RustDeskTiny installer is missing. Pass -RustDeskTinyInstaller or set RUSTDESK_TINY_INSTALLER."
 }
 $previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
 $previousPunchDir = $env:P2PREMOTE_PUNCH_DIR
@@ -114,13 +110,19 @@ $env:P2PREMOTE_PUNCH_DIR = (Resolve-Path -LiteralPath $punchSource).Path
 Push-Location $projectRoot
 try {
     # node_modules 可能被 WSL/容器内的 Linux 构建重装为 Linux 版本，每次构建前先恢复 Windows 版本
-    & npm ci
-    if ($LASTEXITCODE -ne 0) {
-        throw "npm ci failed with exit code $LASTEXITCODE"
+    if (-not $SkipNpmCi) {
+        & npm ci
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed with exit code $LASTEXITCODE"
+        }
     }
-    $tauriArgs = @('tauri', 'build')
+    $tauriCli = Join-Path $projectRoot 'node_modules\@tauri-apps\cli\tauri.js'
+    if (-not (Test-Path -LiteralPath $tauriCli -PathType Leaf)) {
+        throw "Tauri CLI is missing: $tauriCli"
+    }
+    $tauriArgs = @($tauriCli, 'build')
     if ($TauriConfig) { $tauriArgs += @('--config', $TauriConfig) }
-    & npx @tauriArgs
+    & node @tauriArgs
     if ($LASTEXITCODE -ne 0) {
         throw "tauri build failed with exit code $LASTEXITCODE"
     }
