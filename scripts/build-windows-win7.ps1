@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$requiredWebViewVersion = [version]'109.0.1518.78'
+$requiredWebViewVersion = [version]'109.0.1518.140'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $installer = (Resolve-Path -LiteralPath $WebView2Installer).Path
 
@@ -18,10 +18,6 @@ $signature = Get-AuthenticodeSignature -LiteralPath $installer
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|, )O=Microsoft Corporation(,|$)') {
     throw "WebView2 installer must have a valid Microsoft Authenticode signature; got '$($signature.Status)' / '$($signature.SignerCertificate.Subject)'."
 }
-$fileVersion = [version]([System.Diagnostics.FileVersionInfo]::GetVersionInfo($installer).FileVersion -replace '[^0-9.].*$','')
-if ($fileVersion -ne $requiredWebViewVersion) {
-    throw "WebView2 installer version must be exactly $requiredWebViewVersion; got $fileVersion."
-}
 $stream = [System.IO.File]::OpenRead($installer)
 try {
     $reader = [System.IO.BinaryReader]::new($stream)
@@ -29,8 +25,26 @@ try {
     $stream.Position = 0x3c
     $peOffset = $reader.ReadUInt32()
     $stream.Position = $peOffset
-    if ($reader.ReadUInt32() -ne 0x00004550 -or $reader.ReadUInt16() -ne 0x8664) {
-        throw 'WebView2 installer is not an x64 PE file.'
+    if ($reader.ReadUInt32() -ne 0x00004550) {
+        throw 'WebView2 installer has an invalid PE signature.'
+    }
+
+    # Microsoft's x64 offline package uses an x86 setup bootstrapper. Validate
+    # the signed embedded payload manifest instead of the outer PE architecture
+    # and setup-engine FileVersion (for example, 1.3.177.11).
+    $tailLength = [Math]::Min(4MB, $stream.Length)
+    $stream.Position = $stream.Length - $tailLength
+    $manifestTail = [System.Text.Encoding]::ASCII.GetString($reader.ReadBytes([int]$tailLength))
+    $payloadPattern = 'MicrosoftEdgeWebview_X64_(?<version>\d+\.\d+\.\d+\.\d+)\.exe'
+    $payloadVersions = @([regex]::Matches($manifestTail, $payloadPattern) | ForEach-Object {
+        $_.Groups['version'].Value
+    } | Select-Object -Unique)
+    if ($payloadVersions.Count -ne 1) {
+        throw "expected exactly one x64 WebView2 payload version, found $($payloadVersions.Count)."
+    }
+    $payloadVersion = [version]$payloadVersions[0]
+    if ($payloadVersion -ne $requiredWebViewVersion) {
+        throw "WebView2 x64 payload version must be exactly $requiredWebViewVersion; got $payloadVersion."
     }
 } finally { $stream.Dispose() }
 

@@ -56,8 +56,8 @@ function Update-RegexReplace {
     Write-Utf8NoBomFile -Path $Path -Content $updated
 }
 
-Update-RegexReplace -Path $packageJsonPath -Pattern '(?m)^  "version": ".*",$' -Replacement ('  "version": "{0}",' -f $buildVersion)
-Update-RegexReplace -Path $tauriConfigPath -Pattern '(?m)^  "version": ".*",$' -Replacement ('  "version": "{0}",' -f $buildVersion)
+Update-RegexReplace -Path $packageJsonPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
+Update-RegexReplace -Path $tauriConfigPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
 Update-RegexReplace -Path $cargoTomlPath -Pattern '(?m)^version = ".*"$' -Replacement ('version = "{0}"' -f $buildVersion)
 
 Write-Host "Updated client version to $buildVersion"
