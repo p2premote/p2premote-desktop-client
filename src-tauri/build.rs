@@ -120,11 +120,18 @@ fn client_version() -> String {
 fn build_punch_library_into_resources() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
-    let source_dir =
-        PathBuf::from(env::var_os("P2PREMOTE_PUNCH_DIR").expect("P2PREMOTE_PUNCH_DIR is not set"));
+    let (target_os, _) = parse_target();
+    let source_env = if target_os == "windows" {
+        "P2PREMOTE_WG_FFI_DIR"
+    } else {
+        "P2PREMOTE_PUNCH_DIR"
+    };
+    let source_dir = PathBuf::from(
+        env::var_os(source_env).unwrap_or_else(|| panic!("{} is not set", source_env)),
+    );
     if !source_dir.is_dir() {
         panic!(
-            "p2premote-punch source directory not found: {}",
+            "WG/Punch source directory not found: {}",
             source_dir.display()
         );
     }
@@ -155,7 +162,7 @@ fn build_punch_library_into_resources() {
     // its WG implementation is migrated separately.
     if target_os == "windows" {
         command.arg("-tags").arg("wgonly");
-        command.arg("-modfile").arg("go120-wg.mod");
+        command.arg("-mod=mod");
         command.env("GOTOOLCHAIN", "go1.20.14");
     }
     command
