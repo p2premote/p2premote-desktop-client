@@ -44,7 +44,7 @@ libc = "0.2"
 [target.'cfg(any(target_os = "linux", windows))'.dependencies]
 # 源码集成（社区标准做法：单一 Rust 世界，无 staticlib 符号冲突）：
 # 打洞库直接以 path 依赖编译进客户端，musl 静态目标由客户端构建统一保证。
-p2premote-punch = { path = "../../p2premote-punch-rs" }
+p2premote-punch = { path = "../../p2premote-punch-rs", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

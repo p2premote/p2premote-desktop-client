@@ -149,6 +149,15 @@ fn build_punch_library_into_resources() {
     } else {
         command.arg("-buildmode=c-shared");
     }
+    // Windows Punch/Exchange now run in Rust. Build only the WireGuard data
+    // plane with the Go 1.20-compatible module so the resulting DLL remains
+    // runnable on Windows 7. macOS keeps the legacy combined library until
+    // its WG implementation is migrated separately.
+    if target_os == "windows" {
+        command.arg("-tags").arg("wgonly");
+        command.arg("-modfile").arg("go120-wg.mod");
+        command.env("GOTOOLCHAIN", "go1.20.14");
+    }
     command
         .arg("-ldflags")
         .arg("-s -w")
@@ -340,40 +349,10 @@ fn copy_desktop_engine_into_resources() {
     if target_arch != "amd64" {
         panic!("RustDeskTiny integration currently supports Windows amd64 only");
     }
-    let target = resources_dir.join("RustDeskTiny");
-    let Some(source) = env::var_os("RUSTDESK_TINY_ARTIFACT_DIR").map(PathBuf::from) else {
-        if target.join("RustDeskTiny.exe").is_file() {
-            return;
-        }
-        panic!(
-            "RustDeskTiny release artifact is missing; set RUSTDESK_TINY_ARTIFACT_DIR or populate {}",
-            target.display()
-        );
-    };
-    if !source.is_dir() {
-        panic!(
-            "RustDeskTiny artifact directory not found: {}",
-            source.display()
-        );
+    let installer = resources_dir.join("RustDeskTiny-install.exe");
+    if !installer.is_file() {
+        panic!("RustDeskTiny installer resource is missing: {}", installer.display());
     }
-    for required in ["RustDeskTiny.exe"] {
-        if !source.join(required).is_file() {
-            panic!(
-                "required desktop artifact is missing: {}",
-                source.join(required).display()
-            );
-        }
-    }
-    if target.exists() {
-        fs::remove_dir_all(&target).unwrap_or_else(|err| {
-            panic!(
-                "failed to replace existing RustDeskTiny resource {}: {}",
-                target.display(),
-                err
-            )
-        });
-    }
-    copy_directory(&source, &target);
 }
 
 fn copy_directory(source: &Path, target: &Path) {
