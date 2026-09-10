@@ -349,12 +349,12 @@ pub async fn start_active_wgvpn(
     let mut local_payload =
         wgvpn_exchange::ExchangePayload::for_active(&pub_key, my_device_id, ip_start, ip_end);
     local_payload.my_ip = choose_passive_ip_for_peer(&wg_cli, target_device_id, ip_start, ip_end)?;
-    let peer_payload = wgvpn_exchange::exchange_as_active(
+    let peer_payload = wgvpn_exchange::exchange_as_active_platform(
         Path::new(&punch_lib),
         &punch_token,
         &local_payload,
         Duration::from_secs(60),
-    )?;
+    ).await?;
     let peer_exposed_lan_cidrs = peer_payload.exposed_lan_cidrs.clone();
     let warning = peer_payload.warning.clone();
     let peer_pubkey = peer_payload.pubkey;
@@ -581,7 +581,7 @@ pub async fn start_passive_wgvpn(
     };
 
     // 1. 公钥 + IP 协商（FFI Exchange，被动端：收主动端范围 → 分配 → 回传）
-    let active_payload = wgvpn_exchange::exchange_as_passive(
+    let active_payload = wgvpn_exchange::exchange_as_passive_platform(
         Path::new(&punch_lib),
         &punch_token,
         &local_payload_template,
@@ -599,7 +599,7 @@ pub async fn start_passive_wgvpn(
             reserved_peer_ip = Some(assigned);
             Ok((assigned, my_ip_u32))
         },
-    )?;
+    ).await?;
     let peer_pubkey = active_payload.pubkey;
     let peer_device_id = active_payload.device_id;
     // 被动端固定 PASSIVE_IP；对端（主动端）IP = 本端分配的结果（复算保持一致）

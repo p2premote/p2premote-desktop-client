@@ -443,6 +443,91 @@ where
     Ok(active_payload)
 }
 
+#[cfg(any(target_os = "linux", windows))]
+pub async fn exchange_as_passive_native<F>(
+    base_token: &str,
+    local_payload_template: &ExchangePayload,
+    timeout: Duration,
+    allocate: F,
+) -> Result<ExchangePayload>
+where
+    F: FnOnce(i64, u32, u32, u32) -> Result<(u32, u32)>,
+{
+    let kx_token = derive_kx_token(base_token);
+    let recv = crate::gonc_ffi::exchange_payload_native(
+        &kx_token,
+        crate::gonc_ffi::ExchangeMode::WaitOnly,
+        "",
+        timeout,
+    )
+    .await?;
+    let active_payload = ExchangePayload::parse(&recv)?;
+    let (assigned_ip, my_ip) = allocate(
+        active_payload.device_id,
+        active_payload.ip_range_start,
+        active_payload.ip_range_end,
+        active_payload.my_ip,
+    )?;
+    let passive_payload = ExchangePayload {
+        pubkey: local_payload_template.pubkey.clone(),
+        device_id: local_payload_template.device_id,
+        ip_range_start: 0,
+        ip_range_end: 0,
+        assigned_ip,
+        my_ip,
+        exposed_lan_cidrs: local_payload_template.exposed_lan_cidrs.clone(),
+        warning: local_payload_template.warning.clone(),
+    };
+    let send_data = passive_payload.render()?;
+    let _ = crate::gonc_ffi::exchange_payload_native(
+        &kx_token,
+        crate::gonc_ffi::ExchangeMode::Mutual,
+        &send_data,
+        timeout,
+    )
+    .await?;
+    Ok(active_payload)
+}
+
+/// Platform-selected async exchange used by the service flow.
+pub async fn exchange_as_active_platform(
+    punch_lib: &Path,
+    base_token: &str,
+    local_payload: &ExchangePayload,
+    timeout: Duration,
+) -> Result<ExchangePayload> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        let _ = punch_lib;
+        exchange_as_active_native(base_token, local_payload, timeout).await
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        exchange_as_active(punch_lib, base_token, local_payload, timeout)
+    }
+}
+
+pub async fn exchange_as_passive_platform<F>(
+    punch_lib: &Path,
+    base_token: &str,
+    local_payload: &ExchangePayload,
+    timeout: Duration,
+    allocate: F,
+) -> Result<ExchangePayload>
+where
+    F: FnOnce(i64, u32, u32, u32) -> Result<(u32, u32)>,
+{
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        let _ = punch_lib;
+        exchange_as_passive_native(base_token, local_payload, timeout, allocate).await
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        exchange_as_passive(punch_lib, base_token, local_payload, timeout, allocate)
+    }
+}
+
 #[cfg(test)]
 mod exchange_tests {
     use super::*;
