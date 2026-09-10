@@ -74,7 +74,7 @@ FunctionEnd
 
   ; RustDeskTiny is otherwise independent. Stop it only because its files are
   ; about to be replaced by this install/upgrade operation.
-  nsExec::ExecToLog 'sc stop RustDeskTinyService'
+  nsExec::ExecToLog 'sc stop RustDeskTiny'
   ; Migrate installations made before the standalone service rename.
   nsExec::ExecToLog 'sc stop p2premote-desktop-service'
   nsExec::ExecToLog 'sc delete p2premote-desktop-service'

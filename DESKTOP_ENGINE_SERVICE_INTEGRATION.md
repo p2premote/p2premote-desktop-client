@@ -36,7 +36,7 @@ Vue                  Active Service            Passive Service            Host E
 
 ## 图形 Session
 
-- Windows：`RustDeskTinyService` 运行于 LocalSystem，直接复用 RustDesk 的 Session 枚举、`launch_server` 和登录/锁屏/RDP Session 迁移逻辑。
+- Windows：`RustDeskTiny` 运行于 LocalSystem，直接复用 RustDesk 的 Session 枚举、`launch_server` 和登录/锁屏/RDP Session 迁移逻辑。
 - Linux/macOS：首期不提供新组件；调用明确返回 `desktop_platform_unsupported`，不运行旧 Engine 兜底。
 
 ## 安装资源

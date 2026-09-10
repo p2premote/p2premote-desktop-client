@@ -119,7 +119,7 @@ pub async fn get_settings() -> Result<SettingsResponse, String> {
         let main = p2premote_core::service_control::query_service_status()
             .map_err(|error| format!("failed to query p2pRemote service: {error}"))?;
         let desktop = p2premote_core::service_control::query_named_service_status(
-            "RustDeskTinyService",
+            "RustDeskTiny",
         )
         .map_err(|error| format!("failed to query desktop service: {error}"))?;
         if !main.installed || !desktop.installed || main.enabled != desktop.enabled || main.enabled != auto_start {

@@ -101,14 +101,10 @@ fn launch_desktop_process(
         let mut command = Command::new(executable);
         match role {
             DesktopEngineRole::Host => {
-                command.args([
-                    "service-host",
-                    "--listen",
-                    &address,
-                ]);
+                command.args(["host", "--listen", &address]);
             }
             DesktopEngineRole::Controller => {
-                command.args(["connect", "--address", &address]);
+                command.args(["--connect", &address]);
             }
         }
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());

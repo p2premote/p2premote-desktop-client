@@ -164,7 +164,7 @@ fn handle_scm_command() -> anyhow::Result<()> {
 
     let main_service_before = p2premote_core::service_control::query_service_status().ok();
     let desktop_service_before =
-        p2premote_core::service_control::query_named_service_status("RustDeskTinyService").ok();
+        p2premote_core::service_control::query_named_service_status("RustDeskTiny").ok();
 
     let mut result = match action.as_str() {
         "install" => install_exe
