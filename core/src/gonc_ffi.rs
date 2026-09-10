@@ -1,8 +1,8 @@
 //! gonc FFI client for wgvpn key exchange and UDP data tunnel.
 
-// Linux 通过源码 path 依赖集成打洞库：extern "C" 声明不构成 crate 依赖引用，
-// 需要这一行把 p2premote-punch 的 rlib 带进链接图（Windows/macOS 仍运行时加载 Go 库）。
-#[cfg(target_os = "linux")]
+// Linux/Windows 通过源码 path 依赖集成纯打洞库。当前调用边界仍保留
+// C ABI 以维持迁移期间的协议兼容；后续阶段再将主程序调用改为原生 Rust API。
+#[cfg(any(target_os = "linux", windows))]
 use p2premote_punch as _;
 
 use anyhow::{anyhow, Context, Result};
