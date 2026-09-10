@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutPath,
     [Parameter(Mandatory = $true)]
-    [string]$PunchSource
+    [string]$PunchSource,
+    [switch]$WgOnly,
+    [string]$GoModFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,7 +27,13 @@ try {
 
     Push-Location $sourceDir
     try {
-        & $goCommand.Source build -buildmode=c-shared -ldflags "-s -w" -o $resolvedOutPath .\punchffi
+        $buildArgs = @("build")
+        if ($GoModFile) {
+            $buildArgs += "-modfile=$([System.IO.Path]::GetFullPath($GoModFile))"
+        }
+        if ($WgOnly) { $buildArgs += "-tags=wgonly" }
+        $buildArgs += @("-buildmode=c-shared", "-ldflags", "-s -w", "-o", $resolvedOutPath, ".\punchffi")
+        & $goCommand.Source @buildArgs
         if ($LASTEXITCODE -ne 0) {
             throw "punch DLL build failed with exit code $LASTEXITCODE"
         }
