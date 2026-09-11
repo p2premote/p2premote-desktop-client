@@ -104,8 +104,12 @@ if (-not [string]::IsNullOrWhiteSpace($RustDeskTinyInstaller)) {
 }
 $previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
 $previousPunchDir = $env:P2PREMOTE_PUNCH_DIR
+$previousWgFfiDir = $env:P2PREMOTE_WG_FFI_DIR
 $env:P2PREMOTE_CLIENT_VERSION = $buildVersion
 $env:P2PREMOTE_PUNCH_DIR = (Resolve-Path -LiteralPath $punchSource).Path
+$wgFfiSource = Join-Path $projectRoot '..\p2premote-wg-ffi'
+if (-not (Test-Path -LiteralPath $wgFfiSource -PathType Container)) { throw "p2premote-wg-ffi source directory not found: $wgFfiSource" }
+$env:P2PREMOTE_WG_FFI_DIR = (Resolve-Path -LiteralPath $wgFfiSource).Path
 
 Push-Location $projectRoot
 try {
@@ -131,6 +135,7 @@ finally {
     Pop-Location
     $env:P2PREMOTE_CLIENT_VERSION = $previousClientVersion
     $env:P2PREMOTE_PUNCH_DIR = $previousPunchDir
+    $env:P2PREMOTE_WG_FFI_DIR = $previousWgFfiDir
 }
 if (-not $NoSccache) { & sccache --show-stats }
 

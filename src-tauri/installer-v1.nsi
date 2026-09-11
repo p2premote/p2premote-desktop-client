@@ -65,6 +65,7 @@ Function P2PRemoteAutoSilentUpdateInit
 FunctionEnd
 
 !macro NSIS_HOOK_PREINSTALL
+  nsExec::ExecToLog 'cmd /c echo PREINSTALL >> C:\Windows\Temp\p2premote-installer-trace.log'
   ; Stop existing processes before overwriting installed files.
   DetailPrint "Stopping existing p2pRemote processes..."
 
@@ -79,6 +80,7 @@ FunctionEnd
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  nsExec::ExecToLog 'cmd /c echo POSTINSTALL_BEGIN >> C:\Windows\Temp\p2premote-installer-trace.log'
   ; Allow authenticated WGVPN peers to reach the persistent TCP health endpoint.
   ; Restrict the rule to the RFC 6598 virtual network instead of exposing the port globally.
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Health"'
@@ -90,7 +92,11 @@ FunctionEnd
   ExecWait '"$INSTDIR\resources\RustDeskTiny-install.exe" --silent-install --install-dir "$INSTDIR\resources\RustDeskTiny"' $3
   DetailPrint "RustDeskTiny installer exit code: $3"
   ${If} $3 != 0
-    Abort "RustDeskTiny could not be installed or upgraded"
+    ; RustDeskTiny is an optional desktop-engine component.  On Win7 its
+    ; installer may return a non-zero compatibility code; do not roll back the
+    ; primary p2pRemote service/GUI installation because of that component.
+    DetailPrint "Warning: RustDeskTiny installation failed; continuing with p2pRemote service setup"
+    nsExec::ExecToLog 'cmd /c echo RUSTDESKTINY_RC_$3 >> C:\Windows\Temp\p2premote-installer-trace.log'
   ${EndIf}
 
   ; Probe the persisted auto_start flag before touching the service.
@@ -123,7 +129,8 @@ FunctionEnd
   ; setup would otherwise leave the machine without the service after a reboot.
   StrCpy $2 0
   scm_setup_retry:
-    ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm setup "$INSTDIR\resources\p2premote-service.exe"' $0
+  ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm setup "$INSTDIR\resources\p2premote-service.exe"' $0
+    nsExec::ExecToLog 'cmd /c echo SETUP_RC_$0 >> C:\Windows\Temp\p2premote-installer-trace.log'
     ${If} $0 = 0
       Goto scm_setup_done
     ${EndIf}
@@ -137,6 +144,15 @@ FunctionEnd
   ${If} $0 != 0
     Abort "p2pRemote services could not be installed"
   ${EndIf}
+
+  ; A service can still be left stopped when Windows 7 reports a transient SCM
+  ; state during an in-place upgrade, even though the setup helper returned 0.
+  ; Make the post-install invariant explicit: a successful installation leaves
+  ; the service running.  Starting an already-running service only returns the
+  ; normal SCM "already running" error and is intentionally ignored here.
+  ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm start' $4
+  nsExec::ExecToLog 'cmd /c echo FINAL_START_RC_$4 >> C:\Windows\Temp\p2premote-installer-trace.log'
+  DetailPrint "p2premote-service final start exit code: $4"
 
   ; Respect a persisted auto_start=off: setup force-enables AutoStart, so drop
   ; the boot autostart again 鈥?a reinstall must not silently revert the choice.
@@ -170,6 +186,8 @@ FunctionEnd
   Delete "$INSTDIR\resources\p2premote-desktop-engine.exe"
   Delete "$INSTDIR\resources\RustDeskTiny-install.exe"
   Delete "$INSTDIR\resources\wintun.dll"
+  ; Intentionally non-recursive: RustDeskTiny owns its service and installed files.
+  ; Keeping resources\RustDeskTiny prevents leaving a service with a missing binary.
   RMDir "$INSTDIR\resources"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "p2premote-notifier"
 !macroend
@@ -814,9 +832,15 @@ SectionEnd
 Function .onInstSuccess
   ; Check for `/R` flag only in silent and passive installers because
   ; GUI installer has a toggle for the user to (re)start the app
-  IfSilent check_r_flag 0
+  ; A silent in-place update can report success while SCM still has the
+  ; service stopped.  Issue one final native SCM start after all NSIS sections
+  ; have completed; ERROR_SERVICE_ALREADY_RUNNING is harmless and ignored.
+  IfSilent ensure_service_running 0
   ${IfThen} $PassiveMode == 1 ${|} Goto check_r_flag ${|}
   Goto run_done
+  ensure_service_running:
+    ExecWait 'sc.exe start p2premote-service' $R8
+    DetailPrint "p2premote-service success-hook start exit code: $R8"
   check_r_flag:
     ${GetOptions} $CMDLINE "/R" $R0
     IfErrors run_done 0

@@ -27,6 +27,8 @@ fn service_trace(message: &str) {
         .open(r"C:\Windows\Temp\p2premote-service-trace.log")
     {
         let _ = writeln!(file, "{} {:?}", message, std::time::SystemTime::now());
+        let _ = file.flush();
+        let _ = file.sync_all();
     }
 }
 
@@ -180,7 +182,7 @@ fn handle_scm_command() -> anyhow::Result<()> {
             if let Ok(status) = p2premote_core::service_control::direct::query_service_status() {
                 if status.installed && status.running {
                     let _ = p2premote_core::service_control::direct::stop_service();
-                    wait_until_service_stopped(std::time::Duration::from_secs(10));
+                    wait_until_service_stopped(std::time::Duration::from_secs(60));
                 }
             }
             let result = p2premote_core::service_control::direct::uninstall_service();
@@ -193,7 +195,12 @@ fn handle_scm_command() -> anyhow::Result<()> {
             p2premote_core::service_control::direct::start_service()
         }),
         "stop" => run_scm_step("stop", || {
-            p2premote_core::service_control::direct::stop_service()
+            p2premote_core::service_control::direct::stop_service()?;
+            // SCM acknowledges the stop request before the process has exited.
+            // The installer replaces the service executable immediately after
+            // this command, so wait until the handle is really stopped.
+            wait_until_service_stopped(std::time::Duration::from_secs(60));
+            Ok(())
         }),
         "enable" => run_scm_step("enable", || {
             p2premote_core::service_control::direct::enable_service()
@@ -364,6 +371,9 @@ fn scm_trace(message: &str) {
 
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
+    std::panic::set_hook(Box::new(|panic| {
+        service_trace(&format!("global panic: {}", panic));
+    }));
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|arg| arg == "--foreground") {
@@ -414,10 +424,17 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_foreground() -> anyhow::Result<()> {
+    #[cfg(windows)]
+    service_trace("run_foreground begin");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(run_service_foreground())
+    #[cfg(windows)]
+    service_trace("tokio runtime built");
+    let result = runtime.block_on(run_service_foreground());
+    #[cfg(windows)]
+    service_trace("run_foreground block_on returned");
+    result
 }
 
 #[cfg(windows)]

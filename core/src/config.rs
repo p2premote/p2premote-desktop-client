@@ -408,12 +408,20 @@ pub fn install_root_dir() -> PathBuf {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    if exe_dir
+    // The Windows SCM may normalize the service image path to an 8.3 short
+    // path (for example `RESOUR~1`).  Do not append another `resources`
+    // component in that case: the service and bundled DLLs already live in
+    // this directory.  Checking for the bundled service/DLL also covers
+    // localized or otherwise non-standard short directory aliases.
+    let is_resources_dir = exe_dir
         .file_name()
         .and_then(|name| name.to_str())
         .map(|name| name.eq_ignore_ascii_case("resources"))
         .unwrap_or(false)
-    {
+        || (exe_dir.join("p2premote-service.exe").is_file()
+            && exe_dir.join("p2premote-punch.dll").is_file());
+
+    if is_resources_dir {
         return exe_dir.parent().map(|p| p.to_path_buf()).unwrap_or(exe_dir);
     }
 

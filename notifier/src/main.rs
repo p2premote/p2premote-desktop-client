@@ -104,6 +104,62 @@ fn run_agent() {
 }
 
 #[cfg(windows)]
+fn enable_best_dpi_awareness() {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetProcessDPIAware;
+
+    unsafe {
+        let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast());
+        if !user32.is_null() {
+            if let Some(proc) = GetProcAddress(
+                user32,
+                c"SetProcessDpiAwarenessContext".as_ptr().cast(),
+            ) {
+                type SetProcessDpiAwarenessContextFn =
+                    unsafe extern "system" fn(*mut core::ffi::c_void) -> i32;
+                let set_process_dpi_awareness_context: SetProcessDpiAwarenessContextFn =
+                    std::mem::transmute(proc);
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2. Resolve the API at
+                // runtime because user32.dll on Windows 7 does not export it.
+                if set_process_dpi_awareness_context(-4isize as *mut core::ffi::c_void) != 0 {
+                    return;
+                }
+            }
+        }
+        // Available since Vista. Windows 7 uses system-aware scaling, while
+        // newer Windows versions retain PMv2 through the branch above.
+        SetProcessDPIAware();
+    }
+}
+
+#[cfg(windows)]
+fn window_dpi(hwnd: windows_sys::Win32::Foundation::HWND) -> u32 {
+    use windows_sys::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, LOGPIXELSX};
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+    unsafe {
+        let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast());
+        if !user32.is_null() {
+            if let Some(proc) = GetProcAddress(user32, c"GetDpiForWindow".as_ptr().cast()) {
+                type GetDpiForWindowFn = unsafe extern "system" fn(
+                    windows_sys::Win32::Foundation::HWND,
+                ) -> u32;
+                let get_dpi_for_window: GetDpiForWindowFn = std::mem::transmute(proc);
+                return get_dpi_for_window(hwnd).max(96);
+            }
+        }
+
+        let dc = GetDC(hwnd);
+        if dc.is_null() {
+            return 96;
+        }
+        let dpi = GetDeviceCaps(dc, LOGPIXELSX as i32);
+        ReleaseDC(hwnd, dc);
+        (dpi as u32).max(96)
+    }
+}
+
+#[cfg(windows)]
 fn show_notification(event: NotificationEvent) {
     use native_windows_gui as nwg;
     use std::sync::{Arc, Mutex};
@@ -112,20 +168,14 @@ fn show_notification(event: NotificationEvent) {
     use windows_sys::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
-    use windows_sys::Win32::UI::HiDpi::{
-        GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetCursorPos, GetWindowRect, SetWindowPos, HTCAPTION, HTTRANSPARENT, SWP_NOACTIVATE,
         SWP_NOZORDER, SWP_SHOWWINDOW, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCHITTEST,
         WS_EX_TOOLWINDOW,
     };
 
-    unsafe {
-        // RDP 会在会话接入和窗口大小变化时切换显示 DPI。System-aware 进程会被
-        // DWM 位图缩放，导致文字模糊；PMv2 让每个弹窗按所在显示器原生渲染。
-        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    }
+    // PMv2 on modern Windows; system-aware fallback on Windows 7.
+    enable_best_dpi_awareness();
     if nwg::init().is_err() {
         return;
     }
@@ -341,7 +391,7 @@ fn show_notification(event: NotificationEvent) {
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
     };
-    layout(unsafe { GetDpiForWindow(hwnd) }.max(96));
+    layout(window_dpi(hwnd));
 
     // Static/Label 子窗口默认吃掉命中测试。让文本区域穿透到父窗口，父窗口再
     // 返回 HTCAPTION，于是除按钮外的整张卡片都能像标题栏一样直接拖动。
@@ -368,7 +418,7 @@ fn show_notification(event: NotificationEvent) {
                 Some(0)
             }
             WM_DISPLAYCHANGE => {
-                layout(unsafe { GetDpiForWindow(hwnd) }.max(96));
+                layout(window_dpi(hwnd));
                 Some(0)
             }
             _ => None,

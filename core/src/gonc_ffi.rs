@@ -305,9 +305,24 @@ const USERSPACE_WG_ABI_VERSION: u32 = 2;
 
 pub fn get_wg_capabilities(library_path: &Path) -> Result<WgCapabilitiesResult> {
     validate_punch_library_available(library_path)?;
+    tracing::info!(
+        "[wgvpn] GetWgCapabilities begin: library={}",
+        library_path.display()
+    );
     let output = unsafe { ffi_call("{}", |ptr| GetWgCapabilities(ptr), "GetWgCapabilities")? };
     let result: WgCapabilitiesResult =
         serde_json::from_str(&output).context("failed to decode userspace WG capabilities")?;
+    tracing::info!(
+        "[wgvpn] GetWgCapabilities result: ok={}, abi_version={}, platform={}, userspace_wg={}, native_tun={}, wintun={}, hybrid_tun={}, error={}",
+        result.ok,
+        result.abi_version,
+        result.platform,
+        result.userspace_wg,
+        result.native_tun,
+        result.wintun,
+        result.hybrid_tun,
+        if result.error.is_empty() { "none" } else { result.error.as_str() }
+    );
     if !result.ok {
         return Err(anyhow!(
             "userspace WG capability check failed: {}",
@@ -349,6 +364,18 @@ pub fn start_userspace_wg_peer(
         ));
     }
     let input = serde_json::to_string(request).context("failed to encode userspace WG peer")?;
+    tracing::info!(
+        "[wgvpn] StartUserspaceWgPeer begin: session_id={}, peer_device_id={}, role={}, local_tail_ip={}, peer_tail_ip={}, peer_endpoint={}, listen={}:{}, routes={}",
+        request.session_id,
+        request.peer_device_id,
+        request.role,
+        request.local_tail_ip,
+        request.peer_tail_ip,
+        request.peer_endpoint,
+        request.listen_ip,
+        request.listen_port,
+        request.routes.len()
+    );
     let output = unsafe {
         ffi_call(
             &input,
@@ -356,7 +383,18 @@ pub fn start_userspace_wg_peer(
             "StartUserspaceWgPeer",
         )?
     };
-    decode_windows_wg_peer_result(&output, "start")
+    let result = decode_windows_wg_peer_result(&output, "start");
+    match &result {
+        Ok(status) => tracing::info!(
+            "[wgvpn] StartUserspaceWgPeer result: ok=true, handle_id={}, started={}, last_handshake_at={}, error={}",
+            status.handle_id,
+            status.started,
+            status.last_handshake_at,
+            if status.error.is_empty() { "none" } else { status.error.as_str() }
+        ),
+        Err(err) => tracing::error!("[wgvpn] StartUserspaceWgPeer failed: {:#}", err),
+    }
+    result
 }
 
 pub fn stop_userspace_wg_peer(library_path: &Path, handle_id: &str) -> Result<()> {

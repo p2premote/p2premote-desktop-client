@@ -38,8 +38,38 @@ const WG_CONF_NAME: &str = "wg0.conf";
 /// WireGuard 本地监听端口。gonc 为每个 peer 创建独立的本地 UDP 转发端口。
 const WGVPN_LISTEN_PORT: u16 = 51820;
 
+#[cfg(windows)]
+fn wgvpn_trace(message: &str) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(r"C:\Windows\Temp\p2premote-runtime-trace.log")
+    {
+        let _ = writeln!(file, "wgvpn: {} {:?}", message, std::time::SystemTime::now());
+        let _ = file.flush();
+        let _ = file.sync_all();
+    }
+}
+
+#[cfg(not(windows))]
+fn wgvpn_trace(_message: &str) {}
+
 const fn uses_userspace_wg() -> bool {
     cfg!(any(windows, target_os = "macos"))
+}
+
+#[cfg(windows)]
+fn skip_userspace_cleanup_on_legacy_windows() -> bool {
+    use std::mem::size_of;
+    use windows_sys::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOEXW};
+
+    let mut version = OSVERSIONINFOEXW {
+        dwOSVersionInfoSize: size_of::<OSVERSIONINFOEXW>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let ok = unsafe { GetVersionExW(&mut version as *mut OSVERSIONINFOEXW as *mut _) } != 0;
+    ok && version.dwMajorVersion == 6 && version.dwMinorVersion <= 1
 }
 
 /// wgvpn 会话句柄（停止时用）。扩展字段支持多 peer 按 pubkey 精确增删。
@@ -1060,16 +1090,34 @@ pub fn snapshot_sessions() -> Vec<WgVpnSession> {
 /// gonc UDP 数据面和 Windows userspace WireGuard 都属于进程内状态，重启后
 /// 无法恢复；新 service 生命周期只从空状态开始。
 pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
+    wgvpn_trace("cleanup entered");
     // run_service_foreground may be started again in the same process (tests,
     // embedded/service lifecycle changes). A service start is a hard tunnel
     // boundary: process-local sessions and IP reservations must never survive it.
     WGVPN_SESSIONS.lock().clear();
     RESERVED_ACTIVE_IPS.lock().clear();
+    wgvpn_trace("session state cleared");
 
     if uses_userspace_wg() {
+        wgvpn_trace("userspace backend selected");
         let punch_lib = resolve_p2p_punch_lib(config);
+        wgvpn_trace(&format!("before userspace cleanup: {}", punch_lib));
+        #[cfg(windows)]
+        if skip_userspace_cleanup_on_legacy_windows() {
+            // The legacy Go/GVisor DLL currently terminates the Win7 process
+            // inside CleanupUserspaceWgPlatform before returning across FFI.
+            // This cleanup is optional because all state is process-local; skip
+            // it on Win7 so the service can start while DLL compatibility work
+            // remains isolated and explicitly unverified.
+            wgvpn_trace("skipped userspace cleanup on legacy Windows");
+        } else {
+            gonc_ffi::cleanup_userspace_wg_platform(Path::new(&punch_lib))
+                .context("failed to clear stale userspace WireGuard state")?;
+        }
+        #[cfg(not(windows))]
         gonc_ffi::cleanup_userspace_wg_platform(Path::new(&punch_lib))
             .context("failed to clear stale userspace WireGuard state")?;
+        wgvpn_trace("after userspace cleanup");
     }
     let wg_cli = resolve_wg_cli();
     let wireguard_exe = resolve_wireguard_exe();
@@ -1276,7 +1324,25 @@ fn used_peer_virtual_ips(wg_cli: &str) -> HashSet<u32> {
 fn wait_for_windows_wg_peer(library: &Path, handle_id: &str, timeout: Duration) -> Result<()> {
     let started = std::time::Instant::now();
     while started.elapsed() <= timeout {
-        let status = gonc_ffi::get_userspace_wg_peer_status(library, handle_id)?;
+        let status = match gonc_ffi::get_userspace_wg_peer_status(library, handle_id) {
+            Ok(status) => status,
+            Err(err) => {
+                tracing::error!(
+                    "[wgvpn] GetUserspaceWgPeerStatus failed: handle_id={}, error={:#}",
+                    handle_id,
+                    err
+                );
+                return Err(err);
+            }
+        };
+        if !status.error.is_empty() || !status.last_error.is_empty() {
+            tracing::warn!(
+                "[wgvpn] userspace WireGuard status reports error: handle_id={}, error={}, last_error={}",
+                handle_id,
+                status.error,
+                status.last_error
+            );
+        }
         if status.started && status.last_handshake_at > 0 {
             info!(
                 "[wgvpn] userspace WireGuard handshake established for {} after {:?}",

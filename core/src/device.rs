@@ -939,6 +939,7 @@ pub async fn refresh_public_network_info(
     force: bool,
 ) -> PublicNetworkInfo {
     const REFRESH_INTERVAL_SECS: i64 = 300;
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)

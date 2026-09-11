@@ -287,6 +287,14 @@ pub(super) fn spawn_wgvpn_job_task(
                 }
                 Some(Err(err)) => {
                     let err_text = err.to_string();
+                    tracing::error!(
+                        "[wgvpn] job attempt failed: peer_device_id={}, role={}, attempt={}/{}, error={:#}",
+                        peer_device_id,
+                        if is_active { "active" } else { "passive" },
+                        attempt,
+                        max_attempts,
+                        err
+                    );
                     if is_non_retryable_wgvpn_error(&err_text) {
                         update_wgvpn_job_status(
                             &shared,

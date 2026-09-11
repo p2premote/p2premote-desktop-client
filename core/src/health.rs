@@ -17,6 +17,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
 pub const HEALTH_PORT: u16 = 48082;
+const PEER_SESSION_LOOKUP_RETRIES: usize = 5;
+const PEER_SESSION_LOOKUP_RETRY_DELAY_MS: u64 = 100;
 
 static NEXT_HEALTH_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_SPEED_TEST_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -241,7 +243,21 @@ async fn health_server_connection_loop(
         warn!("[Health] tunnel_peer_identity_mismatch: peer address unavailable");
         return;
     };
-    if let Err(error) = validate_peer(source_device_id, peer_ip) {
+    let mut validation_result = validate_peer(source_device_id, peer_ip);
+    for _ in 0..PEER_SESSION_LOOKUP_RETRIES {
+        let Err(error) = &validation_result else {
+            break;
+        };
+        if error != "wgvpn session not found" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(
+            PEER_SESSION_LOOKUP_RETRY_DELAY_MS,
+        ))
+        .await;
+        validation_result = validate_peer(source_device_id, peer_ip);
+    }
+    if let Err(error) = validation_result {
         warn!(
             "[Health] tunnel_peer_identity_mismatch: source_device_id={}, peer_ip={}, error={}",
             source_device_id, peer_ip, error
