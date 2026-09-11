@@ -72,20 +72,10 @@ FunctionEnd
     ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm stop' $0
     DetailPrint "p2premote-service stop exit code: $0"
 
-  ; RustDeskTiny is otherwise independent. Stop it only because its files are
-  ; about to be replaced by this install/upgrade operation.
-  nsExec::ExecToLog 'sc stop RustDeskTiny'
-  ; Migrate installations made before the standalone service rename.
-  nsExec::ExecToLog 'sc stop p2premote-desktop-service'
-  nsExec::ExecToLog 'sc delete p2premote-desktop-service'
-
   ; Fallback cleanup. Missing processes are expected during first install.
   nsExec::ExecToLog 'taskkill /F /IM p2premote.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-service.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-notifier.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM RustDeskTiny.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM rustdesk-tiny-session-helper.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM p2premote-desktop-session-helper.exe /T'
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
@@ -95,9 +85,13 @@ FunctionEnd
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote WGVPN Health" dir=in action=allow protocol=TCP localport=48082 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-service.exe" profile=any enable=yes'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Speed Test"'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote WGVPN Speed Test" dir=in action=allow protocol=UDP localport=48082 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-service.exe" profile=any enable=yes'
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote Desktop Engine"'
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote Desktop"'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote Desktop" dir=in action=allow protocol=TCP localport=39090 remoteip=100.64.0.0/10 program="$INSTDIR\resources\RustDeskTiny\RustDeskTiny.exe" profile=any enable=yes'
+  ; RustDeskTiny owns its files and service. Its installer is idempotent and
+  ; performs a silent install or in-place upgrade while this installer is elevated.
+  ExecWait '"$INSTDIR\resources\RustDeskTiny-install.exe" --silent-install --install-dir "$INSTDIR\resources\RustDeskTiny"' $3
+  DetailPrint "RustDeskTiny installer exit code: $3"
+  ${If} $3 != 0
+    Abort "RustDeskTiny could not be installed or upgraded"
+  ${EndIf}
 
   ; Probe the persisted auto_start flag before touching the service.
   ; The uninstall phase of a reinstall deletes the HKCU Run autostart entries
@@ -143,11 +137,6 @@ FunctionEnd
   ${If} $0 != 0
     Abort "p2pRemote services could not be installed"
   ${EndIf}
-  nsExec::ExecToLog 'sc query RustDeskTiny'
-  Pop $0
-  ${If} $0 != 0
-    Abort "RustDeskTiny service was not created"
-  ${EndIf}
 
   ; Respect a persisted auto_start=off: setup force-enables AutoStart, so drop
   ; the boot autostart again 鈥?a reinstall must not silently revert the choice.
@@ -160,14 +149,10 @@ FunctionEnd
 !macro NSIS_HOOK_PREUNINSTALL
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Health"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Speed Test"'
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote Desktop Engine"'
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote Desktop"'
 
   ; Stop and uninstall the service before removing files
   ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm stop' $0
   ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm uninstall' $0
-  IfFileExists "$INSTDIR\resources\RustDeskTiny\RustDeskTiny.exe" 0 +2
-    ExecWait '"$INSTDIR\resources\RustDeskTiny\RustDeskTiny.exe" --uninstall-service' $0
 
   ; Make sure no process keeps installed files locked.
   nsExec::ExecToLog 'taskkill /F /IM p2premote.exe /T'
@@ -175,9 +160,6 @@ FunctionEnd
   nsExec::ExecToLog 'taskkill /F /IM p2premote-service.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-cli.exe /T'
   nsExec::ExecToLog 'taskkill /F /IM p2premote-notifier.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM RustDeskTiny.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM rustdesk-tiny-session-helper.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM p2premote-desktop-session-helper.exe /T'
 
   ; Explicit cleanup for bundled helper binaries.
   Delete "$INSTDIR\p2premote.exe"
@@ -186,7 +168,7 @@ FunctionEnd
   Delete "$INSTDIR\resources\p2premote-cli.exe"
   Delete "$INSTDIR\resources\p2premote-notifier.exe"
   Delete "$INSTDIR\resources\p2premote-desktop-engine.exe"
-  RMDir /r "$INSTDIR\resources\RustDeskTiny"
+  Delete "$INSTDIR\resources\RustDeskTiny-install.exe"
   Delete "$INSTDIR\resources\wintun.dll"
   RMDir "$INSTDIR\resources"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "p2premote-notifier"

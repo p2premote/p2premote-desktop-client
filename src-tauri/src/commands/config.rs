@@ -114,22 +114,6 @@ pub async fn get_settings() -> Result<SettingsResponse, String> {
     let remember_me = required_bool("remember_me")?;
     let auto_login = required_bool("auto_login")?;
     let auto_start = required_bool("auto_start")?;
-    #[cfg(windows)]
-    {
-        let main = p2premote_core::service_control::query_service_status()
-            .map_err(|error| format!("failed to query p2pRemote service: {error}"))?;
-        let desktop = p2premote_core::service_control::query_named_service_status(
-            "RustDeskTiny",
-        )
-        .map_err(|error| format!("failed to query desktop service: {error}"))?;
-        if !main.installed || !desktop.installed || main.enabled != desktop.enabled || main.enabled != auto_start {
-            return Err(format!(
-                "autostart service state is inconsistent (main: installed={}, enabled={}; desktop: installed={}, enabled={}; configured={}); reapply the autostart switch to repair it",
-                main.installed, main.enabled, desktop.installed, desktop.enabled, auto_start
-            ));
-        }
-    }
-
     Ok(SettingsResponse {
         auto_start,
         remember_me,
