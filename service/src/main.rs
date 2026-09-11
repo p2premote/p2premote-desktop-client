@@ -19,6 +19,18 @@ const SERVICE_TYPE: windows_service::service::ServiceType =
     windows_service::service::ServiceType::OWN_PROCESS;
 
 #[cfg(windows)]
+fn service_trace(message: &str) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(r"C:\Windows\Temp\p2premote-service-trace.log")
+    {
+        let _ = writeln!(file, "{} {:?}", message, std::time::SystemTime::now());
+    }
+}
+
+#[cfg(windows)]
 define_windows_service!(ffi_service_main, service_entry);
 
 fn init_logging() {
@@ -410,7 +422,9 @@ fn run_foreground() -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn service_entry(_arguments: Vec<OsString>) {
+    service_trace("service_entry");
     if let Err(err) = service_main() {
+        service_trace(&format!("service_main error: {:#?}", err));
         error!("service main failed: {:#?}", err);
     }
 }
@@ -418,6 +432,7 @@ fn service_entry(_arguments: Vec<OsString>) {
 #[cfg(windows)]
 fn service_main() -> anyhow::Result<()> {
     use anyhow::Context;
+    service_trace("service_main begin");
     use std::sync::mpsc;
     use windows_service::service::{
         ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
@@ -431,6 +446,7 @@ fn service_main() -> anyhow::Result<()> {
             SERVICE_NAME,
             move |control_event| match control_event {
                 ServiceControl::Stop | ServiceControl::Shutdown => {
+                    service_trace("received Stop/Shutdown control");
                     let _ = shutdown_tx.send(());
                     ServiceControlHandlerResult::NoError
                 }
@@ -438,6 +454,7 @@ fn service_main() -> anyhow::Result<()> {
                 _ => ServiceControlHandlerResult::NotImplemented,
             },
         ).context("register service control handler")?;
+    service_trace("control handler registered");
 
     // 报告 StartPending
     status_handle.set_service_status(ServiceStatus {
@@ -449,9 +466,24 @@ fn service_main() -> anyhow::Result<()> {
         wait_hint: std::time::Duration::from_secs(5),
         process_id: None,
     }).context("report StartPending")?;
+    service_trace("reported StartPending");
 
     // 在独立线程运行 service 逻辑
-    let service_result = std::thread::spawn(move || run_foreground());
+    let service_result = std::thread::spawn(move || {
+        service_trace("runtime wrapper entered");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_foreground));
+        match result {
+            Ok(value) => {
+                service_trace("runtime wrapper returned");
+                value
+            }
+            Err(_) => {
+                service_trace("runtime wrapper caught panic");
+                Err(anyhow::anyhow!("runtime thread panicked"))
+            }
+        }
+    });
+    service_trace("runtime thread spawned");
 
     // 报告 Running
     status_handle.set_service_status(ServiceStatus {
@@ -463,6 +495,7 @@ fn service_main() -> anyhow::Result<()> {
         wait_hint: std::time::Duration::from_secs(0),
         process_id: None,
     }).context("report Running")?;
+    service_trace("reported Running");
 
     loop {
         match shutdown_rx.try_recv() {
@@ -471,6 +504,7 @@ fn service_main() -> anyhow::Result<()> {
             Err(mpsc::TryRecvError::Empty) => {}
         }
         if service_result.is_finished() {
+            service_trace("runtime thread finished");
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -492,9 +526,15 @@ fn service_main() -> anyhow::Result<()> {
 
     // 等待 service 线程结束，并把 runtime 失败写入 service 日志。
     match service_result.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => error!("service runtime failed: {:#}", err),
-        Err(_) => error!("service runtime panicked"),
+        Ok(Ok(())) => service_trace("runtime returned ok"),
+        Ok(Err(err)) => {
+            service_trace(&format!("runtime returned error: {:#}", err));
+            error!("service runtime failed: {:#}", err)
+        }
+        Err(_) => {
+            service_trace("runtime panicked");
+            error!("service runtime panicked")
+        }
     }
 
     // 报告 Stopped
