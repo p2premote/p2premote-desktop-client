@@ -92,28 +92,72 @@ fn launch_desktop_process(
     role: DesktopEngineRole,
     config: &SessionConfig,
 ) -> Result<u32, EngineFailure> {
-        let address = match role {
-            DesktopEngineRole::Host => format!("{}:{}", config.local_virtual_ip, config.port),
-            DesktopEngineRole::Controller => {
-                format!("{}:{}", config.peer_virtual_ip, config.port)
-            }
-        };
-        let mut command = Command::new(executable);
-        match role {
-            DesktopEngineRole::Host => {
-                command.args(["host", "--listen", &address]);
-            }
-            DesktopEngineRole::Controller => {
-                command.args(["--connect", &address]);
-            }
+    let address = match role {
+        DesktopEngineRole::Host => format!("{}:{}", config.local_virtual_ip, config.port),
+        DesktopEngineRole::Controller => {
+            format!("{}:{}", config.peer_virtual_ip, config.port)
         }
-        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        #[cfg(windows)]
-        command.creation_flags(
-            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
-        );
-        match role {
-            DesktopEngineRole::Host => {
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = macos_user_command(executable)?;
+    #[cfg(not(target_os = "macos"))]
+    let mut command = Command::new(executable);
+    match role {
+        DesktopEngineRole::Host => {
+            #[cfg(target_os = "macos")]
+            command.args(["--server", "--tiny-listen", &address]);
+            #[cfg(not(target_os = "macos"))]
+            command.args(["host", "--listen", &address]);
+        }
+        DesktopEngineRole::Controller => {
+            command.args(["--connect", &address]);
+        }
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    match role {
+        DesktopEngineRole::Host => {
+            #[cfg(target_os = "macos")]
+            {
+                let listen_address = address.parse().map_err(|_| {
+                    EngineFailure::new(
+                        "desktop_bind_address_invalid",
+                        EngineStage::Configuration,
+                        format!("invalid RustDeskTiny listen address: {address}"),
+                    )
+                })?;
+                let child = command.spawn().map_err(|error| {
+                    EngineFailure::io(
+                        "desktop_process_spawn_failed",
+                        EngineStage::SessionDiscovery,
+                        "start RustDeskTiny macOS host",
+                        error,
+                    )
+                })?;
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                while std::time::Instant::now() < deadline {
+                    if std::net::TcpStream::connect_timeout(
+                        &listen_address,
+                        Duration::from_millis(300),
+                    )
+                    .is_ok()
+                    {
+                        return Ok(child.id());
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                return Err(EngineFailure::new(
+                    "desktop_host_start_timeout",
+                    EngineStage::Bind,
+                    format!("RustDeskTiny did not listen on {address} within 15 seconds"),
+                ));
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
                 let status = command.status().map_err(|error| {
                     EngineFailure::io(
                         "desktop_process_spawn_failed",
@@ -131,15 +175,46 @@ fn launch_desktop_process(
                 }
                 Ok(0)
             }
-            DesktopEngineRole::Controller => command.spawn().map(|child| child.id()).map_err(|error| {
-                EngineFailure::io(
-                    "desktop_process_spawn_failed",
-                    EngineStage::SessionDiscovery,
-                    "start detached RustDeskTiny controller",
-                    error,
-                )
-            }),
         }
+        DesktopEngineRole::Controller => command.spawn().map(|child| child.id()).map_err(|error| {
+            EngineFailure::io(
+                "desktop_process_spawn_failed",
+                EngineStage::SessionDiscovery,
+                "start detached RustDeskTiny controller",
+                error,
+            )
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_user_command(executable: &Path) -> Result<Command, EngineFailure> {
+    let output = Command::new("/usr/bin/stat")
+        .args(["-f", "%u", "/dev/console"])
+        .output()
+        .map_err(|error| {
+            EngineFailure::io(
+                "desktop_session_discovery_failed",
+                EngineStage::SessionDiscovery,
+                "query the active macOS console user",
+                error,
+            )
+        })?;
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success()
+        || uid.is_empty()
+        || uid == "0"
+        || !uid.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(EngineFailure::new(
+            "desktop_session_unavailable",
+            EngineStage::SessionDiscovery,
+            "no logged-in macOS console session is available",
+        ));
+    }
+    let mut command = Command::new("/bin/launchctl");
+    command.args(["asuser", &uid]).arg(executable);
+    Ok(command)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,14 +307,26 @@ fn resolve_desktop_executable() -> Result<PathBuf, EngineFailure> {
                 "cannot resolve the service executable directory",
             )
         })?;
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let path = crate::config::macos_resources_dir()
+        .join("RustDeskTiny.app")
+        .join("Contents")
+        .join("MacOS")
+        .join("RustDeskTiny");
+    #[cfg(not(any(windows, target_os = "macos")))]
     return Err(EngineFailure::new(
         "desktop_platform_unsupported",
         EngineStage::Configuration,
-        "the RustDesk-based desktop component currently supports Windows only",
+        "the RustDesk-based desktop component currently supports Windows and macOS only",
     ));
     #[cfg(windows)]
-    validate_desktop_path(path)
+    {
+        validate_desktop_path(path)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        validate_desktop_path(path)
+    }
 }
 
 fn validate_desktop_path(path: PathBuf) -> Result<PathBuf, EngineFailure> {

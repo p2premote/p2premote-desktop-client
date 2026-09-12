@@ -7,6 +7,7 @@
 | 产物 | 架构 | 编译入口 |
 | --- | --- | --- |
 | Windows GUI 安装包 | 当前 Windows 主机架构（通常为 x64） | `scripts/build-windows.ps1` |
+| macOS GUI DMG | Universal（x86_64 + arm64） | `scripts/build-macos.sh` |
 | Linux Headless 裸压缩包、DEB、RPM、Docker 镜像 tar | x86_64 / aarch64 | `scripts/build-linux.sh` |
 
 Linux Headless 图形安装入口明确支持 Deepin/UOS（DDE）和银河麒麟、
@@ -33,7 +34,27 @@ src-tauri\target\release\bundle\nsis\
 
 要求已安装 Node.js、Rust、Tauri CLI、Windows 编译工具链，并且相邻目录 `../p2premote-punch-rs-gonc` 与 `../p2premote-wg-ffi` 必须存在；Rust Punch 由 Cargo 以源码依赖集成，脚本只构建独立的 WireGuard FFI。任何必需工具、源码或资源缺失都会直接失败。
 
-## 2. Linux Headless 四格式统一构建
+## 2. macOS GUI
+
+正式发布必须在 macOS 主机配置 Developer ID Application 证书与 Apple 公证凭据后执行：
+
+```bash
+export APPLE_SIGNING_IDENTITY='Developer ID Application: ...'
+export APPLE_NOTARY_KEYCHAIN_PROFILE='p2premote-notary'
+./scripts/build-macos.sh -v 1.11.2
+```
+
+脚本会构建 x86_64 与 arm64 的 service、CLI、Punch 动态库及 Tauri GUI，合并为 Universal App，随后签名、公证并生成 `target/p2pRemote_<version>_macos-universal.dmg`。没有发布证书的内部测试机可使用 `--unsigned` 生成 ad-hoc 签名、未经公证的 DMG；该产物只用于测试，不应对外分发：
+
+```bash
+./scripts/build-macos.sh -v 1.11.2 --no-sccache --unsigned
+```
+
+macOS 包内嵌 Universal `RustDeskTiny.app`。首次远程控制前，用户需要在“系统设置 → 隐私与安全性”中为 RustDeskTiny 授予屏幕录制、辅助功能和输入监控权限。
+
+构建 RustDeskTiny 还要求完整 Xcode（仅 Command Line Tools 不够）、Rust 1.81、Flutter 3.24.5、`flutter_rust_bridge_codegen`、CMake、NASM 2.x，以及同时安装了 `x64-osx` 和 `arm64-osx` 依赖的 vcpkg。通过 `VCPKG_ROOT` 指向该 vcpkg 目录。
+
+## 3. Linux Headless 四格式统一构建
 
 必须在目标架构的 Linux 或 WSL shell 中执行，不能从 Windows PowerShell 直接调用 Linux 脚本：
 
