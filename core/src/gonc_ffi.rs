@@ -1,8 +1,8 @@
 //! gonc FFI client for wgvpn key exchange and UDP data tunnel.
 
-// Linux/Windows 通过源码 path 依赖集成纯打洞库。当前调用边界仍保留
+// Linux/Windows/macOS 通过源码 path 依赖集成纯打洞库。当前调用边界仍保留
 // C ABI 以维持迁移期间的协议兼容；后续阶段再将主程序调用改为原生 Rust API。
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 use p2premote_punch as _;
 
 use anyhow::{anyhow, Context, Result};
@@ -281,11 +281,23 @@ pub struct SubnetRouterResult {
     pub error: String,
 }
 
-#[cfg_attr(windows, link(name = "p2premote-punch", kind = "raw-dylib"))]
-#[cfg_attr(target_os = "macos", link(name = "p2premote-punch"))]
+// The Rust Punch crate is linked directly on Linux and Windows. Only macOS
+// still uses the legacy combined dynamic library while its standalone WG
+// backend is completed.
+#[cfg(target_os = "macos")]
+#[link(name = "p2premote-punch")]
 extern "C" {
     fn StartUdpTunnel(input: *const c_char) -> *mut c_char;
     fn StopUdpTunnel(input: *const c_char) -> *mut c_char;
+    fn Exchange(input: *const c_char) -> *mut c_char;
+}
+
+// Go owns the userspace-WireGuard ABI. On Windows this is the deliberately
+// thin p2premote-wg.dll, not the former all-in-one Punch library.
+#[cfg(not(target_os = "linux"))]
+#[cfg_attr(windows, link(name = "p2premote-wg", kind = "raw-dylib"))]
+#[cfg_attr(target_os = "macos", link(name = "p2premote-punch"))]
+extern "C" {
     fn StartSubnetRouter(input: *const c_char) -> *mut c_char;
     fn StopSubnetRouter(input: *const c_char) -> *mut c_char;
     fn GetSubnetRouterStatus(input: *const c_char) -> *mut c_char;
@@ -297,22 +309,28 @@ extern "C" {
     fn SetUserspaceWgPeerAllowed(input: *const c_char) -> *mut c_char;
     fn StopUserspaceWgEngine(input: *const c_char) -> *mut c_char;
     fn CleanupUserspaceWgPlatform(input: *const c_char) -> *mut c_char;
-    fn Exchange(input: *const c_char) -> *mut c_char;
     fn FreeCString(ptr: *mut c_char);
 }
 
 const USERSPACE_WG_ABI_VERSION: u32 = 2;
 
 pub fn get_wg_capabilities(library_path: &Path) -> Result<WgCapabilitiesResult> {
-    validate_punch_library_available(library_path)?;
-    tracing::info!(
-        "[wgvpn] GetWgCapabilities begin: library={}",
-        library_path.display()
-    );
-    let output = unsafe { ffi_call("{}", |ptr| GetWgCapabilities(ptr), "GetWgCapabilities")? };
-    let result: WgCapabilitiesResult =
-        serde_json::from_str(&output).context("failed to decode userspace WG capabilities")?;
-    tracing::info!(
+    #[cfg(target_os = "linux")]
+    {
+        let _ = library_path;
+        return Err(anyhow!("userspace WireGuard FFI is not used on Linux"));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        tracing::info!(
+            "[wgvpn] GetWgCapabilities begin: library={}",
+            library_path.display()
+        );
+        let output = unsafe { ffi_call("{}", |ptr| GetWgCapabilities(ptr), "GetWgCapabilities")? };
+        let result: WgCapabilitiesResult =
+            serde_json::from_str(&output).context("failed to decode userspace WG capabilities")?;
+        tracing::info!(
         "[wgvpn] GetWgCapabilities result: ok={}, abi_version={}, platform={}, userspace_wg={}, native_tun={}, wintun={}, hybrid_tun={}, error={}",
         result.ok,
         result.abi_version,
@@ -323,48 +341,66 @@ pub fn get_wg_capabilities(library_path: &Path) -> Result<WgCapabilitiesResult> 
         result.hybrid_tun,
         if result.error.is_empty() { "none" } else { result.error.as_str() }
     );
-    if !result.ok {
-        return Err(anyhow!(
-            "userspace WG capability check failed: {}",
-            result.error
-        ));
+        if !result.ok {
+            return Err(anyhow!(
+                "userspace WG capability check failed: {}",
+                result.error
+            ));
+        }
+        if result.abi_version != USERSPACE_WG_ABI_VERSION {
+            return Err(anyhow!(
+                "userspace WG ABI mismatch: expected {}, got {}",
+                USERSPACE_WG_ABI_VERSION,
+                result.abi_version
+            ));
+        }
+        Ok(result)
     }
-    if result.abi_version != USERSPACE_WG_ABI_VERSION {
-        return Err(anyhow!(
-            "userspace WG ABI mismatch: expected {}, got {}",
-            USERSPACE_WG_ABI_VERSION,
-            result.abi_version
-        ));
-    }
-    Ok(result)
 }
 
 pub fn generate_wg_keypair(library_path: &Path) -> Result<WgKeypairResult> {
-    get_wg_capabilities(library_path)?;
-    let output = unsafe { ffi_call("{}", |ptr| GenerateWgKeypair(ptr), "GenerateWgKeypair")? };
-    let result: WgKeypairResult =
-        serde_json::from_str(&output).context("failed to decode userspace WG keypair")?;
-    if !result.ok || result.private_key.is_empty() || result.public_key.is_empty() {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = library_path;
         return Err(anyhow!(
-            "userspace WG key generation failed: {}",
-            result.error
+            "userspace WireGuard key generation is not used on Linux"
         ));
     }
-    Ok(result)
+    #[cfg(not(target_os = "linux"))]
+    {
+        get_wg_capabilities(library_path)?;
+        let output = unsafe { ffi_call("{}", |ptr| GenerateWgKeypair(ptr), "GenerateWgKeypair")? };
+        let result: WgKeypairResult =
+            serde_json::from_str(&output).context("failed to decode userspace WG keypair")?;
+        if !result.ok || result.private_key.is_empty() || result.public_key.is_empty() {
+            return Err(anyhow!(
+                "userspace WG key generation failed: {}",
+                result.error
+            ));
+        }
+        Ok(result)
+    }
 }
 
 pub fn start_userspace_wg_peer(
     library_path: &Path,
     request: &StartWindowsWgPeerRequest,
 ) -> Result<WindowsWgPeerResult> {
-    let capabilities = get_wg_capabilities(library_path)?;
-    if !capabilities.userspace_wg || !capabilities.native_tun {
-        return Err(anyhow!(
-            "punch library does not support native userspace WG"
-        ));
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (library_path, request);
+        return Err(anyhow!("userspace WireGuard peers are not used on Linux"));
     }
-    let input = serde_json::to_string(request).context("failed to encode userspace WG peer")?;
-    tracing::info!(
+    #[cfg(not(target_os = "linux"))]
+    {
+        let capabilities = get_wg_capabilities(library_path)?;
+        if !capabilities.userspace_wg || !capabilities.native_tun {
+            return Err(anyhow!(
+                "punch library does not support native userspace WG"
+            ));
+        }
+        let input = serde_json::to_string(request).context("failed to encode userspace WG peer")?;
+        tracing::info!(
         "[wgvpn] StartUserspaceWgPeer begin: session_id={}, peer_device_id={}, role={}, local_tail_ip={}, peer_tail_ip={}, peer_endpoint={}, listen={}:{}, routes={}",
         request.session_id,
         request.peer_device_id,
@@ -376,15 +412,15 @@ pub fn start_userspace_wg_peer(
         request.listen_port,
         request.routes.len()
     );
-    let output = unsafe {
-        ffi_call(
-            &input,
-            |ptr| StartUserspaceWgPeer(ptr),
-            "StartUserspaceWgPeer",
-        )?
-    };
-    let result = decode_windows_wg_peer_result(&output, "start");
-    match &result {
+        let output = unsafe {
+            ffi_call(
+                &input,
+                |ptr| StartUserspaceWgPeer(ptr),
+                "StartUserspaceWgPeer",
+            )?
+        };
+        let result = decode_windows_wg_peer_result(&output, "start");
+        match &result {
         Ok(status) => tracing::info!(
             "[wgvpn] StartUserspaceWgPeer result: ok=true, handle_id={}, started={}, last_handshake_at={}, error={}",
             status.handle_id,
@@ -394,41 +430,58 @@ pub fn start_userspace_wg_peer(
         ),
         Err(err) => tracing::error!("[wgvpn] StartUserspaceWgPeer failed: {:#}", err),
     }
-    result
+        result
+    }
 }
 
 pub fn stop_userspace_wg_peer(library_path: &Path, handle_id: &str) -> Result<()> {
-    validate_punch_library_available(library_path)?;
-    let input = serde_json::to_string(&WindowsWgPeerHandleRequest {
-        handle_id: handle_id.to_string(),
-    })?;
-    let output = unsafe {
-        ffi_call(
-            &input,
-            |ptr| StopUserspaceWgPeer(ptr),
-            "StopUserspaceWgPeer",
-        )?
-    };
-    decode_windows_wg_peer_result(&output, "stop")?;
-    Ok(())
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (library_path, handle_id);
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        let input = serde_json::to_string(&WindowsWgPeerHandleRequest {
+            handle_id: handle_id.to_string(),
+        })?;
+        let output = unsafe {
+            ffi_call(
+                &input,
+                |ptr| StopUserspaceWgPeer(ptr),
+                "StopUserspaceWgPeer",
+            )?
+        };
+        decode_windows_wg_peer_result(&output, "stop")?;
+        Ok(())
+    }
 }
 
 pub fn get_userspace_wg_peer_status(
     library_path: &Path,
     handle_id: &str,
 ) -> Result<WindowsWgPeerResult> {
-    validate_punch_library_available(library_path)?;
-    let input = serde_json::to_string(&WindowsWgPeerHandleRequest {
-        handle_id: handle_id.to_string(),
-    })?;
-    let output = unsafe {
-        ffi_call(
-            &input,
-            |ptr| GetUserspaceWgPeerStatus(ptr),
-            "GetUserspaceWgPeerStatus",
-        )?
-    };
-    decode_windows_wg_peer_result(&output, "status")
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (library_path, handle_id);
+        return Err(anyhow!("userspace WireGuard peers are not used on Linux"));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        let input = serde_json::to_string(&WindowsWgPeerHandleRequest {
+            handle_id: handle_id.to_string(),
+        })?;
+        let output = unsafe {
+            ffi_call(
+                &input,
+                |ptr| GetUserspaceWgPeerStatus(ptr),
+                "GetUserspaceWgPeerStatus",
+            )?
+        };
+        decode_windows_wg_peer_result(&output, "status")
+    }
 }
 
 /// Toggle a passive userspace WireGuard peer's AllowedIPs without rebuilding
@@ -438,42 +491,66 @@ pub fn set_userspace_wg_peer_allowed(
     handle_id: &str,
     allowed: bool,
 ) -> Result<WindowsWgPeerResult> {
-    validate_punch_library_available(library_path)?;
-    let input = serde_json::json!({ "handle_id": handle_id, "allowed": allowed }).to_string();
-    let output = unsafe {
-        ffi_call(
-            &input,
-            |ptr| SetUserspaceWgPeerAllowed(ptr),
-            "SetUserspaceWgPeerAllowed",
-        )?
-    };
-    decode_windows_wg_peer_result(&output, "set allowed")
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (library_path, handle_id, allowed);
+        return Err(anyhow!("userspace WireGuard peers are not used on Linux"));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        let input = serde_json::json!({ "handle_id": handle_id, "allowed": allowed }).to_string();
+        let output = unsafe {
+            ffi_call(
+                &input,
+                |ptr| SetUserspaceWgPeerAllowed(ptr),
+                "SetUserspaceWgPeerAllowed",
+            )?
+        };
+        decode_windows_wg_peer_result(&output, "set allowed")
+    }
 }
 
 pub fn stop_userspace_wg_engine(library_path: &Path) -> Result<()> {
-    validate_punch_library_available(library_path)?;
-    let output = unsafe {
-        ffi_call(
-            "{}",
-            |ptr| StopUserspaceWgEngine(ptr),
-            "StopUserspaceWgEngine",
-        )?
-    };
-    decode_windows_wg_peer_result(&output, "engine stop")?;
-    Ok(())
+    #[cfg(target_os = "linux")]
+    {
+        let _ = library_path;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        let output = unsafe {
+            ffi_call(
+                "{}",
+                |ptr| StopUserspaceWgEngine(ptr),
+                "StopUserspaceWgEngine",
+            )?
+        };
+        decode_windows_wg_peer_result(&output, "engine stop")?;
+        Ok(())
+    }
 }
 
 pub fn cleanup_userspace_wg_platform(library_path: &Path) -> Result<()> {
-    validate_punch_library_available(library_path)?;
-    let output = unsafe {
-        ffi_call(
-            "{}",
-            |ptr| CleanupUserspaceWgPlatform(ptr),
-            "CleanupUserspaceWgPlatform",
-        )?
-    };
-    decode_windows_wg_peer_result(&output, "platform cleanup")?;
-    Ok(())
+    #[cfg(target_os = "linux")]
+    {
+        let _ = library_path;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        let output = unsafe {
+            ffi_call(
+                "{}",
+                |ptr| CleanupUserspaceWgPlatform(ptr),
+                "CleanupUserspaceWgPlatform",
+            )?
+        };
+        decode_windows_wg_peer_result(&output, "platform cleanup")?;
+        Ok(())
+    }
 }
 
 fn decode_windows_wg_peer_result(output: &str, action: &str) -> Result<WindowsWgPeerResult> {
@@ -504,6 +581,7 @@ pub fn validate_punch_library_available(library_path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn ffi_call<F>(input: &str, call: F, null_name: &str) -> Result<String>
 where
     F: FnOnce(*const c_char) -> *mut c_char,
@@ -524,22 +602,32 @@ pub fn start_udp_tunnel(
     library_path: &Path,
     request: &UdpTunnelRequest,
 ) -> Result<UdpTunnelResult> {
-    validate_punch_library_available(library_path)?;
-    let input = serde_json::to_string(request).context("failed to encode udp tunnel request")?;
-    let output = ffi_call(
-        &input,
-        |ptr| unsafe { StartUdpTunnel(ptr) },
-        "StartUdpTunnel",
-    )?;
-    parse_udp_tunnel_result(&output)
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (library_path, request);
+        return Err(anyhow!("legacy Punch FFI is only available on macOS"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        validate_punch_library_available(library_path)?;
+        let input =
+            serde_json::to_string(request).context("failed to encode udp tunnel request")?;
+        let output = ffi_call(
+            &input,
+            |ptr| unsafe { StartUdpTunnel(ptr) },
+            "StartUdpTunnel",
+        )?;
+        parse_udp_tunnel_result(&output)
+    }
 }
 
 /// Native Rust Punch path used by Linux/Windows once the crate is linked.
 /// The temporary JSON conversion keeps the existing core result contract
 /// stable while the strongly typed API is migrated at call sites.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn start_udp_tunnel_native(request: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
-    let input = serde_json::to_string(request).context("failed to encode native udp tunnel request")?;
+    let input =
+        serde_json::to_string(request).context("failed to encode native udp tunnel request")?;
     let native: p2premote_punch::UdpTunnelInput =
         serde_json::from_str(&input).context("failed to convert native udp tunnel request")?;
     let result = p2premote_punch::api::start_udp_tunnel(
@@ -552,12 +640,12 @@ pub async fn start_udp_tunnel_native(request: &UdpTunnelRequest) -> Result<UdpTu
         .context("failed to convert native udp tunnel result")
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 pub async fn start_udp_tunnel_native(_request: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
     Err(anyhow!("native Rust Punch is not enabled on this platform"))
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub fn stop_udp_tunnel_native(handle_id: &str) {
     p2premote_punch::api::stop_udp_tunnel(handle_id);
 }
@@ -566,33 +654,33 @@ pub fn stop_udp_tunnel(library_path: &Path, handle_id: &str) -> Result<()> {
     if handle_id.is_empty() {
         return Ok(());
     }
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     {
         let _ = library_path;
         stop_udp_tunnel_native(handle_id);
         return Ok(());
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
-    validate_punch_library_available(library_path)?;
-    let input = serde_json::to_string(&StopUdpTunnelRequest {
-        handle_id: handle_id.to_string(),
-    })
-    .context("failed to encode stop udp tunnel request")?;
-    let output = ffi_call(&input, |ptr| unsafe { StopUdpTunnel(ptr) }, "StopUdpTunnel")?;
-    let result: StopUdpTunnelResult = serde_json::from_str(&output)
-        .with_context(|| format!("invalid stop tunnel result: {}", output))?;
-    if !result.ok {
-        return Err(anyhow!(
-            "stop udp tunnel failed: {}",
-            if result.error.is_empty() {
-                "unknown error"
-            } else {
-                result.error.as_str()
-            }
-        ));
-    }
-    Ok(())
+        validate_punch_library_available(library_path)?;
+        let input = serde_json::to_string(&StopUdpTunnelRequest {
+            handle_id: handle_id.to_string(),
+        })
+        .context("failed to encode stop udp tunnel request")?;
+        let output = ffi_call(&input, |ptr| unsafe { StopUdpTunnel(ptr) }, "StopUdpTunnel")?;
+        let result: StopUdpTunnelResult = serde_json::from_str(&output)
+            .with_context(|| format!("invalid stop tunnel result: {}", output))?;
+        if !result.ok {
+            return Err(anyhow!(
+                "stop udp tunnel failed: {}",
+                if result.error.is_empty() {
+                    "unknown error"
+                } else {
+                    result.error.as_str()
+                }
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -600,49 +688,139 @@ pub fn start_subnet_router(
     library_path: &Path,
     request: &StartSubnetRouterRequest,
 ) -> Result<SubnetRouterResult> {
-    validate_punch_library_available(library_path)?;
-    let input = serde_json::to_string(request).context("failed to encode subnet router request")?;
-    let output = ffi_call(
-        &input,
-        |ptr| unsafe { StartSubnetRouter(ptr) },
-        "StartSubnetRouter",
-    )?;
-    parse_subnet_router_result(&output, "start subnet router")
+    #[cfg(target_os = "linux")]
+    {
+        let _ = library_path;
+        let native =
+            p2premote_punch::api::start_subnet_router(p2premote_punch::StartSubnetRouterInput {
+                session_id: request.session_id,
+                peer_device_id: request.peer_device_id,
+                wg_private_key: request.wg_private_key.clone(),
+                peer_public_key: request.peer_public_key.clone(),
+                tail_ip: request.tail_ip.clone(),
+                peer_tail_ip: request.peer_tail_ip.clone(),
+                peer_endpoint: request.peer_endpoint.clone(),
+                listen_ip: request.listen_ip.clone(),
+                listen_port: i32::from(request.listen_port),
+                exposed_lan_cidrs: request.exposed_lan_cidrs.clone(),
+                snat: request.snat,
+                allow_tcp: request.allow_tcp,
+                allow_udp: request.allow_udp,
+                allow_icmp_echo: request.allow_icmp_echo,
+            });
+        return native_subnet_router_result(native, "start subnet router");
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        let input =
+            serde_json::to_string(request).context("failed to encode subnet router request")?;
+        let output = ffi_call(
+            &input,
+            |ptr| unsafe { StartSubnetRouter(ptr) },
+            "StartSubnetRouter",
+        )?;
+        parse_subnet_router_result(&output, "start subnet router")
+    }
 }
 
 pub fn stop_subnet_router(library_path: &Path, handle_id: &str) -> Result<()> {
     if handle_id.is_empty() {
         return Ok(());
     }
-    validate_punch_library_available(library_path)?;
-    let input = serde_json::to_string(&StopSubnetRouterRequest {
-        handle_id: handle_id.to_string(),
-    })
-    .context("failed to encode stop subnet router request")?;
-    let output = ffi_call(
-        &input,
-        |ptr| unsafe { StopSubnetRouter(ptr) },
-        "StopSubnetRouter",
-    )?;
-    let _ = parse_subnet_router_result(&output, "stop subnet router")?;
-    Ok(())
+    #[cfg(target_os = "linux")]
+    {
+        let _ = library_path;
+        let result = native_subnet_router_result(
+            p2premote_punch::api::stop_subnet_router(handle_id),
+            "stop subnet router",
+        )?;
+        let _ = result;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        let input = serde_json::to_string(&StopSubnetRouterRequest {
+            handle_id: handle_id.to_string(),
+        })
+        .context("failed to encode stop subnet router request")?;
+        let output = ffi_call(
+            &input,
+            |ptr| unsafe { StopSubnetRouter(ptr) },
+            "StopSubnetRouter",
+        )?;
+        let _ = parse_subnet_router_result(&output, "stop subnet router")?;
+        Ok(())
+    }
 }
 
 pub fn get_subnet_router_status(
     library_path: &Path,
     handle_id: &str,
 ) -> Result<SubnetRouterResult> {
-    validate_punch_library_available(library_path)?;
-    let input = serde_json::to_string(&GetSubnetRouterStatusRequest {
-        handle_id: handle_id.to_string(),
-    })
-    .context("failed to encode subnet router status request")?;
-    let output = ffi_call(
-        &input,
-        |ptr| unsafe { GetSubnetRouterStatus(ptr) },
-        "GetSubnetRouterStatus",
-    )?;
-    parse_subnet_router_result(&output, "get subnet router status")
+    #[cfg(target_os = "linux")]
+    {
+        let _ = library_path;
+        return native_subnet_router_result(
+            p2premote_punch::api::get_subnet_router_status(handle_id),
+            "get subnet router status",
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        validate_punch_library_available(library_path)?;
+        let input = serde_json::to_string(&GetSubnetRouterStatusRequest {
+            handle_id: handle_id.to_string(),
+        })
+        .context("failed to encode subnet router status request")?;
+        let output = ffi_call(
+            &input,
+            |ptr| unsafe { GetSubnetRouterStatus(ptr) },
+            "GetSubnetRouterStatus",
+        )?;
+        parse_subnet_router_result(&output, "get subnet router status")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn native_subnet_router_result(
+    result: p2premote_punch::SubnetRouterResult,
+    op: &str,
+) -> Result<SubnetRouterResult> {
+    let mapped = SubnetRouterResult {
+        ok: result.ok,
+        handle_id: result.handle_id,
+        lan_mode: result.lan_mode,
+        listen_ip: result.listen_ip,
+        listen_port: u16::try_from(result.listen_port).unwrap_or_default(),
+        started: result.started,
+        tcp_sessions: u32::try_from(result.tcp_sessions).unwrap_or_default(),
+        udp_sessions: u32::try_from(result.udp_sessions).unwrap_or_default(),
+        wg_rx_packets: u64::try_from(result.wg_rx_packets).unwrap_or_default(),
+        wg_tx_packets: u64::try_from(result.wg_tx_packets).unwrap_or_default(),
+        icmp_success: u64::try_from(result.icmp_success).unwrap_or_default(),
+        icmp_failed: u64::try_from(result.icmp_failed).unwrap_or_default(),
+        rejected_flows: u64::try_from(result.rejected_flows).unwrap_or_default(),
+        last_error: result.last_error,
+        advertised_routes: result.advertised_routes,
+        error: result.error,
+    };
+    if !mapped.ok {
+        return Err(anyhow!(
+            "{} failed: {}",
+            op,
+            if mapped.error.is_empty() {
+                "unknown error"
+            } else {
+                mapped.error.as_str()
+            }
+        ));
+    }
+    if op.starts_with("start") && (mapped.handle_id.is_empty() || !mapped.started) {
+        return Err(anyhow!("{} result is incomplete", op));
+    }
+    Ok(mapped)
 }
 
 pub fn parse_udp_tunnel_result(raw: &str) -> Result<UdpTunnelResult> {
@@ -730,41 +908,49 @@ pub fn exchange_payload(
     if timeout.is_zero() {
         return Err(anyhow!("exchange timeout must be greater than zero"));
     }
-    let timeout_secs = timeout
-        .as_secs()
-        .saturating_add(u64::from(timeout.subsec_nanos() != 0));
-    validate_punch_library_available(library_path)?;
-    let req = ExchangeRequest {
-        token: token.to_string(),
-        exmode: mode.as_int(),
-        send_data: send_data.to_string(),
-        role_hint: if mode == ExchangeMode::Mutual {
-            "active"
-        } else {
-            "passive"
-        }
-        .to_string(),
-        timeout_secs,
-    };
-    let input = serde_json::to_string(&req).context("encode exchange request")?;
-    let output = ffi_call(&input, |ptr| unsafe { Exchange(ptr) }, "Exchange")?;
-    let resp: ExchangeResponse = serde_json::from_str(&output)
-        .with_context(|| format!("invalid exchange result: {}", output))?;
-    if !resp.ok {
-        return Err(anyhow!(
-            "exchange failed: {}",
-            if resp.error.is_empty() {
-                "unknown error"
-            } else {
-                resp.error.as_str()
-            }
-        ));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (library_path, token, mode, send_data, timeout);
+        return Err(anyhow!("legacy Punch FFI is only available on macOS"));
     }
-    Ok(resp.recv_data)
+    #[cfg(target_os = "macos")]
+    {
+        let timeout_secs = timeout
+            .as_secs()
+            .saturating_add(u64::from(timeout.subsec_nanos() != 0));
+        validate_punch_library_available(library_path)?;
+        let req = ExchangeRequest {
+            token: token.to_string(),
+            exmode: mode.as_int(),
+            send_data: send_data.to_string(),
+            role_hint: if mode == ExchangeMode::Mutual {
+                "active"
+            } else {
+                "passive"
+            }
+            .to_string(),
+            timeout_secs,
+        };
+        let input = serde_json::to_string(&req).context("encode exchange request")?;
+        let output = ffi_call(&input, |ptr| unsafe { Exchange(ptr) }, "Exchange")?;
+        let resp: ExchangeResponse = serde_json::from_str(&output)
+            .with_context(|| format!("invalid exchange result: {}", output))?;
+        if !resp.ok {
+            return Err(anyhow!(
+                "exchange failed: {}",
+                if resp.error.is_empty() {
+                    "unknown error"
+                } else {
+                    resp.error.as_str()
+                }
+            ));
+        }
+        Ok(resp.recv_data)
+    }
 }
 
 /// Native Rust Punch exchange for the Linux/Windows migration path.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn exchange_payload_native(
     token: &str,
     mode: ExchangeMode,

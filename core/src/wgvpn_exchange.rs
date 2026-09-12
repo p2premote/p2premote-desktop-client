@@ -1,6 +1,6 @@
 //! 公钥 + 虚拟 IP 协商模块（通过 gonc FFI 库交换，零子进程）。
 //!
-//! 通过 gonc 的 MQTT 加密通道（p2premote-punch.dll 的 Exchange FFI）双向交换载荷：
+//! 通过 Rust Punch 的 MQTT 加密通道双向交换载荷：
 //! - 主动端：一次 Mutual 模式调用，发出本端载荷并接收对端载荷。
 //! - 被动端：两次调用——先 WaitOnly 收主动端载荷，本地分配 IP，再 Reply 回传。
 //!
@@ -355,7 +355,7 @@ pub fn exchange_as_active(
 
 /// Native Rust Punch variant of the active exchange. Kept alongside the
 /// legacy blocking FFI wrapper until both flow call sites are migrated.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn exchange_as_active_native(
     base_token: &str,
     local_payload: &ExchangePayload,
@@ -443,7 +443,7 @@ where
     Ok(active_payload)
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn exchange_as_passive_native<F>(
     base_token: &str,
     local_payload_template: &ExchangePayload,
@@ -496,12 +496,12 @@ pub async fn exchange_as_active_platform(
     local_payload: &ExchangePayload,
     timeout: Duration,
 ) -> Result<ExchangePayload> {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     {
         let _ = punch_lib;
         exchange_as_active_native(base_token, local_payload, timeout).await
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
         exchange_as_active(punch_lib, base_token, local_payload, timeout)
     }
@@ -517,12 +517,12 @@ pub async fn exchange_as_passive_platform<F>(
 where
     F: FnOnce(i64, u32, u32, u32) -> Result<(u32, u32)>,
 {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     {
         let _ = punch_lib;
         exchange_as_passive_native(base_token, local_payload, timeout, allocate).await
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
         exchange_as_passive(punch_lib, base_token, local_payload, timeout, allocate)
     }
