@@ -23,7 +23,7 @@ src-tauri/resources/p2premote-cli
 src-tauri/resources/p2premote-cli.exe
 src-tauri/resources/p2premote-notifier
 src-tauri/resources/p2premote-notifier.exe
-src-tauri/resources/p2premote-punch.dll
+src-tauri/resources/p2premote-wg.dll
 src-tauri/resources/libp2premote-punch.*
 src-tauri/resources/p2premote-service
 src-tauri/resources/p2premote-service.exe

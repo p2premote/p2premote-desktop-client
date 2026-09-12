@@ -4,7 +4,7 @@ set -euo pipefail
 umask 022
 
 usage() {
-  echo "Usage: $0 -o <output-path> -a <amd64|arm64> -s <p2premote-punch-dir>" >&2
+  echo "Usage: $0 -o <output-path> -a <amd64|arm64> -s <p2premote-wg-ffi-dir>" >&2
 }
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -s)
       if [[ $# -lt 2 || -z "$2" ]]; then
-        echo "-s requires the p2premote-punch directory" >&2
+        echo "-s requires the p2premote-wg-ffi directory" >&2
         exit 1
       fi
       SRC_DIR="$2"
@@ -54,7 +54,7 @@ if [[ -z "$OUT_PATH" ]]; then
   exit 1
 fi
 if [[ -z "$SRC_DIR" ]]; then
-  echo "p2premote-punch directory is required; pass -s <path>." >&2
+  echo "p2premote-wg-ffi directory is required; pass -s <path>." >&2
   exit 1
 fi
 if [[ -z "$GOARCH_VALUE" ]]; then

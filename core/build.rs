@@ -37,7 +37,7 @@ fn requires_runtime_library_copy(target_os: &str) -> bool {
 
 fn punch_library_name(target_os: &str) -> &'static str {
     match target_os {
-        "windows" => "p2premote-punch.dll",
+        "windows" => "p2premote-wg.dll",
         "macos" => "libp2premote-punch.dylib",
         "linux" => "libp2premote-punch.a",
         other => panic!("unsupported target OS: {other}"),

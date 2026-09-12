@@ -43,8 +43,10 @@ fn validate_prebuilt_resources() {
     let mut required = vec![
         main_binary_name("p2premote-service", &target_os),
         main_binary_name("p2premote-cli", &target_os),
-        punch_library_name(&target_os),
     ];
+    if target_os != "linux" {
+        required.push(punch_library_name(&target_os));
+    }
     if target_os == "windows" {
         required.push(main_binary_name("p2premote-notifier", &target_os));
         for name in ["RustDeskTiny/RustDeskTiny.exe"] {
@@ -72,7 +74,7 @@ fn main_binary_name(base: &str, target_os: &str) -> String {
 
 fn punch_library_name(target_os: &str) -> String {
     if target_os == "windows" {
-        "p2premote-punch.dll".to_string()
+        "p2premote-wg.dll".to_string()
     } else if target_os == "macos" {
         "libp2premote-punch.dylib".to_string()
     } else if target_os == "linux" {
@@ -121,6 +123,12 @@ fn build_punch_library_into_resources() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let (target_os, _) = parse_target();
+    // Linux links Rust Punch as a normal crate dependency and ships no punch
+    // archive. Its WireGuard fallback is built separately below by the Linux
+    // packaging scripts.
+    if target_os == "linux" {
+        return;
+    }
     let source_env = if target_os == "windows" {
         "P2PREMOTE_WG_FFI_DIR"
     } else {

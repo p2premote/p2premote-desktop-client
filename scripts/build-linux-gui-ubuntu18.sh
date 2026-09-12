@@ -11,7 +11,7 @@ repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }
 (cd "$repo_dir" && npm ci && npm run build && node scripts/prepare-web-resources.mjs)
 
-for resource in p2premote-service p2premote-cli libp2premote-punch.a; do
+for resource in p2premote-service p2premote-cli; do
   [[ -f "$repo_dir/src-tauri/resources/$resource" ]] || {
     echo "missing prebuilt Linux resource: src-tauri/resources/$resource" >&2
     exit 1

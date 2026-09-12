@@ -31,7 +31,7 @@ src-tauri\target\release\bundle\nsis\
 
 脚本会把 NSIS 安装包规范化为 `p2pRemote_<version>-<git-sha>_x64-setup.exe`，文件名中的 `x64` 用于后台校验架构。
 
-要求已安装 Node.js、Rust、Tauri CLI、Windows 编译工具链，并且相邻目录 `../p2premote-punch` 必须存在；脚本会把当前版本和该源码目录显式传给 Tauri 构建。任何必需工具、源码或资源缺失都会直接失败。
+要求已安装 Node.js、Rust、Tauri CLI、Windows 编译工具链，并且相邻目录 `../p2premote-punch-rs-gonc` 与 `../p2premote-wg-ffi` 必须存在；Rust Punch 由 Cargo 以源码依赖集成，脚本只构建独立的 WireGuard FFI。任何必需工具、源码或资源缺失都会直接失败。
 
 ## 2. Linux Headless 四格式统一构建
 

@@ -87,9 +87,9 @@ else {
     Write-Host "sccache enabled (use -NoSccache to disable)"
 }
 
-$punchSource = Join-Path $projectRoot '..\p2premote-punch'
-if (-not (Test-Path -LiteralPath $punchSource -PathType Container)) {
-    throw "p2premote-punch source directory not found: $punchSource"
+$rustPunchSource = Join-Path $projectRoot '..\p2premote-punch-rs-gonc'
+if (-not (Test-Path -LiteralPath $rustPunchSource -PathType Container)) {
+    throw "p2premote-punch-rs-gonc source directory not found: $rustPunchSource"
 }
 $desktopResource = Join-Path $projectRoot 'src-tauri\resources\RustDeskTiny-install.exe'
 if (-not [string]::IsNullOrWhiteSpace($RustDeskTinyInstaller)) {
@@ -103,10 +103,8 @@ if (-not [string]::IsNullOrWhiteSpace($RustDeskTinyInstaller)) {
     throw "RustDeskTiny installer is missing. Pass -RustDeskTinyInstaller or set RUSTDESK_TINY_INSTALLER."
 }
 $previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
-$previousPunchDir = $env:P2PREMOTE_PUNCH_DIR
 $previousWgFfiDir = $env:P2PREMOTE_WG_FFI_DIR
 $env:P2PREMOTE_CLIENT_VERSION = $buildVersion
-$env:P2PREMOTE_PUNCH_DIR = (Resolve-Path -LiteralPath $punchSource).Path
 $wgFfiSource = Join-Path $projectRoot '..\p2premote-wg-ffi'
 if (-not (Test-Path -LiteralPath $wgFfiSource -PathType Container)) { throw "p2premote-wg-ffi source directory not found: $wgFfiSource" }
 $env:P2PREMOTE_WG_FFI_DIR = (Resolve-Path -LiteralPath $wgFfiSource).Path
@@ -134,7 +132,6 @@ try {
 finally {
     Pop-Location
     $env:P2PREMOTE_CLIENT_VERSION = $previousClientVersion
-    $env:P2PREMOTE_PUNCH_DIR = $previousPunchDir
     $env:P2PREMOTE_WG_FFI_DIR = $previousWgFfiDir
 }
 if (-not $NoSccache) { & sccache --show-stats }

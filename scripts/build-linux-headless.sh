@@ -96,10 +96,10 @@ fi
 BUILD_VERSION="${VERSION}-${GIT_COMMIT}"
 OUT_DIR="$APP_DIR/build/linux/headless"
 DIST_DIR="$APP_DIR/build/linux/dist/headless"
-# wireguard-go 仍从 Go 仓库构建（build-wireguard-go.sh）；打洞 FFI 以源码 path
-# 依赖（core/Cargo.toml）编译进客户端，无需预构建产物。
-PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs"
-PUNCH_SOURCE_DIR="$REPO_ROOT/../p2premote-punch"
+# WireGuard-go 从独立的 Go WG 模块构建；打洞库以 Rust path dependency
+# （core/Cargo.toml）编译进客户端，无需预构建产物。
+PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs-gonc"
+WG_FFI_SOURCE_DIR="$REPO_ROOT/../p2premote-wg-ffi"
 ENGINE_SOURCE_DIR="$REPO_ROOT/../remoteDesk/remote-desktop-engine"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
 WG_CLI="$OUT_DIR/wg"
@@ -232,13 +232,13 @@ else
 fi
 
 if [[ ! -d "$PUNCH_RS_SOURCE_DIR" ]]; then
-  echo "p2premote-punch-rs source directory not found: $PUNCH_RS_SOURCE_DIR" >&2
+  echo "p2premote-punch-rs-gonc source directory not found: $PUNCH_RS_SOURCE_DIR" >&2
   echo "(required as the source path dependency of p2premote-core)" >&2
   exit 1
 fi
-if [[ ! -d "$PUNCH_SOURCE_DIR" ]]; then
-  echo "p2premote-punch source directory not found: $PUNCH_SOURCE_DIR" >&2
-  echo "(still required by build-wireguard-go.sh)" >&2
+if [[ ! -d "$WG_FFI_SOURCE_DIR" ]]; then
+  echo "p2premote-wg-ffi source directory not found: $WG_FFI_SOURCE_DIR" >&2
+  echo "(required by build-wireguard-go.sh)" >&2
   exit 1
 fi
 if [[ ! -x "$ENGINE_BUILD_SCRIPT" ]]; then
@@ -268,7 +268,7 @@ rm -f "$CURRENT_TAR" "$CURRENT_DEB" "$CURRENT_RPM"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
 
 echo "==> Building userspace WireGuard implementation"
-bash "$APP_DIR/scripts/build-wireguard-go.sh" -o "$WIREGUARD_GO" -a "$LINUX_ARCH" -s "$PUNCH_SOURCE_DIR"
+bash "$APP_DIR/scripts/build-wireguard-go.sh" -o "$WIREGUARD_GO" -a "$LINUX_ARCH" -s "$WG_FFI_SOURCE_DIR"
 
 echo "==> Building static WireGuard CLI"
 bash "$APP_DIR/scripts/build-wireguard-tools.sh" -o "$WG_CLI" -a "$LINUX_ARCH"

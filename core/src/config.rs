@@ -28,7 +28,7 @@ pub struct MachineConfig {
     pub device_fingerprint_platform: Option<String>,
     #[serde(default)]
     pub device_fingerprint_version: u32,
-    /// p2premote-punch 动态库路径（gonc wgvpn FFI）。
+    /// 独立 WireGuard 数据面动态库路径（Windows）。
     #[serde(default)]
     pub p2p_punch_path: String,
     /// Service 日志级别。由 service 使用，GUI 不提供自定义入口。
@@ -341,7 +341,7 @@ pub fn default_wg_path() -> PathBuf {
 pub fn default_p2p_punch_binary_name() -> &'static str {
     #[cfg(windows)]
     {
-        "p2premote-punch.dll"
+        "p2premote-wg.dll"
     }
 
     #[cfg(target_os = "linux")]
@@ -419,7 +419,7 @@ pub fn install_root_dir() -> PathBuf {
         .map(|name| name.eq_ignore_ascii_case("resources"))
         .unwrap_or(false)
         || (exe_dir.join("p2premote-service.exe").is_file()
-            && exe_dir.join("p2premote-punch.dll").is_file());
+            && exe_dir.join("p2premote-wg.dll").is_file());
 
     if is_resources_dir {
         return exe_dir.parent().map(|p| p.to_path_buf()).unwrap_or(exe_dir);
@@ -531,13 +531,17 @@ pub fn ensure_machine_dirs() -> Result<()> {
     fs::create_dir_all(&config_dir).context("failed to create machine config dir")?;
     fs::create_dir_all(machine_log_dir()).context("failed to create machine log dir")?;
     if !DIR_PERMISSIONS_SET.swap(true, Ordering::SeqCst) {
-        secure_config_dir(&config_dir);
+        configure_machine_data_dir_permissions(&config_dir);
     }
     Ok(())
 }
 
-/// 收紧配置目录权限：仅 SYSTEM + Administrators 可访问
-fn secure_config_dir(dir: &Path) {
+/// 初始化机器级数据目录的访问权限。
+///
+/// Windows 服务以 SYSTEM 身份写入 machine config 和运行日志，而桌面 GUI 以
+/// 普通用户身份启动，也需要在该目录下创建日志、访问运行期数据。因此保留
+/// SYSTEM/Administrators 的完全控制，同时给内置 Users 组授予可继承的修改权限。
+fn configure_machine_data_dir_permissions(dir: &Path) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -556,18 +560,20 @@ fn secure_config_dir(dir: &Path) {
                 "SYSTEM:(OI)(CI)F",
                 "/grant:r",
                 "Administrators:(OI)(CI)F",
+                "/grant:r",
+                "*S-1-5-32-545:(OI)(CI)M",
             ])
             .creation_flags(CREATE_NO_WINDOW)
             .output();
 
         match output {
             Ok(out) if out.status.success() => {
-                tracing::info!("[config] secured directory: {}", dir_str);
+                tracing::info!("[config] configured machine data directory permissions: {}", dir_str);
             }
             Ok(out) => {
                 // 非 admin 进程会失败，service 以 SYSTEM 运行时下次启动会修复
                 tracing::debug!(
-                    "[config] icacls failed (non-admin?): {}",
+                    "[config] failed to configure directory permissions (non-admin?): {}",
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
@@ -1129,7 +1135,7 @@ mod wgvpn_tests {
     fn default_p2p_punch_path_returns_dynamic_library_name() {
         let path = default_p2p_punch_path();
         #[cfg(windows)]
-        assert!(path.to_string_lossy().ends_with("p2premote-punch.dll"));
+        assert!(path.to_string_lossy().ends_with("p2premote-wg.dll"));
         #[cfg(target_os = "linux")]
         assert!(path.to_string_lossy().ends_with("libp2premote-punch.a"));
     }
