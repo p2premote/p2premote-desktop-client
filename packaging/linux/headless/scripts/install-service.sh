@@ -4,6 +4,8 @@ set -eu
 INSTALL_ROOT="/opt/p2premote"
 SERVICE_NAME="p2premote-service"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+DESKTOP_PATH="/usr/share/applications/p2premote.desktop"
+ICON_PATH="/usr/share/icons/hicolor/512x512/apps/p2premote.png"
 
 if [ "$(id -u)" != "0" ]; then
   echo "install-service.sh must be run as root" >&2
@@ -36,12 +38,20 @@ if [ ! -f "$SCRIPT_DIR/p2premote-service.service" ]; then
   exit 1
 fi
 
+for required_asset in p2premote-web.desktop p2premote.png; do
+  if [ ! -f "$SCRIPT_DIR/$required_asset" ]; then
+    echo "missing required file: $SCRIPT_DIR/$required_asset" >&2
+    exit 1
+  fi
+done
+
 if [ ! -d "$SCRIPT_DIR/resources/web" ]; then
   echo "missing required directory: $SCRIPT_DIR/resources/web" >&2
   exit 1
 fi
 
 mkdir -p "$INSTALL_ROOT/resources" "$INSTALL_ROOT/systemd"
+mkdir -p "$(dirname "$DESKTOP_PATH")" "$(dirname "$ICON_PATH")"
 
 copy_file() {
   src="$1"
@@ -76,11 +86,19 @@ mkdir -p "$INSTALL_ROOT/resources/web"
 cp -a "$SCRIPT_DIR/resources/web/." "$INSTALL_ROOT/resources/web/"
 chmod -R a+rX "$INSTALL_ROOT/resources/web"
 copy_file "$SCRIPT_DIR/p2premote-service.service" "$INSTALL_ROOT/systemd/${SERVICE_NAME}.service" 644
+copy_file "$SCRIPT_DIR/p2premote-web.desktop" "$DESKTOP_PATH" 644
+copy_file "$SCRIPT_DIR/p2premote.png" "$ICON_PATH" 644
 
 cp "$INSTALL_ROOT/systemd/${SERVICE_NAME}.service" "$UNIT_PATH"
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "$(dirname "$DESKTOP_PATH")" >/dev/null 2>&1 || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
 
 echo "p2pRemote service installed and started."
 echo "Web UI: http://127.0.0.1:48083/"

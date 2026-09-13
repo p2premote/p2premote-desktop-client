@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+  chown root:root /opt/p2premote
+  chmod 0755 /opt/p2premote
+  install -d -o root -g root -m 0755 /opt/p2premote/data
+  install -d -o root -g root -m 1777 /opt/p2premote/logs
+  install -d -o root -g root -m 0755 /opt/p2premote/run
+  /opt/p2premote/resources/configure-installation
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable p2premote-service.service >/dev/null
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
+      systemctl restart p2premote-service.service
+    fi
+  fi
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f /usr/share/icons/hicolor || true
+  fi
+fi
+
+exit 0

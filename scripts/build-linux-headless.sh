@@ -100,7 +100,6 @@ DIST_DIR="$APP_DIR/build/linux/dist/headless"
 # （core/Cargo.toml）编译进客户端，无需预构建产物。
 PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs-gonc"
 WG_FFI_SOURCE_DIR="$REPO_ROOT/../p2premote-wg-ffi"
-ENGINE_SOURCE_DIR="$REPO_ROOT/../remoteDesk/remote-desktop-engine"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
 WG_CLI="$OUT_DIR/wg"
 if [[ -z "$TARGET_ARCH" ]]; then
@@ -108,7 +107,6 @@ if [[ -z "$TARGET_ARCH" ]]; then
 fi
 case "$TARGET_ARCH" in
   aarch64|arm64)
-    ENGINE_ARCH="aarch64"
     LINUX_ARCH="arm64"
     RUST_TARGET="aarch64-unknown-linux-musl"
     TARGET_LABEL="aarch64-linux-gnu"
@@ -116,7 +114,6 @@ case "$TARGET_ARCH" in
     RPM_ARCH="aarch64"
     ;;
   x86_64|amd64)
-    ENGINE_ARCH="x86_64"
     LINUX_ARCH="amd64"
     RUST_TARGET="x86_64-unknown-linux-musl"
     TARGET_LABEL="x86_64-linux-gnu"
@@ -128,8 +125,6 @@ case "$TARGET_ARCH" in
     exit 1
     ;;
 esac
-ENGINE_BUILD_SCRIPT="$ENGINE_SOURCE_DIR/scripts/build-linux.sh"
-ENGINE_ARTIFACT="$ENGINE_SOURCE_DIR/artifacts/linux-${ENGINE_ARCH}/p2premote-desktop-engine"
 DOCKER_PLATFORM="linux/${LINUX_ARCH}"
 
 # Headless 产物必须携带固定的 glibc 基线（Debian 10 / GLIBC_2.28），
@@ -146,7 +141,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     exit 1
   fi
 
-  BUILDER_IMAGE="p2premote-linux-builder:glibc2.28-packages-v4-${LINUX_ARCH}"
+  BUILDER_IMAGE="p2premote-linux-builder:glibc2.28-rust1.77-packages-v5-${LINUX_ARCH}"
   if ! docker image inspect "$BUILDER_IMAGE" >/dev/null 2>&1; then
     echo "==> Builder image $BUILDER_IMAGE not found; building it first (one-time)"
     PROXY_ARGS=()
@@ -166,7 +161,12 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     docker build --network host --platform "$DOCKER_PLATFORM" -t "$BUILDER_IMAGE" "${DOCKER_HOST_ARGS[@]}" ${PROXY_ARGS+"${PROXY_ARGS[@]}"} "$APP_DIR/packaging/linux/builder"
   fi
 
-  RUN_ENV=(-e "P2PREMOTE_IN_BUILDER_CONTAINER=1")
+  # Keep headless and Ubuntu 18 GUI builds on the same pinned Rust baseline.
+  # The builder image installs the matching musl standard library.
+  RUN_ENV=(
+    -e "P2PREMOTE_IN_BUILDER_CONTAINER=1"
+    -e "RUSTUP_TOOLCHAIN=1.77.2"
+  )
   if [[ "${P2PREMOTE_SKIP_WEB_BUILD:-0}" == "1" ]]; then
     RUN_ENV+=(-e "P2PREMOTE_SKIP_WEB_BUILD=1")
   fi
@@ -241,18 +241,6 @@ if [[ ! -d "$WG_FFI_SOURCE_DIR" ]]; then
   echo "(required by build-wireguard-go.sh)" >&2
   exit 1
 fi
-if [[ ! -x "$ENGINE_BUILD_SCRIPT" ]]; then
-  echo "Linux Engine build script not found or not executable: $ENGINE_BUILD_SCRIPT" >&2
-  exit 1
-fi
-
-echo "==> Building standalone desktop Engine"
-"$ENGINE_BUILD_SCRIPT" --arch "$ENGINE_ARCH"
-if [[ ! -f "$ENGINE_ARTIFACT" ]]; then
-  echo "Linux Engine artifact is missing after build: $ENGINE_ARTIFACT" >&2
-  exit 1
-fi
-
 # WSL bind mounts such as /mnt/c and /mnt/d commonly expose every directory as
 # mode 0777. dpkg-deb rejects a 0777 DEBIAN control directory, and rpmbuild also
 # relies on native Unix ownership/modes. Stage packages on the container's Linux
@@ -318,7 +306,6 @@ prepare_prefix_root() {
   mkdir -p "$root/resources/web"
   cp "$release_dir/p2premote-service" "$root/resources/p2premote-service"
   cp "$release_dir/p2premote-cli" "$root/resources/p2premote-cli"
-  cp "$ENGINE_ARTIFACT" "$root/resources/p2premote-desktop-engine"
   cp "$WIREGUARD_GO" "$root/resources/wireguard-go"
   cp "$WG_CLI" "$root/resources/wg"
   cp "$APP_DIR/src-tauri/resources/.p2premote_default.json" "$root/resources/.p2premote_default.json"
@@ -326,13 +313,16 @@ prepare_prefix_root() {
   cp "$APP_DIR/packaging/linux/common/configure-kysec.sh" "$root/resources/configure-kysec"
   cp -a "$APP_DIR/dist/." "$root/resources/web/"
   cp "$APP_DIR/packaging/linux/common/p2premote-service.service" "$root/p2premote-service.service"
+  cp "$APP_DIR/packaging/linux/common/p2premote-web.desktop" "$root/p2premote-web.desktop"
+  cp "$APP_DIR/src-tauri/icons/icon.png" "$root/p2premote.png"
   cp "$APP_DIR/packaging/linux/headless/scripts/install-service.sh" "$root/install-service.sh"
   cp "$APP_DIR/packaging/linux/headless/scripts/install-gui.sh" "$root/install-gui.sh"
   cp "$APP_DIR/packaging/linux/headless/scripts/install-p2premote.desktop" "$root/安装-p2pRemote.desktop"
   cp "$APP_DIR/packaging/linux/headless/scripts/uninstall-service.sh" "$root/uninstall-service.sh"
-  chmod 755 "$root/resources/p2premote-service" "$root/resources/p2premote-cli" "$root/resources/p2premote-desktop-engine" "$root/resources/wireguard-go" "$root/resources/wg" "$root/resources/configure-installation" "$root/resources/configure-kysec"
+  chmod 755 "$root/resources/p2premote-service" "$root/resources/p2premote-cli" "$root/resources/wireguard-go" "$root/resources/wg" "$root/resources/configure-installation" "$root/resources/configure-kysec"
   chmod 755 "$root/install-service.sh" "$root/install-gui.sh" "$root/安装-p2pRemote.desktop" "$root/uninstall-service.sh"
-  chmod 644 "$root/resources/.p2premote_default.json" "$root/p2premote-service.service"
+  chmod 644 "$root/resources/.p2premote_default.json" "$root/p2premote-service.service" \
+    "$root/p2premote-web.desktop" "$root/p2premote.png"
   find "$root/resources/web" -type d -exec chmod 755 {} +
   find "$root/resources/web" -type f -exec chmod 644 {} +
 }
@@ -345,6 +335,19 @@ chown -R 0:0 "$PKG_ROOT"
 
 echo "==> Building tar.gz package"
 tar -C "$PACKAGE_STAGE_DIR/tar" -czf "$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz" p2premote-headless
+for required_entry in \
+  p2premote-headless/p2premote-web.desktop \
+  p2premote-headless/p2premote.png; do
+  tar -tzf "$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz" \
+    "$required_entry" >/dev/null || {
+      echo "headless tarball is missing desktop asset: $required_entry" >&2
+      exit 1
+    }
+done
+grep -Fxq 'Exec=xdg-open http://127.0.0.1:48083' "$PKG_ROOT/p2premote-web.desktop" || {
+  echo "headless desktop entry does not open the browser management UI" >&2
+  exit 1
+}
 
 echo "==> Building deb package"
 DEB_ROOT="$PACKAGE_STAGE_DIR/deb"
@@ -353,9 +356,9 @@ mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/opt/p2premote/resources" \
   "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
 chmod 755 "$DEB_ROOT/DEBIAN"
 cp -a "$PKG_ROOT/resources/." "$DEB_ROOT/opt/p2premote/resources/"
-cp "$APP_DIR/packaging/linux/common/p2premote-service.service" "$DEB_ROOT/usr/lib/systemd/system/p2premote-service.service"
-cp "$APP_DIR/packaging/linux/common/p2premote-web.desktop" "$DEB_ROOT/usr/share/applications/p2premote.desktop"
-cp "$APP_DIR/src-tauri/icons/icon.png" "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/p2premote.png"
+install -m 0644 "$APP_DIR/packaging/linux/common/p2premote-service.service" "$DEB_ROOT/usr/lib/systemd/system/p2premote-service.service"
+install -m 0644 "$APP_DIR/packaging/linux/common/p2premote-web.desktop" "$DEB_ROOT/usr/share/applications/p2premote.desktop"
+install -m 0644 "$APP_DIR/src-tauri/icons/icon.png" "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/p2premote.png"
 sed -e "s/@VERSION@/$BUILD_VERSION/g" -e "s/@ARCH@/$DEB_ARCH/g" \
   "$APP_DIR/packaging/linux/deb/control.in" > "$DEB_ROOT/DEBIAN/control"
 for script in preinst postinst prerm postrm; do
@@ -378,9 +381,9 @@ mkdir -p "$RPM_PAYLOAD/opt/p2premote/resources" "$RPM_PAYLOAD/usr/lib/systemd/sy
   "$RPM_PAYLOAD/usr/share/applications" "$RPM_PAYLOAD/usr/share/icons/hicolor/512x512/apps" \
   "$RPM_TOPDIR/BUILD" "$RPM_TOPDIR/BUILDROOT" "$RPM_TOPDIR/RPMS" "$RPM_TOPDIR/SOURCES" "$RPM_TOPDIR/SPECS" "$RPM_TOPDIR/SRPMS"
 cp -a "$PKG_ROOT/resources/." "$RPM_PAYLOAD/opt/p2premote/resources/"
-cp "$APP_DIR/packaging/linux/common/p2premote-service.service" "$RPM_PAYLOAD/usr/lib/systemd/system/p2premote-service.service"
-cp "$APP_DIR/packaging/linux/common/p2premote-web.desktop" "$RPM_PAYLOAD/usr/share/applications/p2premote.desktop"
-cp "$APP_DIR/src-tauri/icons/icon.png" "$RPM_PAYLOAD/usr/share/icons/hicolor/512x512/apps/p2premote.png"
+install -m 0644 "$APP_DIR/packaging/linux/common/p2premote-service.service" "$RPM_PAYLOAD/usr/lib/systemd/system/p2premote-service.service"
+install -m 0644 "$APP_DIR/packaging/linux/common/p2premote-web.desktop" "$RPM_PAYLOAD/usr/share/applications/p2premote.desktop"
+install -m 0644 "$APP_DIR/src-tauri/icons/icon.png" "$RPM_PAYLOAD/usr/share/icons/hicolor/512x512/apps/p2premote.png"
 rpmbuild -bb "$APP_DIR/packaging/linux/rpm/p2premote.spec" \
   --target "$RPM_ARCH" \
   --define "_topdir $RPM_TOPDIR" \

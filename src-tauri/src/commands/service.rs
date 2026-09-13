@@ -238,17 +238,35 @@ pub struct RequiredClientFile {
 }
 
 fn require_bundled_binary(app: &AppHandle, binary_name: &str) -> Result<PathBuf, String> {
-    let resource_dir = app
-        .path_resolver()
-        .resource_dir()
-        .ok_or_else(|| "failed to resolve application resource directory".to_string())?;
-    let path = resource_dir.join("resources").join(binary_name);
+    #[cfg(target_os = "linux")]
+    let path = {
+        match std::env::var_os("P2PREMOTE_INSTALL_ROOT").filter(|root| !root.is_empty()) {
+            Some(root) => PathBuf::from(root).join("resources").join(binary_name),
+            None => app
+                .path_resolver()
+                .resource_dir()
+                .ok_or_else(|| "failed to resolve application resource directory".to_string())?
+                .join("resources")
+                .join(binary_name),
+        }
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let path = {
+        let resource_dir = app
+            .path_resolver()
+            .resource_dir()
+            .ok_or_else(|| "failed to resolve application resource directory".to_string())?;
+        resource_dir.join("resources").join(binary_name)
+    };
+
     if !path.is_file() {
         return Err(format!(
             "required bundled file is missing: {}",
             path.display()
         ));
     }
+    info!("[p2premote] verified bundled file: {}", path.display());
     Ok(path)
 }
 

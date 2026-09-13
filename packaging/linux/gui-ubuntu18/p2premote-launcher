@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+export P2PREMOTE_INSTALL_ROOT=/opt/p2premote
+exec /opt/p2premote/p2premote "$@"

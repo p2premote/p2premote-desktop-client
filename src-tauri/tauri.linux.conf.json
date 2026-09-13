@@ -1,11 +1,25 @@
 {
   "$schema": "https://schema.tauri.app/config/1",
+  "package": {
+    "productName": "p2premote"
+  },
+  "build": {
+    "beforeBuildCommand": ""
+  },
   "tauri": {
     "bundle": {
       "targets": ["deb", "appimage"],
+      "deb": {
+        "depends": ["systemd"],
+        "provides": ["p2p-remote"],
+        "conflicts": ["p2p-remote"],
+        "replaces": ["p2p-remote"]
+      },
       "resources": [
       "resources/p2premote-service",
       "resources/p2premote-cli",
+      "resources/wireguard-go",
+      "resources/wg",
       "resources/.p2premote_default.json",
       "resources/web/**/*"
       ]
