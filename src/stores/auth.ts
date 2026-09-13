@@ -34,6 +34,7 @@ export interface DeviceInfo {
   }
   public_ip?: string
   system_version: string
+  capabilities?: string[]
   client_version?: string
   service_port: number
   connect_code?: string

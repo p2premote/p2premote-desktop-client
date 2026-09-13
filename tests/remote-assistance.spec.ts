@@ -27,6 +27,7 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
       lan_ip: '127.0.0.1',
       service_port: 3389,
       status: 'online',
+      capabilities: ['rustdesk_tiny'],
       connect_code: '709621823',
       created_at: '',
       updated_at: '',
@@ -43,6 +44,7 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
       lan_ip: '10.0.0.2',
       service_port: 3389,
       status: 'online',
+      capabilities: ['rustdesk_tiny'],
       connect_code: '428279225',
       created_at: '',
       updated_at: '',
@@ -444,6 +446,10 @@ test.describe('远程协助', () => {
     )
 
     await page.locator('.action-tile.primary').click()
+    const disconnectDialog = page.locator('.el-message-box').filter({ hasText: '断开隧道？' })
+    await expect(disconnectDialog).toBeVisible()
+    await expect(disconnectDialog).toContainText('当前通过该隧道的连接会立即中断')
+    await disconnectDialog.getByRole('button', { name: '断开隧道' }).click()
     await expect.poll(async () => {
       const calls = await mockCalls(page)
       return calls.some(call => call.cmd === 'stop_service_tunnel' && call.args?.sourceDeviceId === 22)

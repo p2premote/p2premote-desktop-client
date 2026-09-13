@@ -287,6 +287,7 @@ pub(super) fn start_desktop_engine(
 }
 
 fn resolve_desktop_executable() -> Result<PathBuf, EngineFailure> {
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(path) = std::env::var_os("RUSTDESK_TINY_PATH") {
         return validate_desktop_path(PathBuf::from(path));
     }
@@ -347,6 +348,23 @@ pub(super) async fn start_active_desktop_session(
     let session = require_wgvpn_session(peer_device_id)?;
     if !session.is_active {
         return Err(anyhow!("desktop_controller_requires_active_tunnel"));
+    }
+    if !cfg!(windows) {
+        return Err(anyhow!("desktop_platform_unsupported: install RustDesk or use another remote desktop tool"));
+    }
+    let mut config = load_machine_config().context("load device capabilities")?;
+    let peer = get_device_list(&mut config)
+        .await
+        .context("refresh peer capabilities")?
+        .into_iter()
+        .find(|device| device.device_id == peer_device_id)
+        .ok_or_else(|| anyhow!("peer_device_not_found"))?;
+    if !peer
+        .capabilities
+        .iter()
+        .any(|capability| capability == crate::device::CAPABILITY_RUSTDESK_TINY)
+    {
+        return Err(anyhow!("peer_missing_capability: rustdesk_tiny"));
     }
     let attempt_id = Uuid::new_v4().to_string();
     info!(peer_device_id, attempt_id = %attempt_id, peer_virtual_ip = %session.peer_virtual_ip,

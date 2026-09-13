@@ -11,6 +11,16 @@ use std::net::IpAddr;
 use std::sync::OnceLock;
 use tracing::{debug, info};
 
+pub const CAPABILITY_RUSTDESK_TINY: &str = "rustdesk_tiny";
+
+fn current_capabilities() -> Vec<String> {
+    if cfg!(windows) {
+        vec![CAPABILITY_RUSTDESK_TINY.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 // 平台特定实现按 Go 的文件命名习惯拆分（device_windows.rs / device_macos.rs /
 // device_linux.rs）。Rust 不按文件名自动选择，构建门控在这里集中声明：
 // 纯函数所在模块附带 `test` 条件，保证单测可在任意平台运行。
@@ -103,6 +113,8 @@ pub struct DeviceInfo {
     pub created_at: Option<String>,
     #[serde(default)]
     pub wake_available: bool,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -127,6 +139,7 @@ struct RegisterRequest {
     rdp_port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     remote_access: Option<RemoteAccessInfo>,
+    capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wol_capability: Option<WOLCapability>,
 }
@@ -155,6 +168,7 @@ pub struct DeviceStatusReport {
     client_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     wol_capability: Option<WOLCapability>,
+    capabilities: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -252,6 +266,7 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
         rdp_enabled,
         rdp_port,
         remote_access,
+        capabilities: current_capabilities(),
         wol_capability: crate::wol::collect_capability(),
     };
     let client = shared_client();
@@ -309,6 +324,7 @@ pub async fn collect_device_status_report(
         remote_access,
         client_version: current_client_version(),
         wol_capability: crate::wol::collect_capability(),
+        capabilities: current_capabilities(),
     })
 }
 
@@ -1098,11 +1114,13 @@ mod tests {
             }),
             client_version: "1.7.3-3becb9".to_string(),
             wol_capability: None,
+            capabilities: vec![CAPABILITY_RUSTDESK_TINY.to_string()],
         };
 
         let value = serde_json::to_value(report).unwrap();
         assert_eq!(value["client_version"], "1.7.3-3becb9");
         assert_eq!(value["remote_access"]["protocol"], "rdp");
+        assert_eq!(value["capabilities"][0], CAPABILITY_RUSTDESK_TINY);
     }
 
     #[test]

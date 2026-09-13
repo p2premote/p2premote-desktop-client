@@ -24,6 +24,7 @@ export interface DeviceInfo {
   connect_code?: string
   created_at?: string
 	wake_available?: boolean
+	capabilities?: string[]
 }
 
 /// API 统一响应格式

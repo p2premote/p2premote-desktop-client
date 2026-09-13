@@ -1,5 +1,9 @@
 <template>
-  <div class="devices-page">
+  <div
+    class="devices-page"
+    v-loading="selectedDisconnecting"
+    :element-loading-text="$t('devices.message.disconnecting')"
+  >
     <div class="devices-shell">
       <aside class="devices-sidebar fluent-card">
         <div class="sidebar-header">
@@ -145,26 +149,22 @@
                   </p>
                 </div>
               </div>
-              <div
-                class="action-grid"
-                :class="{
-                  'single-tunnel-action':
-                    !supportsBuiltInDesktop(selectedDevice)
-                    && !tunnelVirtualIp(selectedDevice),
-                }"
-              >
-				<button v-if="selectedDevice.status !== 'online' && selectedDevice.wake_available && !isCurrentDevice(selectedDevice.device_uuid)" type="button" class="action-tile primary" :disabled="wakingIds.has(selectedDevice.device_id)" @click="handleWakeDevice(selectedDevice)">
+			  <div class="action-groups">
+				<div class="action-group">
+				  <div class="action-group-label">{{ $t('devices.detail.connection.tunnel_group') }}</div>
+				  <div class="action-grid action-grid-primary">
+					<button v-if="selectedDevice.status !== 'online' && selectedDevice.wake_available && !isCurrentDevice(selectedDevice.device_uuid)" type="button" class="action-tile primary" :disabled="wakingIds.has(selectedDevice.device_id)" @click="handleWakeDevice(selectedDevice)">
 					<el-icon><SwitchButton /></el-icon>
 					<span>{{ wakingIds.has(selectedDevice.device_id) ? $t('devices.wol.sending') : $t('devices.wol.action') }}</span>
 				</button>
                 <button
                   type="button"
                   class="action-tile primary"
-                  :disabled="!canUseTunnelAction(selectedDevice)"
+                  :disabled="!canUseTunnelAction(selectedDevice) || selectedDisconnecting"
                   :aria-label="`${activeTunnelActionText(selectedDevice)}. ${tunnelActionTooltip(selectedDevice)}`"
                   @click="openTunnelAction(selectedDevice!)"
                 >
-                  <el-icon><Link /></el-icon>
+                  <el-icon :class="{ 'is-loading': selectedDisconnecting }"><Loading v-if="selectedDisconnecting" /><Link v-else /></el-icon>
                   <span>{{ activeTunnelActionText(selectedDevice) }}</span>
                   <el-tooltip
                     :content="tunnelActionTooltip(selectedDevice)"
@@ -173,7 +173,12 @@
                     <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
                   </el-tooltip>
                 </button>
+				  </div>
+				</div>
 
+				<div class="action-group">
+				  <div class="action-group-label">{{ $t('devices.detail.connection.remote_group') }}</div>
+				  <div class="action-grid">
                 <button
                   v-if="supportsBuiltInDesktop(selectedDevice)"
                   type="button"
@@ -201,7 +206,7 @@
                 </button>
 
                 <button
-                  v-if="showLocalProcessActions && supportsBuiltInDesktop(selectedDevice)"
+                  v-if="showNativeDesktopAction()"
                   type="button"
                   class="action-tile"
                   :disabled="!isTunnelConnected(selectedDevice)"
@@ -210,7 +215,12 @@
                   <el-icon><Monitor /></el-icon>
                   <span>{{ $t('devices.detail.connection.p2premote_desktop') }}</span>
                 </button>
+				  </div>
+				</div>
 
+				<div v-if="tunnelVirtualIp(selectedDevice)" class="action-group">
+				  <div class="action-group-label">{{ $t('devices.detail.connection.tools_group') }}</div>
+				  <div class="action-grid">
                 <button
                   v-if="tunnelVirtualIp(selectedDevice)"
                   type="button"
@@ -236,7 +246,9 @@
                     ? $t('devices.detail.connection.speed_testing')
                     : $t('devices.detail.connection.speed_test') }}</span>
                 </button>
-              </div>
+				  </div>
+				</div>
+			  </div>
             </div>
 
             <div class="detail-section info-section">
@@ -296,6 +308,15 @@
                   <span class="info-label">{{ $t('devices.detail.info.device_uuid') }}</span>
                   <span class="info-value uuid">{{ selectedDevice.device_uuid }}</span>
                 </div>
+				<div class="info-item">
+				  <span class="info-label">{{ $t('devices.detail.info.capabilities') }}</span>
+				  <span v-if="deviceCapabilities(selectedDevice).length" class="capability-list">
+					<el-tag v-for="capability in deviceCapabilities(selectedDevice)" :key="capability" size="small" type="info">
+					  {{ capabilityLabel(capability) }}
+					</el-tag>
+				  </span>
+				  <span v-else class="info-value">{{ $t('devices.detail.info.no_capabilities') }}</span>
+				</div>
               </div>
             </div>
           </div>
@@ -333,6 +354,7 @@ import {
   ArrowDown,
   InfoFilled,
   Link,
+  Loading,
   Monitor,
   MoreFilled,
   Odometer,
@@ -420,6 +442,7 @@ const tunnelStatusMap = ref<Record<number, TunnelInfo>>({})
 const activeTunnelJobMap = ref<Record<number, ActiveTunnelJobStatus>>({})
 const tunnelLifecycleMap = ref<Record<number, TunnelLifecycleStatus>>({})
 const preparingTunnelIds = ref(new Set<number>())
+const disconnectingIds = ref(new Set<number>())
 const wakingIds = reactive(new Set<number>())
 const lanAccessForm = reactive({
   enabled: false,
@@ -441,6 +464,9 @@ const onlineDeviceCount = computed(() => deviceStore.devices.filter(device => de
 const lanAccessDirty = computed(() => (
   lanAccessForm.enabled !== savedLanAccessConfig.enabled
   || lanAccessForm.cidrsText !== savedLanAccessConfig.cidrsText
+))
+const selectedDisconnecting = computed(() => (
+  selectedDevice.value ? disconnectingIds.value.has(selectedDevice.value.device_id) : false
 ))
 const sortedDevices = computed(() => {
   return [...deviceStore.devices].sort((a, b) => {
@@ -718,14 +744,26 @@ function isMacOSDevice(device: DeviceInfo | null): boolean {
   return text.includes('macos') || text.includes('mac os') || text.includes('darwin')
 }
 
-function isLinuxDevice(device: DeviceInfo | null): boolean {
-  if (!device) return false
-  const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
-  return text.includes('linux') || text.includes('ubuntu') || text.includes('kylin')
+function supportsBuiltInDesktop(device: DeviceInfo | null): boolean {
+  return isWindowsDevice(device)
 }
 
-function supportsBuiltInDesktop(device: DeviceInfo | null): boolean {
-  return isWindowsDevice(device) || isLinuxDevice(device)
+function showNativeDesktopAction(): boolean {
+  return showLocalProcessActions
+}
+
+function deviceCapabilities(device: DeviceInfo | null): string[] {
+  return Array.isArray(device?.capabilities) ? device.capabilities : []
+}
+
+function hasCapability(device: DeviceInfo | null, capability: string): boolean {
+  return deviceCapabilities(device).includes(capability)
+}
+
+function capabilityLabel(capability: string): string {
+  return capability === 'rustdesk_tiny'
+    ? t('devices.detail.info.capability_rustdesk_tiny')
+    : capability
 }
 
 function remoteAccessProtocol(device: DeviceInfo | null): string {
@@ -1059,6 +1097,24 @@ async function handleCancelActiveTunnelJob(device: DeviceInfo) {
 }
 
 async function handleDisconnectTunnel(device: DeviceInfo) {
+  if (disconnectingIds.value.has(device.device_id)) return
+  try {
+    await ElMessageBox.confirm(
+      t('devices.message.disconnect_confirm_body', { name: device.device_alias || device.device_name }),
+      t('devices.message.disconnect_confirm_title'),
+      {
+        confirmButtonText: t('devices.detail.connection.disconnect'),
+        cancelButtonText: t('common.cancel'),
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      },
+    )
+  } catch {
+    return
+  }
+  const next = new Set(disconnectingIds.value)
+  next.add(device.device_id)
+  disconnectingIds.value = next
   try {
     const lifecycle = deviceTunnelLifecycle(device)
     const serviceStatus = lifecycle.role === 'passive'
@@ -1067,7 +1123,12 @@ async function handleDisconnectTunnel(device: DeviceInfo) {
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
     ElMessage.success(t('devices.message.tunnel_disconnected'))
   } catch (error) {
-    ElMessage.error(t('devices.message.disconnect_failed', { error: (error as any).message }))
+    const message = typeof error === 'string' ? error : (error as any)?.message || t('common.unknown_error')
+    ElMessage.error(t('devices.message.disconnect_failed', { error: message }))
+  } finally {
+    const latest = new Set(disconnectingIds.value)
+    latest.delete(device.device_id)
+    disconnectingIds.value = latest
   }
 }
 
@@ -1101,6 +1162,18 @@ async function launchWindowsRdp(device: DeviceInfo) {
 }
 
 async function launchP2pRemoteDesktop(device: DeviceInfo) {
+  if (!isLocalWindows) {
+    await ElMessageBox.alert(
+      t('devices.message.desktop_platform_unsupported_body'),
+      t('devices.message.desktop_platform_unsupported_title'),
+      { confirmButtonText: t('common.got_it'), type: 'info' },
+    ).catch(() => {})
+    return
+  }
+  if (!hasCapability(device, 'rustdesk_tiny')) {
+    ElMessage.error(t('devices.message.desktop_capability_missing'))
+    return
+  }
   try {
     await invoke('start_service_desktop_session', { peerDeviceId: device.device_id })
     ElMessage.success(t('devices.message.desktop_window_started'))
@@ -1664,15 +1737,31 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 }
 .tunnel-lifecycle-strip.state-recovering .lifecycle-dot { background: var(--fluent-warning); }
 
+.action-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.action-group {
+  display: grid;
+  gap: 8px;
+}
+
+.action-group-label {
+  color: var(--fluent-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
 .action-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
 }
 
-/* 只有隧道操作时保持紧凑，适用于 Linux、未开启 RDP 的 Windows 等设备。 */
-.action-grid.single-tunnel-action {
-  grid-template-columns: minmax(180px, 240px);
+.action-grid-primary {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 280px));
 }
 
 /* ===== 操作瓦片：Fluent 按钮（去位移反馈，改背景层变化） ===== */
@@ -1693,13 +1782,16 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   text-align: left;
 }
 
-.action-tile:hover:not(:disabled) {
-  background: var(--fluent-layer-hover);
-  border-color: var(--fluent-stroke-strong);
+@media (hover: hover) and (pointer: fine) {
+  .action-tile:hover:not(:disabled) {
+    background: var(--fluent-layer-hover);
+    border-color: var(--fluent-stroke-strong);
+  }
 }
 
 .action-tile:active:not(:disabled) {
   background: var(--fluent-layer-pressed);
+  transform: scale(0.97);
 }
 
 .action-tile:disabled {
@@ -1748,9 +1840,17 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   color: var(--fluent-text-on-accent);
 }
 
-.action-tile.primary:hover:not(:disabled) {
-  background: var(--fluent-accent-hover);
-  border-color: var(--fluent-accent-hover);
+@media (hover: hover) and (pointer: fine) {
+  .action-tile.primary:hover:not(:disabled) {
+    background: var(--fluent-accent-hover);
+    border-color: var(--fluent-accent-hover);
+  }
+}
+
+.capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .action-tile.primary:active:not(:disabled) {
@@ -1910,9 +2010,6 @@ async function confirmDeleteDevice(device: DeviceInfo) {
     grid-template-columns: 1fr;
   }
 
-  .action-grid.single-tunnel-action {
-    grid-template-columns: minmax(180px, 240px);
-  }
 }
 </style>
 

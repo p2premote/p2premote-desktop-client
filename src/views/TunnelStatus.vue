@@ -1,5 +1,9 @@
 <template>
-  <div class="tunnel-status-page">
+  <div
+    class="tunnel-status-page"
+    v-loading="disconnectingIds.size > 0"
+    :element-loading-text="$t('tunnel.message.disconnecting')"
+  >
     <section class="tunnel-card fluent-card">
       <div class="card-heading">
         <div>
@@ -114,6 +118,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { invoke, listen, type UnlistenFn } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { ArrowDown, CopyDocument, Monitor, Refresh } from '@element-plus/icons-vue'
 import { useDeviceStore } from '../stores/device'
 const { t } = useI18n()
@@ -306,6 +311,21 @@ async function refreshStatus() {
 
 async function disconnectTunnel(tunnel: TunnelItem) {
   const key = tunnelKey(tunnel)
+  if (disconnectingIds.value.has(key)) return
+  try {
+    await ElMessageBox.confirm(
+      t('tunnel.message.disconnect_confirm_body', { name: deviceLabel(tunnel) }),
+      t('tunnel.message.disconnect_confirm_title'),
+      {
+        confirmButtonText: t('tunnel.action.disconnect'),
+        cancelButtonText: t('common.cancel'),
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      },
+    )
+  } catch {
+    return
+  }
   const next = new Set(disconnectingIds.value)
   next.add(key)
   disconnectingIds.value = next
