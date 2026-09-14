@@ -94,14 +94,11 @@ if [[ ! "$GIT_COMMIT" =~ ^[0-9a-f]{6}$ ]]; then
   exit 1
 fi
 BUILD_VERSION="${VERSION}-${GIT_COMMIT}"
-OUT_DIR="$APP_DIR/build/linux/headless"
-DIST_DIR="$APP_DIR/build/linux/dist/headless"
+DIST_DIR="$APP_DIR/dist/linux-headless"
 # WireGuard-go 从独立的 Go WG 模块构建；打洞库以 Rust path dependency
 # （core/Cargo.toml）编译进客户端，无需预构建产物。
 PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs-gonc"
 WG_FFI_SOURCE_DIR="$REPO_ROOT/../p2premote-wg-ffi"
-WIREGUARD_GO="$OUT_DIR/wireguard-go"
-WG_CLI="$OUT_DIR/wg"
 if [[ -z "$TARGET_ARCH" ]]; then
   TARGET_ARCH="$(uname -m)"
 fi
@@ -126,6 +123,11 @@ case "$TARGET_ARCH" in
     ;;
 esac
 DOCKER_PLATFORM="linux/${LINUX_ARCH}"
+CARGO_TARGET_DIR="$REPO_ROOT/target/linux-headless-${LINUX_ARCH}"
+export CARGO_TARGET_DIR
+OUT_DIR="$CARGO_TARGET_DIR/package-assets"
+WIREGUARD_GO="$OUT_DIR/wireguard-go"
+WG_CLI="$OUT_DIR/wg"
 
 # Headless 产物必须携带固定的 glibc 基线（Debian 10 / GLIBC_2.28），
 # 因此编译一律在 builder 容器内完成；本机环境只提供源码和 Docker，
@@ -211,7 +213,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     --platform "$DOCKER_PLATFORM" \
     "${DOCKER_HOST_ARGS[@]}" \
     -v "$WORKSPACE_DIR:/workspace" \
-    -v "p2p-cargo-target-${LINUX_ARCH}:/workspace/p2premote-desktop-client/target" \
+    -v "p2p-cargo-target-linux-headless-${LINUX_ARCH}:/workspace/p2premote-desktop-client/target" \
     -v p2p-cargo-registry:/opt/rust/cargo/registry \
     -v p2p-npm-cache:/root/.npm \
     -v p2p-go-mod:/root/go \
@@ -295,7 +297,7 @@ echo "==> Building Rust headless binaries ($RUST_TARGET)"
 )
 
 rust_release_dir() {
-  echo "$REPO_ROOT/target/$RUST_TARGET/release"
+  echo "$CARGO_TARGET_DIR/$RUST_TARGET/release"
 }
 
 prepare_prefix_root() {

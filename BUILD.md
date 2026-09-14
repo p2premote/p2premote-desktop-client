@@ -10,6 +10,17 @@
 | macOS GUI DMG | Universal（x86_64 + arm64） | `scripts/build-macos.sh` |
 | Linux Headless 裸压缩包、DEB、RPM、Docker 镜像 tar | x86_64 / aarch64 | `scripts/build-linux.sh` |
 
+编译缓存统一放在 `target/<构建目标>/`，发布物统一放在 `dist/<发布目标>/`。`target` 可随时清理，不再保存需要交付的安装包；`dist` 不参与 Cargo 增量编译。主要目录如下：
+
+```text
+target/windows-x64/             dist/windows-x64/
+target/windows-win7-x64/        dist/windows-win7-x64/
+target/linux-gui-x64/           dist/linux-gui-x64/
+target/linux-headless-amd64/    dist/linux-headless/
+target/linux-headless-arm64/    dist/linux-docker/
+target/macos-universal/         dist/macos-universal/
+```
+
 Linux Headless 图形安装入口明确支持 Deepin/UOS（DDE）和银河麒麟、
 Ubuntu Kylin、openKylin（UKUI）的桌面版本，支持 x86_64
 与 aarch64。用户完整解压压缩包后，可双击 `安装-p2pRemote.desktop`，
@@ -24,13 +35,13 @@ Ubuntu Kylin、openKylin（UKUI）的桌面版本，支持 x86_64
 .\scripts\build-windows.ps1 -v 1.6.4
 ```
 
-脚本会更新 Windows 客户端版本信息，然后执行 `npx tauri build`。NSIS 安装包通常位于：
+脚本会更新 Windows 客户端版本信息，然后执行 `npx tauri build`。Win10 与 Win7 的 Cargo 缓存分别位于 `target/windows-x64` 和 `target/windows-win7-x64`，最终 NSIS 安装包位于：
 
 ```text
-src-tauri\target\release\bundle\nsis\
+dist\windows-x64\
 ```
 
-脚本会把 NSIS 安装包规范化为 `p2pRemote_<version>-<git-sha>_x64-setup.exe`，文件名中的 `x64` 用于后台校验架构。
+Win7 安装包输出到 `dist\windows-win7-x64\`。普通 Windows 包保持 `p2pRemote_<version>-<git-sha>_x64-setup.exe` 命名；Win7 包使用 `p2pRemote_<version>-<git-sha>_windows-win7-x64-setup.exe`，不同兼容目标不会互相覆盖。
 
 要求已安装 Node.js、Rust、Tauri CLI、Windows 编译工具链，并且相邻目录 `../p2premote-punch-rs-gonc` 与 `../p2premote-wg-ffi` 必须存在；Rust Punch 由 Cargo 以源码依赖集成，脚本只构建独立的 WireGuard FFI。任何必需工具、源码或资源缺失都会直接失败。
 
@@ -44,7 +55,7 @@ export APPLE_NOTARY_KEYCHAIN_PROFILE='p2premote-notary'
 ./scripts/build-macos.sh -v 1.11.2
 ```
 
-脚本会构建 x86_64 与 arm64 的 service、CLI、Punch 动态库及 Tauri GUI，合并为 Universal App，随后签名、公证并生成 `target/p2pRemote_<version>_macos-universal.dmg`。没有发布证书的内部测试机可使用 `--unsigned` 生成 ad-hoc 签名、未经公证的 DMG；该产物只用于测试，不应对外分发：
+脚本会构建 x86_64 与 arm64 的 service、CLI、Punch 动态库及 Tauri GUI，合并为 Universal App，随后签名、公证并生成 `dist/macos-universal/p2pRemote_<version>_macos-universal.dmg`。编译缓存位于 `target/macos-universal`。没有发布证书的内部测试机可使用 `--unsigned` 生成 ad-hoc 签名、未经公证的 DMG；该产物只用于测试，不应对外分发：
 
 ```bash
 ./scripts/build-macos.sh -v 1.11.2 --no-sccache --unsigned
@@ -67,10 +78,10 @@ macOS 包内嵌 Universal `RustDeskTiny.app`。首次远程控制前，用户需
 如果官方 Go 或 Node.js 下载站点连接不稳定，也可以分别设置 `P2PREMOTE_GO_DOWNLOAD_BASE` 和 `P2PREMOTE_NODE_DOWNLOAD_BASE` 覆盖下载根地址。下载命令默认强制 HTTP/1.1，并启用重试、断点续传和低速超时，避免 HTTP/2 中断后长时间卡住。
 
 ```text
-build/linux/dist/headless/p2premote-headless_<version>-<git-sha>_x86_64-linux-gnu.tar.gz
-build/linux/dist/headless/p2premote-headless_<version>-<git-sha>_amd64.deb
-build/linux/dist/headless/p2premote-headless-<version>-1.<git-sha>.x86_64.rpm
-build/linux/dist/docker/p2premote-client_<version>-<git-sha>_x86_64-linux-gnu.tar
+dist/linux-headless/p2premote-headless_<version>-<git-sha>_x86_64-linux-gnu.tar.gz
+dist/linux-headless/p2premote-headless_<version>-<git-sha>_amd64.deb
+dist/linux-headless/p2premote-headless-<version>-1.<git-sha>.x86_64.rpm
+dist/linux-docker/p2premote-client_<version>-<git-sha>_x86_64-linux-gnu.tar
 ```
 
 镜像默认标签为 `p2premote/client:<version>`，可通过 `--tag` 覆盖。aarch64 构建会把文件名中的架构替换为 `aarch64-linux-gnu`、`arm64` 和 `aarch64`。
@@ -79,7 +90,7 @@ build/linux/dist/docker/p2premote-client_<version>-<git-sha>_x86_64-linux-gnu.ta
 
 ```bash
 ./scripts/build-linux.sh -v 1.6.4 --no-tgz-build \
-  --tgz-path build/linux/dist/headless/p2premote-headless_1.6.4-<git-sha>_x86_64-linux-gnu.tar.gz
+  --tgz-path dist/linux-headless/p2premote-headless_1.6.4-<git-sha>_x86_64-linux-gnu.tar.gz
 ```
 
 `build-linux-headless.sh` 仍保留为只生成 tar.gz、deb、rpm 的底层构建入口；新发布流程统一使用 `build-linux.sh`。
@@ -109,7 +120,7 @@ tar.gz、deb 和 rpm 都把程序、配置、日志及运行数据集中在 `/op
 ## 常用检查
 
 ```bash
-file build/linux/dist/headless/*
+file dist/linux-headless/*
 docker image inspect p2premote/client:1.6.4
 ```
 

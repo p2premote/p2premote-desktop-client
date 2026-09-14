@@ -39,6 +39,9 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
 fi
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+cargo_target_dir="$repo_dir/target/macos-universal"
+dist_dir="$repo_dir/dist/macos-universal"
+export CARGO_TARGET_DIR="$cargo_target_dir"
 punch_dir="${P2PREMOTE_PUNCH_DIR:-$(cd "$repo_dir/../p2premote-punch" && pwd)}"
 resources_dir="$repo_dir/src-tauri/resources"
 tiny_dir="${RUSTDESK_TINY_DIR:-$(cd "$repo_dir/../remoteDesk/RustDeskTiny" && pwd)}"
@@ -76,8 +79,8 @@ build_rust_helper() {
     --manifest-path "$repo_dir/Cargo.toml" \
     --release --target "$triple" \
     -p p2premote-service -p p2premote-cli
-  cp "$repo_dir/target/$triple/release/p2premote-service" "$arch_dir/p2premote-service"
-  cp "$repo_dir/target/$triple/release/p2premote-cli" "$arch_dir/p2premote-cli"
+  cp "$cargo_target_dir/$triple/release/p2premote-service" "$arch_dir/p2premote-service"
+  cp "$cargo_target_dir/$triple/release/p2premote-cli" "$arch_dir/p2premote-cli"
 }
 
 build_punch() {
@@ -143,7 +146,7 @@ macos_config="$build_dir/tauri.macos.conf.json"
   fi
 )
 
-app_path="$(find "$repo_dir/target/universal-apple-darwin/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
+app_path="$(find "$cargo_target_dir/universal-apple-darwin/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
 [[ -n "$app_path" ]] || { echo "Universal app bundle was not produced." >&2; exit 1; }
 mkdir -p "$app_path/Contents/Library/LaunchDaemons"
 cp "$repo_dir/src-tauri/macos/top.p2premote.service.plist" \
@@ -165,7 +168,8 @@ lipo "$app_path/Contents/Resources/resources/RustDeskTiny.app/Contents/MacOS/Rus
   -verify_arch x86_64 arm64
 codesign --verify --deep --strict --verbose=2 "$app_path"
 
-dmg_path="$repo_dir/target/p2pRemote_${version}_macos-universal.dmg"
+mkdir -p "$dist_dir"
+dmg_path="$dist_dir/p2pRemote_${version}_macos-universal.dmg"
 rm -f "$dmg_path"
 hdiutil create -volname p2pRemote -srcfolder "$app_path" -ov -format UDZO "$dmg_path"
 
