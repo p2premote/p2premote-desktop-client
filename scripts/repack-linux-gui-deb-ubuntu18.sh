@@ -7,8 +7,7 @@ if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 version="$1"
-cargo_target_dir="${CARGO_TARGET_DIR:-target}"
-deb="$cargo_target_dir/release/bundle/deb/p2premote_${version}_amd64.deb"
+deb="target/release/bundle/deb/p2premote_${version}_amd64.deb"
 stage="$(mktemp -d /tmp/p2premote-gui-deb.XXXXXX)"
 output="${stage}/p2premote.deb"
 cleanup() { rm -rf "$stage"; }

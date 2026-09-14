@@ -230,13 +230,6 @@ fn remove_generated_c_header(library_path: &Path) {
     }
 }
 
-fn nested_target_dir(manifest_dir: &Path, name: &str) -> PathBuf {
-    env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("target"))
-        .join(name)
-}
-
 fn copy_service_into_resources() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
@@ -245,7 +238,7 @@ fn copy_service_into_resources() {
     let service_manifest = manifest_dir.join("../service/Cargo.toml");
     let cargo = env::var("CARGO").expect("CARGO is not set");
     let target_triple = env::var("TARGET").expect("TARGET is not set");
-    let target_dir = nested_target_dir(&manifest_dir, "service-build");
+    let target_dir = manifest_dir.join("target").join("service-build");
     let (target_os, _) = parse_target();
     let binary_name = main_binary_name("p2premote-service", &target_os);
     let source = resolve_built_service_path(&target_dir, &target_triple, &profile, &binary_name);
@@ -286,7 +279,7 @@ fn copy_cli_into_resources() {
     let cli_manifest = manifest_dir.join("../cli/Cargo.toml");
     let cargo = env::var("CARGO").expect("CARGO is not set");
     let target_triple = env::var("TARGET").expect("TARGET is not set");
-    let target_dir = nested_target_dir(&manifest_dir, "cli-build");
+    let target_dir = manifest_dir.join("target").join("cli-build");
     let (target_os, _) = parse_target();
     let binary_name = main_binary_name("p2premote-cli", &target_os);
     let source = resolve_built_service_path(&target_dir, &target_triple, &profile, &binary_name);
@@ -326,7 +319,7 @@ fn copy_notifier_into_resources() {
     let profile = env::var("PROFILE").expect("PROFILE is not set");
     let cargo = env::var("CARGO").expect("CARGO is not set");
     let target_triple = env::var("TARGET").expect("TARGET is not set");
-    let target_dir = nested_target_dir(&manifest_dir, "notifier-build");
+    let target_dir = manifest_dir.join("target").join("notifier-build");
     let (target_os, _) = parse_target();
     let binary_name = main_binary_name("p2premote-notifier", &target_os);
     let source = resolve_built_service_path(&target_dir, &target_triple, &profile, &binary_name);

@@ -62,7 +62,6 @@ docker_env=(
   -e P2PREMOTE_PREBUILT_RESOURCES=1
   -e CARGO_NET_GIT_FETCH_WITH_CLI=true
   -e TAURI_TRAY=appindicator
-  -e CARGO_TARGET_DIR="/workspace/$project_name/target/linux-gui-x64"
 )
 if [[ -n "${P2PREMOTE_BUILD_PROXY:-}" ]]; then
   for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do

@@ -27,9 +27,8 @@ Options:
   --tgz-path <path>     Headless tgz to reuse with --no-tgz-build
   -h, --help            Show this help
 
-The command emits four files under dist:
-  linux-headless/*.tar.gz, linux-headless/*.deb, linux-headless/*.rpm,
-  linux-docker/*.tar
+The command emits four files under build/linux/dist:
+  headless/*.tar.gz, headless/*.deb, headless/*.rpm, docker/*.tar
 EOF
 }
 
@@ -123,9 +122,9 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DIST_DIR="$APP_DIR/dist"
-HEADLESS_DIST_DIR="$DIST_DIR/linux-headless"
-DOCKER_DIST_DIR="$DIST_DIR/linux-docker"
+DIST_DIR="$APP_DIR/build/linux/dist"
+HEADLESS_DIST_DIR="$DIST_DIR/headless"
+DOCKER_DIST_DIR="$DIST_DIR/docker"
 DOCKERFILE="$APP_DIR/packaging/linux/docker/Dockerfile"
 HEADLESS_SCRIPT="$SCRIPT_DIR/build-linux-headless.sh"
 

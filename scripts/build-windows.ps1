@@ -69,17 +69,10 @@ if ($SkipBuild) {
     exit 0
 }
 
-$cargoTargetDirectory = Join-Path $projectRoot ("target\{0}" -f $PackageTarget)
-$distDirectory = Join-Path $projectRoot ("dist\{0}" -f $PackageTarget)
-$nsisDirectory = Join-Path $cargoTargetDirectory 'release\bundle\nsis'
+$nsisDirectory = Join-Path $projectRoot 'target\release\bundle\nsis'
 $expectedInstallerName = "p2pRemote_${buildVersion}_x64-setup.exe"
 $expectedInstallerPath = Join-Path $nsisDirectory $expectedInstallerName
-$publishedInstallerName = if ($PackageTarget -eq 'windows-x64') {
-    $expectedInstallerName
-} else {
-    "p2pRemote_${buildVersion}_${PackageTarget}-setup.exe"
-}
-$publishedInstallerPath = Join-Path $distDirectory $publishedInstallerName
+$modernInstallerBackup = "$expectedInstallerPath.windows-x64-backup"
 
 if ($NoSccache) {
     $env:RUSTC_WRAPPER = ''
@@ -119,9 +112,7 @@ $replaceDesktopResource = -not [string]::Equals(
     [StringComparison]::OrdinalIgnoreCase)
 $previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
 $previousWgFfiDir = $env:P2PREMOTE_WG_FFI_DIR
-$previousCargoTargetDir = $env:CARGO_TARGET_DIR
 $env:P2PREMOTE_CLIENT_VERSION = $buildVersion
-$env:CARGO_TARGET_DIR = $cargoTargetDirectory
 $wgFfiSource = Join-Path $projectRoot '..\p2premote-wg-ffi'
 if (-not (Test-Path -LiteralPath $wgFfiSource -PathType Container)) { throw "p2premote-wg-ffi source directory not found: $wgFfiSource" }
 $env:P2PREMOTE_WG_FFI_DIR = (Resolve-Path -LiteralPath $wgFfiSource).Path
@@ -136,6 +127,10 @@ if ($replaceDesktopResource) {
     Copy-Item -LiteralPath $desktopInstaller -Destination $desktopResource -Force
     Write-Host "Staged $desktopInstallerProduct installer for $PackageTarget"
 }
+if ($PackageTarget -ne 'windows-x64' -and (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
+    Copy-Item -LiteralPath $expectedInstallerPath -Destination $modernInstallerBackup -Force
+}
+
 Push-Location $projectRoot
 try {
     # node_modules 可能被 WSL/容器内的 Linux 构建重装为 Linux 版本，每次构建前先恢复 Windows 版本
@@ -160,7 +155,6 @@ finally {
     Pop-Location
     $env:P2PREMOTE_CLIENT_VERSION = $previousClientVersion
     $env:P2PREMOTE_WG_FFI_DIR = $previousWgFfiDir
-    $env:CARGO_TARGET_DIR = $previousCargoTargetDir
     if ($replaceDesktopResource) {
         if ($desktopResourceOriginallyExisted) {
             Copy-Item -LiteralPath $desktopResourceBackup -Destination $desktopResource -Force
@@ -185,8 +179,16 @@ if (-not (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
     }
     Move-Item -LiteralPath $candidates[0].FullName -Destination $expectedInstallerPath
 }
-New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-Move-Item -LiteralPath $expectedInstallerPath -Destination $publishedInstallerPath -Force
-$installerHash = (Get-FileHash -LiteralPath $publishedInstallerPath -Algorithm SHA256).Hash
-Write-Host "Generated $PackageTarget installer: $publishedInstallerPath"
+$targetInstallerPath = Join-Path $nsisDirectory "p2pRemote_${buildVersion}_${PackageTarget}-setup.exe"
+if ($PackageTarget -ne 'windows-x64') {
+    Move-Item -LiteralPath $expectedInstallerPath -Destination $targetInstallerPath -Force
+    if (Test-Path -LiteralPath $modernInstallerBackup -PathType Leaf) {
+        Move-Item -LiteralPath $modernInstallerBackup -Destination $expectedInstallerPath -Force
+        Write-Host "Preserved existing windows-x64 installer: $expectedInstallerPath"
+    }
+} else {
+    $targetInstallerPath = $expectedInstallerPath
+}
+$installerHash = (Get-FileHash -LiteralPath $targetInstallerPath -Algorithm SHA256).Hash
+Write-Host "Generated $PackageTarget installer: $targetInstallerPath"
 Write-Host "SHA-256: $installerHash"
