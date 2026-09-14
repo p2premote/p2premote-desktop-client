@@ -40,7 +40,7 @@ fi
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cargo_target_dir="$repo_dir/target/macos-universal"
-dist_dir="$repo_dir/dist/macos-universal"
+dist_dir="$repo_dir/artifacts/macos-universal"
 export CARGO_TARGET_DIR="$cargo_target_dir"
 punch_dir="${P2PREMOTE_PUNCH_DIR:-$(cd "$repo_dir/../p2premote-punch" && pwd)}"
 resources_dir="$repo_dir/src-tauri/resources"

@@ -94,7 +94,7 @@ if [[ ! "$GIT_COMMIT" =~ ^[0-9a-f]{6}$ ]]; then
   exit 1
 fi
 BUILD_VERSION="${VERSION}-${GIT_COMMIT}"
-DIST_DIR="$APP_DIR/dist/linux-headless"
+DIST_DIR="$APP_DIR/artifacts/linux-headless"
 # WireGuard-go 从独立的 Go WG 模块构建；打洞库以 Rust path dependency
 # （core/Cargo.toml）编译进客户端，无需预构建产物。
 PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs-gonc"
