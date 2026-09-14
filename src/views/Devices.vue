@@ -619,26 +619,19 @@ function activeTunnelJob(device: DeviceInfo | null): ActiveTunnelJobStatus | nul
 function activeTunnelActionText(device: DeviceInfo | null): string {
   if (!device) return t('devices.detail.connection.tunnel_action')
   const lifecycle = deviceTunnelLifecycle(device)
-  if (lifecycle.state === 'recovering') {
-    return lifecycle.role === 'passive'
-      ? t('devices.detail.connection.disconnect_passive')
-      : t('devices.detail.connection.retry')
-  }
   if (lifecycle.state === 'connected') {
     return lifecycle.role === 'passive'
       ? t('devices.detail.connection.disconnect_passive')
       : t('devices.detail.connection.disconnect')
   }
   if (preparingTunnelIds.value.has(device.device_id)) return t('devices.detail.connection.preparing')
-  const job = activeTunnelJob(device)
-  if (!job) return t('devices.detail.connection.tunnel_action')
-  if (job.state === 'waiting') return t('devices.detail.connection.cancel_waiting', { attempt: job.attempt, max: job.max_attempts })
-  return t('devices.detail.connection.cancel_running', { attempt: job.attempt, max: job.max_attempts })
-}
-
-function isTunnelDegraded(device: DeviceInfo | null): boolean {
-  if (!device) return false
-  return tunnelStatusMap.value[device.device_id]?.health_state === 'degraded'
+  if (lifecycle.state === 'connecting'
+    || lifecycle.state === 'awaiting_approval'
+    || lifecycle.state === 'recovering'
+    || activeTunnelJob(device)) {
+    return t('devices.detail.connection.cancel')
+  }
+  return t('devices.detail.connection.tunnel_action')
 }
 
 function deviceTunnelLifecycle(device: DeviceInfo | null): TunnelLifecycleStatus {
@@ -720,7 +713,9 @@ function tunnelLifecycleDescription(device: DeviceInfo | null): string {
 
 function tunnelActionTooltip(device: DeviceInfo | null): string {
   const lifecycle = deviceTunnelLifecycle(device)
-  if (isTunnelDegraded(device) && lifecycle.role !== 'passive') return t('devices.lifecycle.tooltip_retry')
+  if (lifecycle.state === 'connecting' || lifecycle.state === 'awaiting_approval' || lifecycle.state === 'recovering') {
+    return t('devices.lifecycle.tooltip_cancel')
+  }
   return hasTunnel(device) ? t('devices.lifecycle.tooltip_disconnect') : t('devices.lifecycle.tooltip_connect')
 }
 
@@ -1002,11 +997,7 @@ function openTunnelAction(device: DeviceInfo) {
   // 宽限期耗尽后 lifecycle 已回到未建立，但 service 快照中可能短暂保留旧会话。
   // 这时必须一次点击完成旧会话清理和新建，不能先把用户操作误当成“断开”。
   if (lifecycle.state === 'recovering') {
-    if (lifecycle.role === 'passive') {
-      void handleDisconnectTunnel(device)
-    } else {
-      void handleRetryTunnel(device)
-    }
+    void handleCancelRecoveringTunnel(device)
     return
   }
   if (lifecycle.last_result === 'health_grace_expired') {
@@ -1028,6 +1019,28 @@ function openTunnelAction(device: DeviceInfo) {
     return
   }
   void startTunnelSilently(device)
+}
+
+async function handleCancelRecoveringTunnel(device: DeviceInfo) {
+  if (disconnectingIds.value.has(device.device_id)) return
+  const next = new Set(disconnectingIds.value)
+  next.add(device.device_id)
+  disconnectingIds.value = next
+  try {
+    const lifecycle = deviceTunnelLifecycle(device)
+    const serviceStatus = lifecycle.role === 'passive'
+      ? await invoke<any>('stop_service_tunnel', { sourceDeviceId: device.device_id })
+      : await invoke<any>('stop_service_active_tunnel', { targetDeviceId: device.device_id })
+    applyTunnelRuntimeStatus(serviceStatus?.runtime)
+    ElMessage.success(t('devices.message.auto_tunnel_cancelled'))
+  } catch (error) {
+    const message = typeof error === 'string' ? error : (error as any)?.message || t('common.unknown_error')
+    ElMessage.error(t('devices.message.auto_tunnel_cancel_failed', { error: message }))
+  } finally {
+    const latest = new Set(disconnectingIds.value)
+    latest.delete(device.device_id)
+    disconnectingIds.value = latest
+  }
 }
 
 async function handleRetryTunnel(device: DeviceInfo) {
