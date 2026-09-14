@@ -62,7 +62,7 @@
             <div class="detail-header-main">
               <div class="detail-title-row">
                 <div class="device-avatar" :class="deviceConnectionState(selectedDevice)">
-                  <el-icon><Monitor /></el-icon>
+                  <DevicePlatformIcon :device="selectedDevice" />
                 </div>
                 <div>
                   <div class="detail-title-line">
@@ -363,6 +363,7 @@ import {
 } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { useAuthStore } from '../stores/auth'
+import DevicePlatformIcon from '../components/DevicePlatformIcon.vue'
 const { t } = useI18n()
 
 interface TunnelSpeedTestResult {
@@ -1529,6 +1530,7 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   align-items: center;
   justify-content: center;
   font-size: 24px;
+  --platform-icon-cutout: var(--fluent-layer-card, #fff);
 }
 
 /* 离线：灰 */
@@ -1554,6 +1556,7 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 .device-avatar.connected {
   color: #fff;
   background: var(--fluent-success);
+  --platform-icon-cutout: var(--fluent-success);
 }
 
 .detail-title-line {
