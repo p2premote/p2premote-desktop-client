@@ -1,11 +1,19 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    [switch]$NoSccache
+    [switch]$NoSccache,
+    [string]$RustDeskTinyLegacyInstaller
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $installer = [System.IO.Path]::GetFullPath((Join-Path $projectRoot '..\webview\MicrosoftEdgeWebView2RuntimeInstallerX64V109.0.1518.140.exe'))
+if ([string]::IsNullOrWhiteSpace($RustDeskTinyLegacyInstaller)) {
+    $RustDeskTinyLegacyInstaller = Join-Path $projectRoot '..\remoteDesk\RustDeskTinyLegacy\dist\RustDeskTinyLegacy-install.exe'
+}
+$RustDeskTinyLegacyInstaller = [System.IO.Path]::GetFullPath($RustDeskTinyLegacyInstaller)
+if (-not (Test-Path -LiteralPath $RustDeskTinyLegacyInstaller -PathType Leaf)) {
+    throw "RustDeskTinyLegacy installer is missing: $RustDeskTinyLegacyInstaller"
+}
 
 if ([Environment]::Is64BitOperatingSystem -eq $false) { throw 'Win7 package builds require an x64 build host.' }
 
@@ -21,6 +29,11 @@ $template = $template.Replace('!define MINIMUMWEBVIEW2VERSION "{{minimum_webview
 
 $env:RUSTUP_TOOLCHAIN = '1.77.2'
 $env:P2PREMOTE_RELEASE_TARGET = 'windows-win7-x64'
-& (Join-Path $PSScriptRoot 'build-windows.ps1') -Version $Version -NoSccache:$NoSccache -TauriConfig 'src-tauri/tauri.win7.conf.json' -PackageTarget 'windows-win7-x64'
+& (Join-Path $PSScriptRoot 'build-windows.ps1') `
+    -Version $Version `
+    -NoSccache:$NoSccache `
+    -TauriConfig 'src-tauri/tauri.win7.conf.json' `
+    -PackageTarget 'windows-win7-x64' `
+    -RustDeskTinyInstaller $RustDeskTinyLegacyInstaller
 if ($LASTEXITCODE -ne 0) { throw "Win7 build failed with exit code $LASTEXITCODE" }
 Write-Host 'Win7 package is build-ready; compatibility remains pending real Win7 SP1 x64 validation.'

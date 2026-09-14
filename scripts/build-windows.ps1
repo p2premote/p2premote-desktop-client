@@ -73,9 +73,6 @@ $nsisDirectory = Join-Path $projectRoot 'target\release\bundle\nsis'
 $expectedInstallerName = "p2pRemote_${buildVersion}_x64-setup.exe"
 $expectedInstallerPath = Join-Path $nsisDirectory $expectedInstallerName
 $modernInstallerBackup = "$expectedInstallerPath.windows-x64-backup"
-if ($PackageTarget -ne 'windows-x64' -and (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
-    Copy-Item -LiteralPath $expectedInstallerPath -Destination $modernInstallerBackup -Force
-}
 
 if ($NoSccache) {
     $env:RUSTC_WRAPPER = ''
@@ -92,22 +89,47 @@ if (-not (Test-Path -LiteralPath $rustPunchSource -PathType Container)) {
     throw "p2premote-punch-rs-gonc source directory not found: $rustPunchSource"
 }
 $desktopResource = Join-Path $projectRoot 'src-tauri\resources\RustDeskTiny-install.exe'
+$desktopInstaller = $desktopResource
 if (-not [string]::IsNullOrWhiteSpace($RustDeskTinyInstaller)) {
     $desktopInstaller = [System.IO.Path]::GetFullPath($RustDeskTinyInstaller)
     if (-not (Test-Path -LiteralPath $desktopInstaller -PathType Leaf)) {
         throw "RustDeskTiny installer is missing: $desktopInstaller"
     }
-    Copy-Item -LiteralPath $desktopInstaller -Destination $desktopResource -Force
-    Write-Host "Copied RustDeskTiny installer: $desktopResource"
 } elseif (-not (Test-Path -LiteralPath $desktopResource -PathType Leaf)) {
     throw "RustDeskTiny installer is missing. Pass -RustDeskTinyInstaller or set RUSTDESK_TINY_INSTALLER."
 }
+$desktopInstallerProduct = (Get-Item -LiteralPath $desktopInstaller).VersionInfo.ProductName
+if ($PackageTarget -eq 'windows-win7-x64') {
+    if ($desktopInstallerProduct -ne 'RustDeskTinyLegacy') {
+        throw "windows-win7-x64 requires the RustDeskTinyLegacy installer; got product '$desktopInstallerProduct' from $desktopInstaller"
+    }
+} elseif ($desktopInstallerProduct -eq 'RustDeskTinyLegacy') {
+    throw "$PackageTarget cannot package the Windows 7-only RustDeskTinyLegacy installer"
+}
+$replaceDesktopResource = -not [string]::Equals(
+    [System.IO.Path]::GetFullPath($desktopInstaller),
+    [System.IO.Path]::GetFullPath($desktopResource),
+    [StringComparison]::OrdinalIgnoreCase)
 $previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
 $previousWgFfiDir = $env:P2PREMOTE_WG_FFI_DIR
 $env:P2PREMOTE_CLIENT_VERSION = $buildVersion
 $wgFfiSource = Join-Path $projectRoot '..\p2premote-wg-ffi'
 if (-not (Test-Path -LiteralPath $wgFfiSource -PathType Container)) { throw "p2premote-wg-ffi source directory not found: $wgFfiSource" }
 $env:P2PREMOTE_WG_FFI_DIR = (Resolve-Path -LiteralPath $wgFfiSource).Path
+
+$desktopResourceBackup = $null
+$desktopResourceOriginallyExisted = Test-Path -LiteralPath $desktopResource -PathType Leaf
+if ($replaceDesktopResource) {
+    if ($desktopResourceOriginallyExisted) {
+        $desktopResourceBackup = [System.IO.Path]::GetTempFileName()
+        Copy-Item -LiteralPath $desktopResource -Destination $desktopResourceBackup -Force
+    }
+    Copy-Item -LiteralPath $desktopInstaller -Destination $desktopResource -Force
+    Write-Host "Staged $desktopInstallerProduct installer for $PackageTarget"
+}
+if ($PackageTarget -ne 'windows-x64' -and (Test-Path -LiteralPath $expectedInstallerPath -PathType Leaf)) {
+    Copy-Item -LiteralPath $expectedInstallerPath -Destination $modernInstallerBackup -Force
+}
 
 Push-Location $projectRoot
 try {
@@ -133,6 +155,17 @@ finally {
     Pop-Location
     $env:P2PREMOTE_CLIENT_VERSION = $previousClientVersion
     $env:P2PREMOTE_WG_FFI_DIR = $previousWgFfiDir
+    if ($replaceDesktopResource) {
+        if ($desktopResourceOriginallyExisted) {
+            Copy-Item -LiteralPath $desktopResourceBackup -Destination $desktopResource -Force
+        } elseif (Test-Path -LiteralPath $desktopResource -PathType Leaf) {
+            Remove-Item -LiteralPath $desktopResource -Force
+        }
+        if ($desktopResourceBackup -and (Test-Path -LiteralPath $desktopResourceBackup -PathType Leaf)) {
+            Remove-Item -LiteralPath $desktopResourceBackup -Force
+        }
+        Write-Host "Restored default RustDeskTiny installer resource"
+    }
 }
 if (-not $NoSccache) { & sccache --show-stats }
 

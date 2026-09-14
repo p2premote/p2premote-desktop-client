@@ -1,11 +1,11 @@
 use super::*;
 use crate::tunnel_control::{DesktopControlRequest, TunnelControlMessage, TunnelDesktopCommand};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use uuid::Uuid;
 
 const ENGINE_START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -292,15 +292,9 @@ fn resolve_desktop_executable() -> Result<PathBuf, EngineFailure> {
         return validate_desktop_path(PathBuf::from(path));
     }
     #[cfg(windows)]
-    let path = std::env::current_exe()
+    let resources_dir = std::env::current_exe()
         .ok()
-        .and_then(|path| {
-            path.parent().map(|parent| {
-                parent
-                    .join("RustDeskTiny")
-                    .join("RustDeskTiny.exe")
-            })
-        })
+        .and_then(|path| path.parent().map(Path::to_path_buf))
         .ok_or_else(|| {
             EngineFailure::new(
                 "engine_path_resolution_failed",
@@ -322,12 +316,31 @@ fn resolve_desktop_executable() -> Result<PathBuf, EngineFailure> {
     ));
     #[cfg(windows)]
     {
-        validate_desktop_path(path)
+        resolve_windows_desktop_executable(&resources_dir)
     }
     #[cfg(target_os = "macos")]
     {
         validate_desktop_path(path)
     }
+}
+
+#[cfg(windows)]
+fn resolve_windows_desktop_executable(resources_dir: &Path) -> Result<PathBuf, EngineFailure> {
+    let engine_dir = resources_dir.join("RustDeskTiny");
+    for executable_name in ["RustDeskTiny.exe", "RustDeskTinyLegacy.exe"] {
+        let candidate = engine_dir.join(executable_name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(EngineFailure::new(
+        "desktop_executable_not_found",
+        EngineStage::Configuration,
+        format!(
+            "desktop executable not found: expected RustDeskTiny.exe or RustDeskTinyLegacy.exe under {}",
+            engine_dir.display()
+        ),
+    ))
 }
 
 fn validate_desktop_path(path: PathBuf) -> Result<PathBuf, EngineFailure> {
