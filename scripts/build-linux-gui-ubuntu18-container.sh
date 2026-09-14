@@ -4,7 +4,7 @@ set -euo pipefail
 config="$1"
 repo_dir="$(pwd)"
 cargo_target_dir="${CARGO_TARGET_DIR:-$repo_dir/target/linux-gui-x64}"
-dist_dir="$repo_dir/artifacts/linux-gui-x64"
+dist_dir="$repo_dir/dist/linux-gui-x64"
 export CARGO_TARGET_DIR="$cargo_target_dir"
 wg_ffi_source_dir="../p2premote-wg-ffi"
 [[ -d "$wg_ffi_source_dir" ]] || {

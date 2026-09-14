@@ -70,7 +70,7 @@ if ($SkipBuild) {
 }
 
 $cargoTargetDirectory = Join-Path $projectRoot ("target\{0}" -f $PackageTarget)
-$distDirectory = Join-Path $projectRoot ("artifacts\{0}" -f $PackageTarget)
+$distDirectory = Join-Path $projectRoot ("dist\{0}" -f $PackageTarget)
 $nsisDirectory = Join-Path $cargoTargetDirectory 'release\bundle\nsis'
 $expectedInstallerName = "p2pRemote_${buildVersion}_x64-setup.exe"
 $expectedInstallerPath = Join-Path $nsisDirectory $expectedInstallerName
