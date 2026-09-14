@@ -104,7 +104,7 @@ tar.gz、deb 和 rpm 都把程序、配置、日志及运行数据集中在 `/op
 
 脚本自动完成容器编排：宿主机缺少镜像时先自动 `docker build`（可用 `P2PREMOTE_BUILDER_PROXY=http://<proxy>` 加速工具链下载），然后把整个 p2premote-all 挂载到 `/workspace`，并用命名卷缓存 cargo target/registry、npm 与 Go 模块和构建缓存，重复构建只做增量编译。挂载仓库的属主与容器 root 不同时 git 会拒绝操作，脚本已在容器内自动执行 `git config --global --add safe.directory '*'` 放行。
 
-`P2PREMOTE_SKIP_WEB_BUILD=1 ./scripts/build-linux-headless.sh -v 1.6.4` 仍可用于复用已构建好的 `dist`（在容器内同样生效）：它只跳过前端编译，仍会重新编译 punch、wireguard、Rust service/CLI，并把已有的 `dist` 打入包中。
+`P2PREMOTE_SKIP_WEB_BUILD=1 ./scripts/build-linux-headless.sh -v 1.6.4` 仍可用于复用已构建好的前端 `dist`（在容器内同样生效）：它只跳过前端编译，仍会重新编译 punch、wireguard、Rust service/CLI，并把已有的前端 `dist` 打入包中。最终发布物写入 `build/linux/dist/headless` 和 `build/linux/dist/docker`，与前端临时目录分开。
 
 ## 常用检查
 
