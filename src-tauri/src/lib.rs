@@ -50,23 +50,72 @@ fn launch_windows_rdp(address: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-
-        let current_user = RegKey::predef(HKEY_CURRENT_USER);
-        let (defaults, _) = current_user
-            .create_subkey(r"Software\Microsoft\Terminal Server Client\Default")
-            .map_err(|error| format!("failed to open Remote Desktop history: {error}"))?;
-        defaults
-            .set_value("MRU0", &address)
-            .map_err(|error| format!("failed to prefill Remote Desktop address: {error}"))?;
-        std::process::Command::new("mstsc.exe")
+        let rdp_file = write_editable_rdp_file(address)?;
+        let mut child = std::process::Command::new("mstsc.exe")
+            .arg("/edit")
+            .arg(&rdp_file)
             .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("failed to start Windows Remote Desktop: {error}"))
+            .map_err(|error| format!("failed to start Windows Remote Desktop: {error}"))?;
+
+        // mstsc 退出（或把请求转交给已有实例）后清理仅含目标地址的临时配置。
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            let _ = std::fs::remove_file(rdp_file);
+        });
+        Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
         Err("Windows Remote Desktop is only available on Windows".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn write_editable_rdp_file(address: &str) -> Result<std::path::PathBuf, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let directory = std::env::temp_dir().join("p2premote-rdp");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("failed to create temporary RDP directory: {error}"))?;
+    let path = directory.join(format!("connection-{}-{unique}.rdp", std::process::id()));
+
+    // mstsc 的 .rdp 文件使用 UTF-16LE；/edit 会加载地址但停留在配置窗口。
+    let contents = format!("full address:s:{address}\r\nprompt for credentials:i:1\r\n");
+    let mut bytes = Vec::with_capacity(contents.len() * 2 + 2);
+    bytes.extend_from_slice(&[0xff, 0xfe]);
+    for code_unit in contents.encode_utf16() {
+        bytes.extend_from_slice(&code_unit.to_le_bytes());
+    }
+    std::fs::write(&path, bytes)
+        .map_err(|error| format!("failed to create temporary RDP file: {error}"))?;
+    Ok(path)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod rdp_tests {
+    use super::write_editable_rdp_file;
+
+    #[test]
+    fn editable_rdp_file_contains_the_requested_address() {
+        let path = write_editable_rdp_file("100.99.71.43:3390").unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..2], &[0xff, 0xfe]);
+
+        let contents = String::from_utf16(
+            &bytes[2..]
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(contents.contains("full address:s:100.99.71.43:3390\r\n"));
+        assert!(contents.contains("prompt for credentials:i:1\r\n"));
+
+        std::fs::remove_file(path).unwrap();
     }
 }
 
