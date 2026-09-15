@@ -1,5 +1,6 @@
 <template>
   <div class="remote-connection-page">
+    <div class="remote-task-column">
     <section class="remote-card invite-card fluent-card">
       <div class="card-heading">
         <div>
@@ -78,52 +79,114 @@
         </el-button>
       </el-form>
 
-      <div v-if="verifiedDevice" class="verified-device">
-        <span class="device-dot"></span>
-        <div>
-          <strong>{{ verifiedDevice.device_alias || verifiedDevice.device_name }}</strong>
-          <p>{{ verifiedDevice.device_type }} · {{ verifiedDevice.system_version || $t('common.unknown_system') }}</p>
-        </div>
-      </div>
+    </section>
+    </div>
 
-      <div v-if="activeJob" class="job-status-card" :class="`job-${activeJob.state}`">
-        <div>
-          <strong>{{ activeJobTitle }}</strong>
-          <p>{{ activeJobMessage }}</p>
-        </div>
-        <el-button
-          v-if="activeJob.state === 'running' || activeJob.state === 'waiting'"
-          size="small"
-          @click="cancelActiveTunnelJob"
-        >
-          {{ $t('remote.connect.cancel') }}
-        </el-button>
-      </div>
-
-      <div v-if="activeJob?.state === 'succeeded'" class="tunnel-result-card">
-        <div class="result-header">
-          <div>
-            <span class="result-label">{{ $t('remote.connect.result_label') }}</span>
-            <code v-if="activeTunnelAddress">{{ activeTunnelAddress }}</code>
-            <p v-else>{{ $t('remote.connect.no_address') }}</p>
+    <section class="device-detail-panel fluent-card" aria-live="polite">
+      <template v-if="contextDevice">
+        <div class="detail-header-card">
+          <div class="detail-header-main">
+            <div class="detail-title-row">
+              <div class="device-avatar" :class="contextDevice.status === 'online' ? 'online' : 'offline'">
+                <el-icon><Monitor /></el-icon>
+              </div>
+              <div>
+                <span class="context-label">{{ contextLabel }}</span>
+                <div class="detail-title-line">
+                  <h3>{{ contextDevice.device_alias || contextDevice.device_name }}</h3>
+                  <el-tag v-if="!verifiedDevice" size="small" type="primary">{{ $t('common.current_device') }}</el-tag>
+                  <el-tag type="info" size="small" :class="{ 'device-online-tag': contextDevice.status === 'online' }">
+                    {{ contextDevice.status === 'online' ? $t('devices.detail.online') : $t('devices.detail.offline') }}
+                  </el-tag>
+                </div>
+                <p class="detail-subtitle">{{ contextDevice.device_name }} · {{ contextDevice.device_type }}</p>
+              </div>
+            </div>
           </div>
           <el-button
-            v-if="activeTunnelAddress"
-            size="small"
-            type="primary"
-            plain
-            @click="copyActiveTunnelAddress"
-          >
-            {{ $t('remote.connect.copy_address') }}
-          </el-button>
+            v-if="activeJob && (activeJob.state === 'running' || activeJob.state === 'waiting')"
+            class="disconnect-button"
+            @click="cancelActiveTunnelJob"
+          >{{ $t('remote.connect.cancel') }}</el-button>
         </div>
-        <p class="result-hint">{{ activeTunnelResultHint }}</p>
-        <p v-if="activeJob?.result?.remote_protocol === 'rdp'" class="result-hint">
-          {{ $t('remote.connect.other_tool_hint_prefix') }}
-          <strong>{{ activeTunnelPort }}</strong>
-          {{ $t('remote.connect.other_tool_hint_infix') }}
-          <strong>21118</strong>{{ $t('remote.connect.other_tool_hint_suffix') }}
-        </p>
+
+        <div class="detail-grid">
+          <div class="detail-section action-section">
+            <div class="section-title">{{ $t('devices.detail.connection.section') }}</div>
+            <div class="tunnel-lifecycle-strip" :class="`state-${contextConnectionState}`">
+              <span class="lifecycle-dot"></span>
+              <div>
+                <strong>{{ contextStatusTitle }}</strong>
+                <p>{{ contextStatusDescription }}</p>
+              </div>
+            </div>
+
+            <div v-if="verifiedDevice" class="action-groups">
+              <div class="action-group">
+                <div class="action-group-label">{{ $t('devices.detail.connection.remote_group') }}</div>
+                <div class="action-grid">
+                  <button
+                    type="button"
+                    class="action-tile"
+                    :disabled="activeJob?.state !== 'succeeded' || !activeTunnelAddress"
+                    @click="copyActiveTunnelAddress"
+                  >
+                    <el-icon><CopyDocument /></el-icon>
+                    <span>{{ $t('remote.connect.copy_address') }}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="action-tile"
+                    :disabled="activeJob?.state !== 'succeeded'"
+                    @click="cancelActiveTunnelJob"
+                  >
+                    <el-icon><Close /></el-icon>
+                    <span>{{ $t('devices.detail.connection.disconnect') }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="activeJob?.state === 'succeeded'" class="detail-section result-section">
+            <div class="section-title">{{ $t('remote.connect.result_label') }}</div>
+            <code v-if="activeTunnelAddress" class="connection-address">{{ activeTunnelAddress }}</code>
+            <p v-else class="result-hint">{{ $t('remote.connect.no_address') }}</p>
+            <p class="result-hint">{{ activeTunnelResultHint }}</p>
+            <p v-if="activeJob?.result?.remote_protocol === 'rdp'" class="result-hint">
+              {{ $t('remote.connect.other_tool_hint_prefix') }}
+              <strong>{{ activeTunnelPort }}</strong>
+              {{ $t('remote.connect.other_tool_hint_infix') }}
+              <strong>21118</strong>{{ $t('remote.connect.other_tool_hint_suffix') }}
+            </p>
+          </div>
+
+          <div class="detail-section info-section">
+            <div class="section-title">{{ $t('devices.detail.info.section') }}</div>
+            <div class="info-grid">
+              <div class="info-item">
+                <span class="info-label">{{ $t('devices.detail.info.device_name') }}</span>
+                <span class="info-value">{{ contextDevice.device_name }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">{{ $t('devices.detail.info.device_type') }}</span>
+                <span class="info-value">{{ contextDevice.device_type }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">{{ $t('devices.detail.info.system_version') }}</span>
+                <span class="info-value">{{ contextDevice.system_version || '-' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">{{ $t('devices.detail.info.client_version') }}</span>
+                <span class="info-value">{{ contextDevice.client_version || '-' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <div v-else class="empty-detail">
+        <el-empty :description="$t('remote.invite.device_missing')" />
       </div>
     </section>
 
@@ -136,6 +199,7 @@ import { useI18n } from 'vue-i18n'
 import { invoke, listen, type UnlistenFn } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
+import { Close, CopyDocument, Monitor } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 const { t } = useI18n()
 
@@ -227,6 +291,22 @@ const activeTunnelResultHint = computed(() => activeJob.value?.result?.remote_pr
   : t('remote.connect.result_hint'))
 // 其他工具提示引用地址中的实际端口。
 const activeTunnelPort = computed(() => activeTunnelAddress.value.split(':').pop() || '3389')
+const contextDevice = computed(() => verifiedDevice.value || localDevice.value)
+const contextLabel = computed(() => verifiedDevice.value
+  ? t('remote.context.remote_device')
+  : t('remote.context.local_device'))
+const contextConnectionState = computed(() => {
+  if (!verifiedDevice.value) return 'ready'
+  return activeJob.value?.state || 'running'
+})
+const contextStatusTitle = computed(() => {
+  if (!verifiedDevice.value) return t('remote.context.ready_title')
+  return activeJobTitle.value || t('remote.context.verified_title')
+})
+const contextStatusDescription = computed(() => {
+  if (!verifiedDevice.value) return t('remote.context.ready_description')
+  return activeJobMessage.value || t('remote.context.verified_description')
+})
 
 const inviteInfoPlaceholder = computed(() =>
   `${t('remote.connect.invite_info_placeholder')}\n${t('remote.connect.invite_info_example')}`
@@ -485,9 +565,19 @@ async function cancelActiveTunnelJob() {
   padding: 16px 20px 20px;
   background: var(--fluent-bg);
   display: grid;
-  grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr);
+  grid-template-columns: minmax(340px, 410px) minmax(460px, 1fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.remote-task-column {
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  align-content: start;
+  gap: 16px;
 }
 
 /* 卡片视觉由 .fluent-card 工具类提供，此处仅保留尺寸 */
@@ -495,6 +585,238 @@ async function cancelActiveTunnelJob() {
   min-width: 0;
   padding: 24px;
 }
+
+.device-detail-panel {
+  min-width: 0;
+  min-height: 0;
+  padding: 0 24px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.detail-header-card {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 0 20px;
+  border-bottom: 1px solid var(--fluent-divider);
+  background: color-mix(in srgb, var(--fluent-layer) 94%, transparent);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+.detail-header-main,
+.detail-title-row > div:last-child { min-width: 0; }
+
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.device-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--fluent-radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 24px;
+}
+
+.device-avatar.offline {
+  color: var(--fluent-text-tertiary);
+  background: var(--fluent-layer-hover);
+}
+
+.device-avatar.online {
+  color: var(--status-online);
+  background: var(--status-online-bg);
+}
+
+.context-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--fluent-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.detail-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.detail-title-line h3 {
+  margin: 0;
+  color: var(--fluent-text);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.detail-subtitle {
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--fluent-text-secondary);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-online-tag {
+  --el-tag-text-color: var(--status-online);
+  --el-tag-bg-color: var(--status-online-bg);
+  --el-tag-border-color: color-mix(in srgb, var(--status-online) 36%, transparent);
+}
+
+.disconnect-button:active { transform: scale(0.97); }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.detail-section {
+  padding: 22px 0;
+  border-bottom: 1px solid var(--fluent-divider);
+}
+
+.detail-section:last-child { border-bottom: 0; }
+
+.section-title {
+  margin-bottom: 14px;
+  color: var(--fluent-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.tunnel-lifecycle-strip {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--fluent-stroke);
+  border-left: 4px solid var(--fluent-text-tertiary);
+  border-radius: var(--fluent-radius-md);
+  background: var(--fluent-layer-hover);
+}
+
+.lifecycle-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fluent-text-tertiary);
+}
+
+.tunnel-lifecycle-strip strong { display: block; color: var(--fluent-text); }
+.tunnel-lifecycle-strip p { margin: 3px 0 0; color: var(--fluent-text-secondary); font-size: 13px; }
+.tunnel-lifecycle-strip.state-ready,
+.tunnel-lifecycle-strip.state-succeeded {
+  border-left-color: var(--fluent-success);
+  background: var(--fluent-success-bg);
+}
+.tunnel-lifecycle-strip.state-ready .lifecycle-dot,
+.tunnel-lifecycle-strip.state-succeeded .lifecycle-dot { background: var(--fluent-success); }
+.tunnel-lifecycle-strip.state-running {
+  border-left-color: var(--fluent-accent);
+  background: var(--fluent-info-bg);
+}
+.tunnel-lifecycle-strip.state-running .lifecycle-dot { background: var(--fluent-accent); }
+.tunnel-lifecycle-strip.state-waiting {
+  border-left-color: var(--fluent-warning);
+  background: var(--fluent-warning-bg);
+}
+.tunnel-lifecycle-strip.state-waiting .lifecycle-dot { background: var(--fluent-warning); }
+.tunnel-lifecycle-strip.state-failed,
+.tunnel-lifecycle-strip.state-cancelled { border-left-color: var(--fluent-danger); }
+
+.action-groups,
+.action-group { display: grid; gap: 8px; }
+
+.action-group-label {
+  color: var(--fluent-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.action-tile {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--fluent-stroke);
+  border-radius: var(--fluent-radius-md);
+  background: var(--fluent-layer);
+  color: var(--fluent-text);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  transition: transform 100ms ease-out, background-color 160ms ease-out, border-color 160ms ease-out;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .action-tile:hover:not(:disabled) {
+    border-color: var(--fluent-stroke-strong);
+    background: var(--fluent-layer-hover);
+  }
+}
+
+.action-tile:active:not(:disabled) { transform: scale(0.97); }
+.action-tile:disabled { cursor: not-allowed; opacity: 0.45; }
+.action-tile .el-icon { flex-shrink: 0; font-size: 20px; }
+.action-tile span { min-width: 0; font-size: 14px; font-weight: 600; }
+
+.connection-address {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  overflow: hidden;
+  border-radius: var(--fluent-radius-sm);
+  background: var(--fluent-layer-hover);
+  color: var(--fluent-text);
+  text-overflow: ellipsis;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 32px;
+  border-top: 1px solid var(--fluent-divider);
+}
+
+.info-item {
+  min-width: 0;
+  min-height: 62px;
+  padding: 12px 2px 10px;
+  border-bottom: 1px solid var(--fluent-divider);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.info-label { color: var(--fluent-text-secondary); font-size: 12px; letter-spacing: 0.04em; }
+.info-value { color: var(--fluent-text); font-size: 15px; overflow-wrap: anywhere; }
+.empty-detail { min-height: 320px; display: flex; align-items: center; justify-content: center; }
 
 .card-heading {
   display: flex;
@@ -709,6 +1031,14 @@ async function cancelActiveTunnelJob() {
 @media (max-width: 1100px) {
   .remote-connection-page {
     grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .remote-task-column { overflow: visible; }
+
+  .device-detail-panel {
+    min-height: 440px;
+    overflow: visible;
   }
 }
 
@@ -724,6 +1054,26 @@ async function cancelActiveTunnelJob() {
 
   .result-header {
     flex-direction: column;
+  }
+
+  .detail-header-card {
+    position: static;
+    align-items: flex-start;
+  }
+
+  .info-grid,
+  .action-grid { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action-tile,
+  .disconnect-button { transition: none; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .detail-header-card {
+    background: var(--fluent-layer);
+    backdrop-filter: none;
   }
 }
 </style>

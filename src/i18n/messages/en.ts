@@ -427,6 +427,14 @@ const en = {
   },
 
   remote: {
+    context: {
+      local_device: 'This device · Waiting for assistance',
+      remote_device: 'Remote device',
+      ready_title: 'Ready to receive remote assistance',
+      ready_description: 'Send the invitation on the left to someone you trust. A connection can start after verification.',
+      verified_title: 'Remote device verified',
+      verified_description: 'Waiting for the background service to report the connection status.',
+    },
     invite: {
       title: 'Invite someone to assist you',
       device_code_label: 'Device code',

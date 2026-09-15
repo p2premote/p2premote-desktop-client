@@ -449,6 +449,14 @@ export default {
 
   // ============ 远程协助（RemoteConnection.vue） ============
   remote: {
+    context: {
+      local_device: '本机设备 · 等待协助',
+      remote_device: '远程设备',
+      ready_title: '已准备好接受远程协助',
+      ready_description: '将左侧邀请信息发送给可信任的人，对方验证后即可建立连接。',
+      verified_title: '对方设备已验证',
+      verified_description: '正在等待后台服务返回连接状态。',
+    },
     invite: {
       title: '邀请对方远程协助',
       device_code_label: '设备代码',
