@@ -30,9 +30,8 @@
             }"
             @click="selectDevice(device)"
           >
-            <span class="device-state-mark" :class="deviceConnectionState(device)" aria-hidden="true">
-              <el-icon v-if="isTunnelConnected(device)" class="device-tunnel-icon"><Link /></el-icon>
-              <span v-else class="device-status-dot" :class="deviceConnectionState(device)" />
+            <span class="device-list-platform">
+              <DevicePlatformIcon :device="device" :tone="deviceConnectionState(device)" />
             </span>
             <div class="device-list-main">
               <div class="device-list-title-row">
@@ -62,7 +61,7 @@
             <div class="detail-header-main">
               <div class="detail-title-row">
                 <div class="device-avatar" :class="deviceConnectionState(selectedDevice)">
-                  <DevicePlatformIcon :device="selectedDevice" />
+                  <DevicePlatformIcon :device="selectedDevice" :tone="deviceConnectionState(selectedDevice)" />
                 </div>
                 <div>
                   <div class="detail-title-line">
@@ -1325,8 +1324,8 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 .device-list-item {
   width: 100%;
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 10px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: 10px;
   align-items: start;
   text-align: left;
   padding: 12px 12px 11px;
@@ -1346,50 +1345,15 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   background: var(--fluent-accent-light);
 }
 
-.device-state-mark {
-  width: 20px;
-  height: 20px;
-  margin-top: 2px;
+.device-list-platform {
+  width: 24px;
+  height: 24px;
+  margin-top: 1px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 20px;
-}
-
-.device-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.035);
-}
-
-/* 离线：灰 */
-.device-status-dot.offline {
-  background: var(--fluent-text-tertiary);
-}
-
-/* 在线空闲：蓝（设备可达，但尚未建立隧道） */
-.device-status-dot.online {
-  background: var(--status-online);
-}
-
-/* 连接中/重连中：橙 + 脉冲扩散 */
-.device-status-dot.connecting {
-  background: #f59e0b;
-  animation: device-status-pulse 1.5s var(--fluent-easing) infinite;
-}
-
-/* 已连接：图标、文字标签与容器层级共同表达，不依赖相近的状态色。 */
-.device-tunnel-icon {
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 7px;
-  color: #fff;
-  background: var(--fluent-success);
-  box-shadow: 0 2px 5px color-mix(in srgb, var(--fluent-success) 26%, transparent);
+  font-size: 21px;
+  line-height: 1;
 }
 
 .device-tunnel-badge {
@@ -1413,18 +1377,8 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   font-size: 12px;
 }
 
-@keyframes device-status-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45);
-  }
-  50% {
-    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .device-status-dot.connecting {
+  .device-list-platform :deep(.tone-connecting) {
     animation: none;
   }
 }

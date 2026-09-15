@@ -1,5 +1,5 @@
 <template>
-  <span class="platform-icon" :class="`platform-${platform}`" role="img" :aria-label="label" :title="label">
+  <span class="platform-icon" :class="[`platform-${platform}`, tone ? `tone-${tone}` : '']" role="img" :aria-label="label" :title="label">
     <svg v-if="platform === 'windows-11'" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 3h8v8H3V3Zm10 0h8v8h-8V3ZM3 13h8v8H3v-8Zm10 0h8v8h-8v-8Z" />
     </svg>
@@ -17,10 +17,10 @@
       <circle cx="4.2" cy="12" r="2.2" /><circle cx="17.6" cy="5.4" r="2.2" /><circle cx="17.6" cy="18.6" r="2.2" />
     </svg>
     <svg v-else-if="platform === 'android'" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m7.2 7.2-1.5-2.6.9-.5 1.6 2.7A8 8 0 0 1 12 6c1.4 0 2.7.3 3.8.8l1.6-2.7.9.5-1.5 2.6A6.1 6.1 0 0 1 19 12H5a6.1 6.1 0 0 1 2.2-4.8ZM5 13h14v6.5c0 .8-.7 1.5-1.5 1.5h-11c-.8 0-1.5-.7-1.5-1.5V13Zm3.3-3.2a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm7.4 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" />
+      <path d="m17.6 9.48 1.84-3.18c.16-.31.04-.69-.26-.85a.637.637 0 0 0-.83.22l-1.88 3.24a11.46 11.46 0 0 0-8.94 0L5.65 5.67a.643.643 0 0 0-.87-.2c-.28.18-.37.54-.22.83L6.4 9.48A10.78 10.78 0 0 0 1 18h22a10.78 10.78 0 0 0-5.4-8.52M7 15.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5m10 0a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5" />
     </svg>
-    <svg v-else-if="platform === 'kylin'" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M5 3h3v7.2L15.8 3H20l-8.6 8.2L20.5 21h-4.3L8 12.3V21H5V3Z" />
+    <svg v-else-if="platform === 'kylin'" viewBox="0 0 16.7 16.7" aria-hidden="true">
+      <path d="M7.94.07 5.81 2.25l-.54-.06-.44 1.77 2.22-1.17-.49-2.03.89-2.72M4.83 3.96l1.35 1.56 1.36-.69L5.81 2.25 3.89 2.96l.42 3.75L2.14 4.03l-.89 1.82L.03 7.93l1.15 2.84.37 2.24-.77.92-.81.98h2.21l.28-1.99.89-1.36 1.48.25 1.64-.65 1.21-.62 1.18.79-1.42 1.69-1.45 1.37 2.28.03.01-.93 1.73-1.37.63.8-1.82 2.59 2.32.01-.08-1.3 1.66-1.57-.85-1.72-.1-2.12 1.7-1 .96.2 1.31-.49.37-2.63-2.04.6-1.24 1.86-2.09 1.11-2.92-1.18-2.13-1.58 1.39-1.95-.49-2.04-2.71.87-2.72M2.05 6.32v2.13l3.13.63-.87-2.37-2.26-.39m3.13 2.76-.37 1.83 3.48-.73-.01-1.82-3.1.72m3.1 1.1 2.3.94.61-1.57-2.91.63m2.91-.63 1.02.35 1.07-1.46-2.09 1.11m2.09-1.11.63.46.61-2.32-1.24 1.86" />
     </svg>
     <svg v-else-if="platform === 'uos'" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M4 4h3.3v9.7c0 2.8 1.7 4.3 4.7 4.3s4.7-1.5 4.7-4.3V4H20v9.9c0 4.8-3 7.5-8 7.5s-8-2.7-8-7.5V4Z" />
@@ -42,7 +42,10 @@
 import { computed } from 'vue'
 import { detectDevicePlatform, devicePlatformLabel, type DevicePlatformSource } from '../utils/devicePlatform'
 
-const props = defineProps<{ device: DevicePlatformSource | null }>()
+const props = defineProps<{
+  device: DevicePlatformSource | null
+  tone?: 'offline' | 'online' | 'connecting' | 'connected'
+}>()
 const platform = computed(() => detectDevicePlatform(props.device))
 const label = computed(() => devicePlatformLabel(platform.value))
 </script>
@@ -57,4 +60,17 @@ const label = computed(() => devicePlatformLabel(platform.value))
 .platform-linux { color: currentColor; }
 .platform-linux .cutout { fill: var(--platform-icon-cutout, #fff); }
 .platform-linux .accent { fill: #f4b400; }
+.platform-icon.tone-offline { color: var(--fluent-text-tertiary); }
+.platform-icon.tone-online,
+.platform-icon.tone-connected { color: var(--status-online); }
+.platform-icon.tone-connecting {
+  color: #f59e0b;
+  animation: platform-status-pulse 1.5s var(--fluent-easing) infinite;
+}
+.platform-icon[class*='tone-'] .accent { fill: currentColor; }
+
+@keyframes platform-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.52; }
+}
 </style>
