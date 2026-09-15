@@ -328,6 +328,8 @@ const en = {
       auto_tunnel_started: 'Connecting to the other computer. This may take 10–300 seconds. Please watch for a notification.',
       preflight_failed_title: 'Unable to start tunnel establishment',
       preflight_failed_body: 'A preparation step failed before hole punching: {error}',
+      windows_rdp_disabled: 'Remote Desktop is not enabled on the peer device. Enable it in the peer device settings.',
+      windows_home_rdp_disabled: 'The peer device runs Windows Home. Upgrade Windows or search for the rdpwrap patch to enable Remote Desktop.',
       android_passive_unsupported: 'Android devices currently support initiating tunnels only and cannot accept passive connections',
       auto_tunnel_cancelled: 'Automatic tunnel establishment cancelled',
       auto_tunnel_cancel_failed: 'Failed to cancel automatic tunnel establishment: {error}',

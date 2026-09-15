@@ -733,6 +733,24 @@ function isWindowsDevice(device: DeviceInfo | null): boolean {
   return text.includes('windows') || /(^|\s)win(?:32|64|dows)?(?:\s|$)/.test(text)
 }
 
+function isWindowsHomeEdition(device: DeviceInfo | null): boolean {
+  if (!device) return false
+  const version = (device.system_version || '').toLocaleLowerCase()
+  return /(?:^|\s)home(?:\s|$)/.test(version) || version.includes('家庭版')
+}
+
+function isRdpEnabled(device: DeviceInfo): boolean {
+  return device.remote_access?.enabled ?? device.rdp_enabled
+}
+
+function warnIfWindowsRdpUnavailable(device: DeviceInfo): boolean {
+  if (!isWindowsDevice(device) || isRdpEnabled(device)) return false
+  ElMessage.warning(t(isWindowsHomeEdition(device)
+    ? 'devices.message.windows_home_rdp_disabled'
+    : 'devices.message.windows_rdp_disabled'))
+  return true
+}
+
 function isMacOSDevice(device: DeviceInfo | null): boolean {
   if (!device) return false
   const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
@@ -1018,6 +1036,7 @@ function openTunnelAction(device: DeviceInfo) {
     ElMessage.error(t('devices.message.android_passive_unsupported'))
     return
   }
+  if (warnIfWindowsRdpUnavailable(device)) return
   void startTunnelSilently(device)
 }
 
