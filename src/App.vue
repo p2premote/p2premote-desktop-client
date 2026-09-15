@@ -85,6 +85,17 @@
           <div class="header-left">
             <AppLogo :size="24" style="vertical-align: middle; margin-right: 6px;" />
             <span class="app-title">p2pRemote</span>
+            <Transition name="connection-status">
+              <span
+                v-if="!isOnline"
+                class="connection-status"
+                role="status"
+                aria-live="polite"
+              >
+                <span class="connection-status-dot" aria-hidden="true"></span>
+                {{ $t('app.connection.offline') }}
+              </span>
+            </Transition>
           </div>
           <div class="header-actions no-drag">
             <el-popover placement="bottom-end" :width="300" trigger="click" transition="settings-popover">
@@ -443,6 +454,12 @@ const localeModel = computed({
   set: (val) => { void setLocale(val) },
 })
 const epLocale = computed(() => (locale.value === 'en' ? elEn : elZhCn))
+
+const isOnline = ref(navigator.onLine)
+
+function updateOnlineStatus() {
+  isOnline.value = navigator.onLine
+}
 
 type ThemeMode = 'system' | 'light' | 'dark'
 const storedTheme = localStorage.getItem('p2premote-theme')
@@ -1752,6 +1769,8 @@ onMounted(async () => {
   window.addEventListener('resize', closeTextContextMenu)
   window.addEventListener('scroll', closeTextContextMenu, true)
   window.addEventListener('p2premote-web-auth-required', requireWebAuthentication)
+  window.addEventListener('online', updateOnlineStatus)
+  window.addEventListener('offline', updateOnlineStatus)
 
   await refreshWebAuthStatus()
   if (!webAuthGateVisible.value) await bootstrapApp()
@@ -1765,6 +1784,8 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', handleActiveTunnelJobForeground)
   document.removeEventListener('contextmenu', handleAppContextMenu)
   window.removeEventListener('p2premote-web-auth-required', requireWebAuthentication)
+  window.removeEventListener('online', updateOnlineStatus)
+  window.removeEventListener('offline', updateOnlineStatus)
   document.removeEventListener('mousedown', closeTextContextMenu)
   document.removeEventListener('keydown', handleSelectAllShortcut)
   window.removeEventListener('blur', closeTextContextMenu)
@@ -2073,6 +2094,39 @@ watch(
   font-size: 14px;
   font-weight: 600;
   color: var(--fluent-text);
+}
+
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--el-color-danger) 28%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
+  color: var(--el-color-danger);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.connection-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.connection-status-enter-active,
+.connection-status-leave-active {
+  transition: opacity 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.connection-status-enter-from,
+.connection-status-leave-to {
+  opacity: 0;
 }
 
 .header-actions {

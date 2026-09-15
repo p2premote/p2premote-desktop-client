@@ -31,6 +31,9 @@ const en = {
 
   app: {
     title: 'P2P Remote',
+    connection: {
+      offline: 'Offline',
+    },
     web_auth: {
       prompt: 'Enter the Web security code to open the management interface',
       initial_code_hint: 'The initial security code is 0000',

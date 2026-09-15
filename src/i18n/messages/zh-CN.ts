@@ -34,6 +34,9 @@ export default {
   // ============ 应用框架（App.vue） ============
   app: {
     title: 'P2P Remote',
+    connection: {
+      offline: '已离线',
+    },
     web_auth: {
       prompt: '请输入 Web 安全码后进入管理界面',
       initial_code_hint: '初始安全码为 0000',
