@@ -377,31 +377,6 @@ fn copy_desktop_engine_into_resources() {
     }
 }
 
-fn copy_directory(source: &Path, target: &Path) {
-    fs::create_dir_all(target)
-        .unwrap_or_else(|err| panic!("failed to create {}: {}", target.display(), err));
-    for entry in fs::read_dir(source)
-        .unwrap_or_else(|err| panic!("failed to read {}: {}", source.display(), err))
-    {
-        let entry = entry.unwrap_or_else(|err| panic!("failed to read directory entry: {err}"));
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        if source_path.is_dir() {
-            copy_directory(&source_path, &target_path);
-        } else {
-            println!("cargo:rerun-if-changed={}", source_path.display());
-            fs::copy(&source_path, &target_path).unwrap_or_else(|err| {
-                panic!(
-                    "failed to copy {} to {}: {}",
-                    source_path.display(),
-                    target_path.display(),
-                    err
-                )
-            });
-        }
-    }
-}
-
 fn ensure_executable(path: &Path) {
     #[cfg(unix)]
     {

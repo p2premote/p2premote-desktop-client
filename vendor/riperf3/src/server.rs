@@ -2355,7 +2355,6 @@ impl ServerBuilder {
     /// (`--server-bitrate-limit 1G`; decimal, 1000-based).
     pub fn server_bitrate_limit_str(self, s: &str) -> std::result::Result<Self, ConfigError> {
         // A bitrate limit is a rate: decimal (1000-based) suffixes, like iperf3 (#56).
-        use crate::utils::parse_rate;
         Ok(self.server_bitrate_limit(parse_rate(s)?))
     }
 

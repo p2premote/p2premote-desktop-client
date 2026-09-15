@@ -126,7 +126,7 @@ pub fn check_credentials(
     // Compute password hash: sha256("{username}{password}")
     let salted = format!("{{{username}}}{password}");
     let digest = Sha256::digest(salted.as_bytes());
-    let hash = hex::encode(digest.as_slice());
+    let hash = hex::encode(&digest);
 
     // Read and search the authorized users file
     let content = std::fs::read_to_string(users_file)

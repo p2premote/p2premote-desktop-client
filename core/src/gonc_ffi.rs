@@ -881,6 +881,7 @@ impl ExchangeMode {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg(target_os = "macos")]
 struct ExchangeRequest {
     token: String,
     exmode: i32,
@@ -890,6 +891,7 @@ struct ExchangeRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg(target_os = "macos")]
 struct ExchangeResponse {
     ok: bool,
     #[serde(default)]
