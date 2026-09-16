@@ -696,19 +696,23 @@ pub async fn stop_service_active_tunnel(
 #[tauri::command]
 pub async fn start_service_desktop_session(
     peer_device_id: i64,
+    rustdesk_tiny_port: Option<u16>,
 ) -> Result<serde_json::Value, String> {
     let started = std::time::Instant::now();
     info!(
         peer_device_id,
         "[Desktop] GUI requested desktop session start"
     );
-    let response = send_command_responsive(Data::StartDesktopSession { peer_device_id })
-        .await
-        .map_err(|error_message| {
-            error!(peer_device_id, elapsed_ms = started.elapsed().as_millis(), error = %error_message,
+    let response = send_command_responsive(Data::StartDesktopSession {
+        peer_device_id,
+        rustdesk_tiny_port,
+    })
+    .await
+    .map_err(|error_message| {
+        error!(peer_device_id, elapsed_ms = started.elapsed().as_millis(), error = %error_message,
                 "[Desktop] service IPC request failed");
-            error_message
-        })?;
+        error_message
+    })?;
     let result = match response {
         Data::CommandResponse {
             ok: true,

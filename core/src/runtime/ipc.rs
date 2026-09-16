@@ -416,13 +416,21 @@ pub(super) async fn handle_data(
         Data::StopActiveTunnelJob { target_device_id } => {
             stop_active_tunnel_job(shared, target_device_id)
         }
-        Data::StartDesktopSession { peer_device_id } => {
+        Data::StartDesktopSession {
+            peer_device_id,
+            rustdesk_tiny_port,
+        } => {
             let started = Instant::now();
             info!(
                 peer_device_id,
                 "[Desktop] service received StartDesktopSession"
             );
-            let result = desktop_engine::start_active_desktop_session(shared, peer_device_id).await;
+            let result = desktop_engine::start_active_desktop_session(
+                shared,
+                peer_device_id,
+                rustdesk_tiny_port,
+            )
+            .await;
             match &result {
                 Ok(_) => info!(
                     peer_device_id,

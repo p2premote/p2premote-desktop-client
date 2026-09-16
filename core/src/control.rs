@@ -65,6 +65,9 @@ pub enum Data {
     },
     StartDesktopSession {
         peer_device_id: i64,
+        /// Optional per-device connection target. This never changes RustDeskTiny's listener.
+        #[serde(default)]
+        rustdesk_tiny_port: Option<u16>,
     },
     StopDesktopSession {
         peer_device_id: i64,

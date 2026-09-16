@@ -1207,7 +1207,12 @@ async function launchP2pRemoteDesktop(device: DeviceInfo) {
     return
   }
   try {
-    await invoke('start_service_desktop_session', { peerDeviceId: device.device_id })
+    await invoke('start_service_desktop_session', {
+      peerDeviceId: device.device_id,
+      // Reserved for a future per-device hint. It changes only the connection target and never
+      // writes RustDeskTiny's listener configuration.
+      rustdeskTinyPort: null,
+    })
     ElMessage.success(t('devices.message.desktop_window_started'))
   } catch (e) {
     const msg = typeof e === 'string' ? e : (e as any)?.message || t('common.unknown_error')

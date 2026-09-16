@@ -360,7 +360,11 @@ async fn main() -> Result<()> {
             command: DesktopCommands::Start { peer_device_id },
         } => {
             print_command_response(
-                send_service_command(Data::StartDesktopSession { peer_device_id }).await?,
+                send_service_command(Data::StartDesktopSession {
+                    peer_device_id,
+                    rustdesk_tiny_port: None,
+                })
+                .await?,
             )?;
         }
         Commands::Desktop {

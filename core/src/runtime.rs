@@ -41,7 +41,6 @@ use crate::p2p::{
 };
 use crate::speed_test::TunnelSpeedTestCommand;
 use crate::subnet_router;
-use crate::tunnel_control::{TunnelControlMessage, TunnelDesktopCommand};
 use crate::ws::{ServiceWsClient, WsEvent};
 use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
@@ -107,7 +106,6 @@ struct WgvpnHealthControl {
     generation: u64,
     stop_tx: watch::Sender<bool>,
     speed_tx: mpsc::UnboundedSender<TunnelSpeedTestCommand>,
-    desktop_tx: mpsc::UnboundedSender<TunnelDesktopCommand>,
     /// 测速是否正在进行（true 时拒绝新请求，避免在 health loop 里堆积串行）。
     speed_test_busy: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -170,7 +168,6 @@ pub(super) struct SharedRuntimeState {
     ws_client: Option<ServiceWsClient>,
     p2p_attempt_waiters: HashMap<String, mpsc::UnboundedSender<P2PAttemptEvent>>,
     passive_p2p_attempts: HashMap<i64, PassiveP2PAttempt>,
-    desktop_engine_starting: HashMap<i64, String>,
     /// Current in-memory account identity used to classify inbound attempts.
     current_user_id: Option<i64>,
     /// At most one temporary inbound approval can exist on a passive endpoint.
@@ -587,29 +584,20 @@ pub async fn run_service_foreground() -> Result<()> {
         }
         Ok(())
     });
-    let desktop_shared = shared.clone();
-    let desktop_handler = Arc::new(move |peer_device_id, message| {
-        let shared = desktop_shared.clone();
-        Box::pin(async move {
-            desktop_engine::handle_tunnel_desktop_request(&shared, peer_device_id, message).await
-        })
-            as std::pin::Pin<Box<dyn std::future::Future<Output = TunnelControlMessage> + Send>>
-    });
     runtime_trace("before health server bind");
-    let health_server =
-        match spawn_health_server(health_handler, peer_validator, desktop_handler).await {
-            Ok(handle) => {
-                runtime_trace("health server bind succeeded");
-                let handle = Arc::new(handle);
-                shared.lock().health_server_handle = Some(handle.clone());
-                Some(handle)
-            }
-            Err(err) => {
-                runtime_trace(&format!("health server bind failed: {}", err));
-                warn!("[ServiceRuntime] health server start failed: {}", err);
-                None
-            }
-        };
+    let health_server = match spawn_health_server(health_handler, peer_validator).await {
+        Ok(handle) => {
+            runtime_trace("health server bind succeeded");
+            let handle = Arc::new(handle);
+            shared.lock().health_server_handle = Some(handle.clone());
+            Some(handle)
+        }
+        Err(err) => {
+            runtime_trace(&format!("health server bind failed: {}", err));
+            warn!("[ServiceRuntime] health server start failed: {}", err);
+            None
+        }
+    };
     runtime_trace("after health server setup");
     let ws_client = ServiceWsClient::new();
     runtime_trace("ws client created");
@@ -1448,14 +1436,12 @@ mod tests {
         let shared = Arc::new(Mutex::new(SharedRuntimeState::default()));
         let (stop_tx, _stop_rx) = watch::channel(false);
         let (speed_tx, _speed_rx) = mpsc::unbounded_channel();
-        let (desktop_tx, _desktop_rx) = mpsc::unbounded_channel();
         shared.lock().wgvpn_health_controls.insert(
             29,
             WgvpnHealthControl {
                 generation: 2,
                 stop_tx,
                 speed_tx,
-                desktop_tx,
                 speed_test_busy: Arc::new(AtomicBool::new(false)),
             },
         );
@@ -1553,14 +1539,12 @@ mod tests {
         let mut state = SharedRuntimeState::default();
         let (stop_tx, _stop_rx) = watch::channel(false);
         let (speed_tx, _speed_rx) = mpsc::unbounded_channel();
-        let (desktop_tx, _desktop_rx) = mpsc::unbounded_channel();
         state.wgvpn_health_controls.insert(
             29,
             WgvpnHealthControl {
                 generation: 4,
                 stop_tx,
                 speed_tx,
-                desktop_tx,
                 speed_test_busy: Arc::new(AtomicBool::new(false)),
             },
         );

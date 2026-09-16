@@ -7,10 +7,23 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
 use tokio_util::codec::Framed;
 
-pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 5;
+pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 3;
+
+/// 最低可互连的协议版本。
+pub const TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT: u16 = 3;
+
+/// 最高可互连的协议版本（已发布版本上界）。Hello/心跳/测速消息在
+/// v3→v5 间结构一致（差异仅为 DesktopStart 的 session_secret 增删与
+/// 新增消息类型）；旧端对未知消息 tag 的解析失败只会断开该条控制
+/// 连接，不影响既有消息互通，因此按范围兼容而不强制相等。
+pub const TUNNEL_CONTROL_PROTOCOL_MAX_COMPAT: u16 = 5;
+
+/// 对端 Hello/HelloAck 的版本是否可接受：不再强制与本端相等。
+pub fn protocol_version_supported(version: u16) -> bool {
+    (TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT..=TUNNEL_CONTROL_PROTOCOL_MAX_COMPAT).contains(&version)
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", content = "c")]
@@ -66,68 +79,9 @@ pub enum TunnelControlMessage {
         request_id: u64,
         message: String,
     },
-    DesktopStart {
-        attempt_id: String,
-        port: u16,
-    },
-    DesktopReady {
-        attempt_id: String,
-    },
-    DesktopFailed {
-        attempt_id: String,
-        error_code: String,
-        message: String,
-    },
-    DesktopStop {
-        attempt_id: String,
-        reason: String,
-    },
-    DesktopStopped {
-        attempt_id: String,
-    },
     Stop {
         reason: String,
     },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum DesktopControlRequest {
-    Start {
-        attempt_id: String,
-        port: u16,
-    },
-    Stop {
-        attempt_id: String,
-        reason: String,
-    },
-}
-
-impl DesktopControlRequest {
-    pub fn attempt_id(&self) -> &str {
-        match self {
-            Self::Start { attempt_id, .. } | Self::Stop { attempt_id, .. } => attempt_id,
-        }
-    }
-
-    pub fn into_message(self) -> TunnelControlMessage {
-        match self {
-            Self::Start {
-                attempt_id,
-                port,
-            } => TunnelControlMessage::DesktopStart {
-                attempt_id,
-                port,
-            },
-            Self::Stop { attempt_id, reason } => {
-                TunnelControlMessage::DesktopStop { attempt_id, reason }
-            }
-        }
-    }
-}
-
-pub struct TunnelDesktopCommand {
-    pub request: DesktopControlRequest,
-    pub response: oneshot::Sender<Result<TunnelControlMessage, String>>,
 }
 
 pub struct TunnelControlConnection<T> {
@@ -212,37 +166,6 @@ mod tests {
         let result_decoded: TunnelControlMessage =
             serde_json::from_slice(&result_json).expect("decode speed result");
         assert_eq!(result_decoded, result);
-    }
-
-    #[test]
-    fn desktop_control_messages_roundtrip() {
-        let messages = [
-            TunnelControlMessage::DesktopStart {
-                attempt_id: "attempt-1".into(),
-                port: 39090,
-            },
-            TunnelControlMessage::DesktopReady {
-                attempt_id: "attempt-1".into(),
-            },
-            TunnelControlMessage::DesktopFailed {
-                attempt_id: "attempt-1".into(),
-                error_code: "engine_not_found".into(),
-                message: "missing engine".into(),
-            },
-            TunnelControlMessage::DesktopStop {
-                attempt_id: "attempt-1".into(),
-                reason: "user_requested".into(),
-            },
-            TunnelControlMessage::DesktopStopped {
-                attempt_id: "attempt-1".into(),
-            },
-        ];
-        for message in messages {
-            let encoded = serde_json::to_vec(&message).expect("serialize desktop control");
-            let decoded: TunnelControlMessage =
-                serde_json::from_slice(&encoded).expect("decode desktop control");
-            assert_eq!(decoded, message);
-        }
     }
 
     #[tokio::test]

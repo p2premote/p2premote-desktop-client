@@ -8,7 +8,7 @@ use crate::speed_test::{
     TunnelSpeedTestCommand, TunnelSpeedTestResult, SPEED_TEST_PORT, SPEED_TEST_RUN_TIMEOUT_SECS,
 };
 use crate::tunnel_control::{
-    now_millis, TunnelControlConnection, TunnelControlMessage, TunnelDesktopCommand,
+    now_millis, protocol_version_supported, TunnelControlConnection, TunnelControlMessage,
     TUNNEL_CONTROL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Default)]
@@ -254,7 +254,6 @@ pub async fn wgvpn_health_monitor_loop(
     health_addr: String,
     mut stop_rx: watch::Receiver<bool>,
     mut speed_rx: mpsc::UnboundedReceiver<TunnelSpeedTestCommand>,
-    mut desktop_rx: mpsc::UnboundedReceiver<TunnelDesktopCommand>,
     speed_test_busy: Arc<std::sync::atomic::AtomicBool>,
     event_handler: TunnelHealthEventHandler,
 ) -> Result<()> {
@@ -279,7 +278,6 @@ pub async fn wgvpn_health_monitor_loop(
                 &health_addr,
                 &mut stop_rx,
                 &mut speed_rx,
-                &mut desktop_rx,
                 &speed_test_busy,
                 Some(&session_handler),
             )
@@ -328,7 +326,6 @@ async fn active_health_session(
     health_addr: &str,
     stop_rx: &mut watch::Receiver<bool>,
     speed_rx: &mut mpsc::UnboundedReceiver<TunnelSpeedTestCommand>,
-    desktop_rx: &mut mpsc::UnboundedReceiver<TunnelDesktopCommand>,
     speed_test_busy: &Arc<std::sync::atomic::AtomicBool>,
     event_handler: Option<&TunnelHealthEventHandler>,
 ) -> Result<()> {
@@ -357,7 +354,7 @@ async fn active_health_session(
             ok: true,
             protocol_version,
             ..
-        }) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => {}
+        }) if protocol_version_supported(protocol_version) => {}
         Some(TunnelControlMessage::HelloAck {
             ok: false,
             protocol_version,
@@ -381,10 +378,6 @@ async fn active_health_session(
     };
 
     let mut reported_rtt_ms = None;
-    let mut pending_desktop: Option<(
-        String,
-        oneshot::Sender<Result<TunnelControlMessage, String>>,
-    )> = None;
     let mut pending_ping: Option<(i64, std::time::Instant)> = None;
     let mut pending_local_speed: Option<TunnelSpeedTestCommand> = None;
     let mut pending_remote_speed: Option<u64> = None;
@@ -417,21 +410,6 @@ async fn active_health_session(
                     }
                 }
             }
-            request = desktop_rx.recv() => {
-                let Some(request) = request else {
-                    return Err(anyhow!("desktop control command channel closed"));
-                };
-                if pending_desktop.is_some() {
-                    let _ = request.response.send(Err("desktop_control_request_in_progress".to_string()));
-                    continue;
-                }
-                let attempt_id = request.request.attempt_id().to_owned();
-                if let Err(error) = conn.send(&request.request.into_message()).await {
-                    let _ = request.response.send(Err(format!("desktop_control_send_failed: {error}")));
-                    return Err(error.context("desktop control send failed"));
-                }
-                pending_desktop = Some((attempt_id, request.response));
-            }
             message = conn.next() => {
                 match message.context("failed to read health control message")? {
                     Some(TunnelControlMessage::SpeedTestRequest { request_id }) => {
@@ -449,37 +427,6 @@ async fn active_health_session(
                             if let Some(handler) = event_handler {
                                 handler(TunnelHealthEvent::HeartbeatSucceeded { latency_ms: None });
                             }
-                        }
-                    }
-                    Some(message @ (TunnelControlMessage::DesktopReady { .. }
-                        | TunnelControlMessage::DesktopFailed { .. }
-                        | TunnelControlMessage::DesktopStopped { .. })) => {
-                        let response_attempt_id = match &message {
-                            TunnelControlMessage::DesktopReady { attempt_id }
-                            | TunnelControlMessage::DesktopFailed { attempt_id, .. }
-                            | TunnelControlMessage::DesktopStopped { attempt_id } => attempt_id,
-                            _ => unreachable!(),
-                        };
-                        match pending_desktop.take() {
-                            Some((pending_id, response)) if pending_id == *response_attempt_id => {
-                                let response_was_dropped = response.send(Ok(message.clone())).is_err();
-                                if response_was_dropped {
-                                    if let TunnelControlMessage::DesktopReady { attempt_id } = message {
-                                        conn.send(&TunnelControlMessage::DesktopStop {
-                                            attempt_id: attempt_id.clone(),
-                                            reason: "desktop_start_request_expired".to_string(),
-                                        }).await.context("failed to clean up expired desktop start")?;
-                                        let (ignored_tx, _ignored_rx) = oneshot::channel();
-                                        pending_desktop = Some((attempt_id, ignored_tx));
-                                    }
-                                }
-                            }
-                            Some((pending_id, response)) => {
-                                let error = format!("desktop_response_attempt_mismatch: expected {pending_id}, received {response_attempt_id}");
-                                let _ = response.send(Err(error.clone()));
-                                return Err(anyhow!(error));
-                            }
-                            None => return Err(anyhow!("unexpected desktop response for attempt {response_attempt_id}")),
                         }
                     }
                     Some(TunnelControlMessage::Pong { ts }) => {
@@ -705,7 +652,7 @@ async fn notify_remote_tunnel_stop(source_device_id: i64, health_addr: &str) -> 
             ok: true,
             protocol_version,
             ..
-        }) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => {}
+        }) if protocol_version_supported(protocol_version) => {}
         Some(other) => return Err(anyhow!("unexpected remote stop hello ack: {:?}", other)),
         None => return Err(anyhow!("remote health closed before stop ack")),
     };
@@ -814,70 +761,6 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
-    #[tokio::test]
-    async fn active_health_session_sends_desktop_start_and_routes_ready() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
-        let addr = listener.local_addr().expect("server address");
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept client");
-            let mut conn = TunnelControlConnection::new(stream);
-            assert!(matches!(
-                conn.next().await.unwrap(),
-                Some(TunnelControlMessage::Hello { .. })
-            ));
-            conn.send(&TunnelControlMessage::HelloAck {
-                ok: true,
-                protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
-                message: "ok".into(),
-            })
-            .await
-            .unwrap();
-            match conn.next().await.unwrap() {
-                Some(TunnelControlMessage::DesktopStart { attempt_id, .. }) => {
-                    conn.send(&TunnelControlMessage::DesktopReady { attempt_id })
-                        .await
-                        .unwrap();
-                }
-                other => panic!("expected desktop start, got {other:?}"),
-            }
-        });
-        let (stop_tx, mut stop_rx) = watch::channel(false);
-        let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
-        let (desktop_tx, mut desktop_rx) = mpsc::unbounded_channel();
-        let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let session = tokio::spawn(async move {
-            active_health_session(
-                42,
-                &addr.to_string(),
-                &mut stop_rx,
-                &mut speed_rx,
-                &mut desktop_rx,
-                &busy,
-                None,
-            )
-            .await
-        });
-        let (response_tx, response_rx) = oneshot::channel();
-        desktop_tx
-            .send(TunnelDesktopCommand {
-                request: crate::tunnel_control::DesktopControlRequest::Start {
-                    attempt_id: "desktop-1".into(),
-                    port: 39090,
-                },
-                response: response_tx,
-            })
-            .unwrap();
-        assert_eq!(
-            response_rx.await.unwrap().unwrap(),
-            TunnelControlMessage::DesktopReady {
-                attempt_id: "desktop-1".into()
-            }
-        );
-        server.await.unwrap();
-        let _ = stop_tx.send(true);
-        let _ = session.await;
-    }
-
     #[test]
     fn p2p_open_prefers_generic_vnc_capability() {
         let data: P2POpenData = serde_json::from_value(serde_json::json!({
@@ -955,7 +838,6 @@ mod tests {
 
         let (stop_tx, mut stop_rx) = watch::channel(false);
         let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
-        let (_desktop_tx, mut desktop_rx) = mpsc::unbounded_channel();
         let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = tokio::spawn(async move {
             active_health_session(
@@ -963,7 +845,6 @@ mod tests {
                 &addr.to_string(),
                 &mut stop_rx,
                 &mut speed_rx,
-                &mut desktop_rx,
                 &speed_test_busy,
                 None,
             )
@@ -1034,7 +915,6 @@ mod tests {
 
         let (_stop_tx, mut stop_rx) = watch::channel(false);
         let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
-        let (_desktop_tx, mut desktop_rx) = mpsc::unbounded_channel();
         let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = tokio::spawn(async move {
             active_health_session(
@@ -1042,7 +922,6 @@ mod tests {
                 &addr.to_string(),
                 &mut stop_rx,
                 &mut speed_rx,
-                &mut desktop_rx,
                 &speed_test_busy,
                 None,
             )
@@ -1086,7 +965,6 @@ mod tests {
 
         let (_stop_tx, mut stop_rx) = watch::channel(false);
         let (_speed_tx, mut speed_rx) = mpsc::unbounded_channel();
-        let (_desktop_tx, mut desktop_rx) = mpsc::unbounded_channel();
         let speed_test_busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let session_busy = speed_test_busy.clone();
         let session = tokio::spawn(async move {
@@ -1095,7 +973,6 @@ mod tests {
                 &addr.to_string(),
                 &mut stop_rx,
                 &mut speed_rx,
-                &mut desktop_rx,
                 &session_busy,
                 None,
             )

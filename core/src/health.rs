@@ -1,15 +1,14 @@
 //! Tunnel health server owned by the background service.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::net::IpAddr;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::speed_test::TunnelSpeedTestResult;
 use crate::tunnel_control::{
-    TunnelControlConnection, TunnelControlMessage, TUNNEL_CONTROL_PROTOCOL_VERSION,
+    protocol_version_supported, TunnelControlConnection, TunnelControlMessage,
+    TUNNEL_CONTROL_PROTOCOL_VERSION,
 };
 use anyhow::{anyhow, Context, Result};
 use tokio::net::{TcpListener, TcpStream};
@@ -32,11 +31,6 @@ pub enum PassiveHealthEvent {
 
 pub type HealthDisconnectHandler = Arc<dyn Fn(i64, u64, PassiveHealthEvent) + Send + Sync>;
 pub type PeerIdentityValidator = Arc<dyn Fn(i64, IpAddr) -> Result<(), String> + Send + Sync>;
-pub type DesktopHostRequestHandler = Arc<
-    dyn Fn(i64, TunnelControlMessage) -> Pin<Box<dyn Future<Output = TunnelControlMessage> + Send>>
-        + Send
-        + Sync,
->;
 
 /// peer_device_id → 该连接的停止信号发送器。
 ///
@@ -115,7 +109,6 @@ impl HealthServerHandle {
 pub async fn spawn_health_server(
     on_disconnect: HealthDisconnectHandler,
     validate_peer: PeerIdentityValidator,
-    desktop_handler: DesktopHostRequestHandler,
 ) -> Result<HealthServerHandle> {
     info!("[Health] binding on 0.0.0.0:{}", HEALTH_PORT);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", HEALTH_PORT))
@@ -137,7 +130,6 @@ pub async fn spawn_health_server(
                 peer_controls,
                 on_disconnect,
                 validate_peer,
-                desktop_handler,
             )
             .await;
         }
@@ -156,7 +148,6 @@ async fn health_server_loop(
     peer_controls: PeerHealthRegistry,
     on_disconnect: HealthDisconnectHandler,
     validate_peer: PeerIdentityValidator,
-    desktop_handler: DesktopHostRequestHandler,
 ) {
     loop {
         tokio::select! {
@@ -172,9 +163,8 @@ async fn health_server_loop(
                         let handler = on_disconnect.clone();
                         let peer_controls = peer_controls.clone();
                         let validate_peer = validate_peer.clone();
-                        let desktop_handler = desktop_handler.clone();
                         tokio::spawn(async move {
-                            health_server_connection_loop(handler, peer_controls, stream, validate_peer, desktop_handler).await;
+                            health_server_connection_loop(handler, peer_controls, stream, validate_peer).await;
                         });
                     }
                     Err(err) => {
@@ -192,19 +182,20 @@ async fn health_server_connection_loop(
     peer_controls: PeerHealthRegistry,
     stream: TcpStream,
     validate_peer: PeerIdentityValidator,
-    desktop_handler: DesktopHostRequestHandler,
 ) {
     let connection_generation = NEXT_HEALTH_CONNECTION_GENERATION.fetch_add(1, Ordering::Relaxed);
     let peer = stream.peer_addr().ok();
     debug!("[Health] connection loop started, peer={:?}", peer);
     let mut conn = TunnelControlConnection::new(stream);
 
-    let source_device_id =
+    let (source_device_id, negotiated_protocol_version) =
         match tokio::time::timeout(std::time::Duration::from_secs(5), conn.next()).await {
             Ok(Ok(Some(TunnelControlMessage::Hello {
                 source_device_id,
                 protocol_version,
-            }))) if protocol_version == TUNNEL_CONTROL_PROTOCOL_VERSION => source_device_id,
+            }))) if protocol_version_supported(protocol_version) => {
+                (source_device_id, protocol_version)
+            }
             Ok(Ok(Some(TunnelControlMessage::Hello {
                 protocol_version, ..
             }))) => {
@@ -275,7 +266,9 @@ async fn health_server_connection_loop(
     if conn
         .send(&TunnelControlMessage::HelloAck {
             ok: true,
-            protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+            // Echo the accepted version so strict v3/v4/v5 clients can use the common
+            // health/heartbeat/speed subset while this endpoint advertises v3 itself.
+            protocol_version: negotiated_protocol_version,
             message: "ok".to_string(),
         })
         .await
@@ -333,8 +326,6 @@ async fn health_server_connection_loop(
 
     let mut speed_server_task = None;
     let mut pending_speed_test = None;
-    let (desktop_result_tx, mut desktop_result_rx) = mpsc::unbounded_channel();
-    let mut desktop_request_in_progress = false;
     loop {
         tokio::select! {
             // 被动端主动断开：直接 break，drop TcpStream 触发 TCP FIN。
@@ -382,28 +373,6 @@ async fn health_server_connection_loop(
                     break;
                 }
                 pending_speed_test = Some((request_id, request.response));
-            }
-            result = desktop_result_rx.recv(), if desktop_request_in_progress => {
-                let Some(result) = result else { break; };
-                desktop_request_in_progress = false;
-                let ready_attempt = match &result {
-                    TunnelControlMessage::DesktopReady { attempt_id } => Some(attempt_id.clone()),
-                    _ => None,
-                };
-                if let Err(error) = conn.send(&result).await {
-                    if let Some(attempt_id) = ready_attempt {
-                        let cleanup = desktop_handler(
-                            source_device_id,
-                            TunnelControlMessage::DesktopStop {
-                                attempt_id,
-                                reason: "desktop_ready_delivery_failed".to_string(),
-                            },
-                        );
-                        let _ = cleanup.await;
-                    }
-                    warn!("[Desktop] control response send failed: {error:#}");
-                    break;
-                }
             }
             msg_result = tokio::time::timeout(std::time::Duration::from_secs(60), conn.next()) => {
                 // 主动端每 5 秒发送一次 Ping；60 秒没有心跳后进入网络异常。
@@ -553,31 +522,6 @@ async fn health_server_connection_loop(
                         );
                         break;
                     }
-                    message @ (TunnelControlMessage::DesktopStart { .. }
-                        | TunnelControlMessage::DesktopStop { .. }) => {
-                        if desktop_request_in_progress {
-                            let attempt_id = match &message {
-                                TunnelControlMessage::DesktopStart { attempt_id, .. }
-                                | TunnelControlMessage::DesktopStop { attempt_id, .. } => attempt_id.clone(),
-                                _ => unreachable!(),
-                            };
-                            if conn.send(&TunnelControlMessage::DesktopFailed {
-                                attempt_id,
-                                error_code: "desktop_control_request_in_progress".to_string(),
-                                message: "another desktop control request is still running".to_string(),
-                            }).await.is_err() {
-                                break;
-                            }
-                            continue;
-                        }
-                        desktop_request_in_progress = true;
-                        let handler = desktop_handler.clone();
-                        let result_tx = desktop_result_tx.clone();
-                        tokio::spawn(async move {
-                            let result = handler(source_device_id, message).await;
-                            let _ = result_tx.send(result);
-                        });
-                    }
                     other => {
                         warn!(
                             "[Health] unexpected tunnel message, source_device_id={}, message={:?}",
@@ -682,23 +626,6 @@ mod tests {
         Arc::new(|_, _| Ok(()))
     }
 
-    fn test_desktop_handler() -> DesktopHostRequestHandler {
-        Arc::new(|_, message| {
-            Box::pin(async move {
-                let attempt_id = match message {
-                    TunnelControlMessage::DesktopStart { attempt_id, .. }
-                    | TunnelControlMessage::DesktopStop { attempt_id, .. } => attempt_id,
-                    _ => String::new(),
-                };
-                TunnelControlMessage::DesktopFailed {
-                    attempt_id,
-                    error_code: "not_configured_for_test".to_string(),
-                    message: "not configured for test".to_string(),
-                }
-            })
-        })
-    }
-
     #[tokio::test]
     async fn health_connection_rejects_tunnel_peer_identity_mismatch() {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -712,7 +639,6 @@ mod tests {
                 Arc::new(StdMutex::new(HashMap::new())),
                 stream,
                 Arc::new(|_, _| Err("virtual ip does not match session".to_string())),
-                test_desktop_handler(),
             )
             .await;
         });
@@ -734,59 +660,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn health_connection_runs_desktop_request_and_returns_ready() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind listener");
-        let addr = listener.local_addr().expect("listener address");
-        tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept stream");
-            let handler: DesktopHostRequestHandler = Arc::new(|_, message| {
-                Box::pin(async move {
-                    match message {
-                        TunnelControlMessage::DesktopStart { attempt_id, .. } => {
-                            TunnelControlMessage::DesktopReady { attempt_id }
-                        }
-                        other => panic!("unexpected desktop request: {other:?}"),
-                    }
-                })
-            });
-            health_server_connection_loop(
-                Arc::new(|_, _, _| {}),
-                Arc::new(StdMutex::new(HashMap::new())),
-                stream,
-                test_peer_validator(),
-                handler,
-            )
-            .await;
-        });
-        let stream = TcpStream::connect(addr).await.expect("connect");
-        let mut conn = TunnelControlConnection::new(stream);
-        conn.send(&TunnelControlMessage::Hello {
-            source_device_id: 42,
-            protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
-        })
-        .await
-        .expect("send hello");
-        assert!(matches!(
-            conn.next().await.unwrap(),
-            Some(TunnelControlMessage::HelloAck { ok: true, .. })
-        ));
-        conn.send(&TunnelControlMessage::DesktopStart {
-            attempt_id: "desktop-1".into(),
-            port: 39090,
-        })
-        .await
-        .expect("send desktop start");
-        assert_eq!(
-            conn.next().await.unwrap(),
-            Some(TunnelControlMessage::DesktopReady {
-                attempt_id: "desktop-1".into()
-            })
-        );
-    }
-
     async fn spawn_test_health_connection() -> (
         std::net::SocketAddr,
         mpsc::UnboundedReceiver<(i64, PassiveHealthEvent)>,
@@ -805,7 +678,6 @@ mod tests {
                 Arc::new(StdMutex::new(HashMap::new())),
                 stream,
                 test_peer_validator(),
-                test_desktop_handler(),
             )
             .await;
         });
@@ -872,7 +744,6 @@ mod tests {
                 peer_stops_for_task,
                 stream,
                 test_peer_validator(),
-                test_desktop_handler(),
             )
             .await;
         });
@@ -1042,9 +913,10 @@ mod tests {
             .expect("connect health server");
         let mut conn = TunnelControlConnection::new(stream);
 
+        // 兼容范围内（3..=MAX_COMPAT）的版本应被接受，超出上界才拒绝。
         conn.send(&TunnelControlMessage::Hello {
             source_device_id: 111,
-            protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION + 1,
+            protocol_version: crate::tunnel_control::TUNNEL_CONTROL_PROTOCOL_MAX_COMPAT + 1,
         })
         .await
         .expect("write hello");
@@ -1084,7 +956,6 @@ mod tests {
                 peer_stops_for_task,
                 stream,
                 test_peer_validator(),
-                test_desktop_handler(),
             )
             .await;
         });
@@ -1149,7 +1020,6 @@ mod tests {
                         peer_stops,
                         stream,
                         test_peer_validator(),
-                        test_desktop_handler(),
                     )
                     .await;
                 });

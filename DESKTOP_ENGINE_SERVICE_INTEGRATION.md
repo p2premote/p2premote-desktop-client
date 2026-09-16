@@ -1,62 +1,40 @@
-# 独立 RustDeskTiny 的桌面客户端集成
+# 独立 RustDeskTiny 集成边界
 
 ## 产品边界
 
-- “远程桌面”始终启动独立原生窗口；Vue 页面只发命令、显示成功或精确错误，不传递视频帧、键鼠或剪贴板数据。
-- WGVPN 和桌面会话是两层生命周期：隧道可以独立存在；只有用户点击内置远程桌面后才启动 Host/Controller。
-- 不调用 mstc，不检查 Windows RDP Edition，不复制 RDP 地址，不自动切换 RDP/VNC/GDI/Raw 等方案。
-- 新组件基于完整 RustDesk 捕获、输入、剪贴板、编解码和窗口生命周期；p2premote 不链接其源码。
+RustDeskTiny 是独立安装、独立运行的产品，负责自己的 Windows Service、Host
+监听、窗口、Session 迁移、崩溃恢复、升级和卸载。p2pRemote 不启动或停止远端
+Host，也不通过 WGVPN 健康控制通道管理 RustDeskTiny 生命周期。
 
-## 信令顺序
+默认直连地址为：
 
 ```text
-Vue                  Active Service            Passive Service            Host Engine        Controller Engine
- | StartDesktopSession      |                         |                         |                    |
- |------------------------->| validate WGVPN/control |                         |                    |
- |                          | DesktopStart(v5, id, 39090)                      |                    |
-|                          |==== WGVPN health/control TCP ====================>|                    |
-|                          |                         | protected service IPC  |                    |
- |                          |                         |------------------------>|                    |
- |                          |                         |<---------- host_ready --|                    |
- |                          |<== DesktopReady =========|                         |                    |
- |                          | direct executable connect                       |                    |
- |                          |--------------------------------------------------------------->|
- |<-- launched (native) ----|                         |                         |                    |
+<对端 WGVPN 虚拟 IP>:21118
 ```
 
-中心服务端只参与初始授权和打洞。隧道建立后，桌面启动通知通过 WGVPN 内现有的 48082 健康控制长连接传输。该协议不传递密码或自定义会话令牌；连接认证完全由 RustDeskTiny 的 RustDesk 临时密码或长期密码完成。
+p2pRemote 可以启动本机 RustDeskTiny Controller 并传入该地址，也可以只展示地址
+供用户手动连接。连接认证完全由 RustDeskTiny 的临时密码或长期密码完成。
 
-## 本地进程管理
+## 端口职责
 
-- Host 通过同一份 `RustDeskTiny.exe service-host ...` 经 RustDesk 受保护 Service IPC 启动；Controller 直接运行 `RustDeskTiny.exe connect ...`。不再使用自研 Session Supervisor。
-- Host 命令确认 Service 已在指定 IP 监听后退出；Controller 使用脱离进程方式启动。
-- p2pRemote 不保存子进程句柄、不读取长期状态输出、不轮询、不随隧道或自身退出而终止 RustDeskTiny。
-- RustDeskTiny 自己负责窗口、连接、Windows Service、Session 迁移和崩溃恢复。
-- 只有升级、卸载或替换运行文件时，安装流程才停止 RustDeskTiny。
+- RustDeskTiny 默认监听 `0.0.0.0:21118`，监听配置由 RustDeskTiny 自己管理。
+- p2pRemote 当前使用 `21118` 作为默认连接目标和界面提示。
+- 后续允许用户为每台设备记录不同的 RustDeskTiny 端口。
+- 设备级端口只是 p2pRemote 的连接目标/提示信息；保存或修改它不得写入、重启或
+  重新配置 RustDeskTiny。
 
-## 图形 Session
+## 隧道控制协议
 
-- Windows：`RustDeskTiny` 运行于 LocalSystem，直接复用 RustDesk 的 Session 枚举、`launch_server` 和登录/锁屏/RDP Session 迁移逻辑。
-- Linux/macOS：首期不提供新组件；调用明确返回 `desktop_platform_unsupported`，不运行旧 Engine 兜底。
+WGVPN `48082` 控制长连接只负责健康检查、心跳和测速。协议中不包含
+`DesktopStart`、`DesktopReady`、`DesktopStop` 等桌面生命周期消息。
 
-## 安装资源
+## 本地进程
 
-- Windows 安装包复制整个运行目录到 `resources/RustDeskTiny/`，不能只复制 exe。
-- `RUSTDESK_TINY_PATH` 只用于开发/测试覆盖桌面可执行文件精确路径。
-- `RUSTDESK_TINY_ARTIFACT_DIR` 指向独立发布包的解压目录；构建不引用相邻源码仓库。
-- Linux/macOS 安装包不再包含旧自研 Engine。
+p2pRemote 启动 Controller 时只执行：
 
-## 关键实现位置
+```text
+RustDeskTiny.exe --connect <对端虚拟 IP>:<设备记录端口或 21118>
+```
 
-- 一次性命令行启动适配：`core/src/runtime/desktop_engine.rs`
-- 隧道内桌面控制信令：`core/src/tunnel_control.rs`、`core/src/health.rs`、`core/src/p2p.rs`
-- IPC 命令：`core/src/control.rs`、`core/src/runtime/ipc.rs`
-- Tauri 命令：`src-tauri/src/commands/service.rs`
-- Vue 原生窗口入口：`src/views/Devices.vue`
-- 平台资源构建：`src-tauri/build.rs`、`src-tauri/tauri.*.conf.json`
-
-## 尚需实机证明的门槛
-
-1. 安装后的 Windows LocalSystem 双服务能够保持相同启动类型，并由 RustDesk Service 在登录界面、锁屏、控制台和 RDP Session 启动 Host。
-2. Windows 双机验证双向画面、鼠标、键盘、Unicode 文本剪贴板、文件剪贴板、连续多帧和断线重连。
-3. Controller 错误只在客户端状态/UI 展示；Vue 永不创建远程画面窗口。
+启动后不保存进程句柄、不轮询状态，也不随隧道或 p2pRemote 退出而终止
+RustDeskTiny。
