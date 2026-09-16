@@ -6,6 +6,7 @@ export type DevicePlatform =
   | 'ubuntu'
   | 'kylin'
   | 'uos'
+  | 'deepin'
   | 'android'
   | 'macos'
   | 'linux'
@@ -24,6 +25,7 @@ export function detectDevicePlatform(device: DevicePlatformSource | null): Devic
   if (/android|安卓/.test(value)) return 'android'
   if (/mac\s*os|macos|os\s*x|darwin/.test(value)) return 'macos'
   if (/kylin|麒麟/.test(value)) return 'kylin'
+  if (/deepin|深度/.test(value)) return 'deepin'
   if (/\buos\b|统信/.test(value)) return 'uos'
   if (/ubuntu/.test(value)) return 'ubuntu'
 
@@ -47,6 +49,7 @@ export function devicePlatformLabel(platform: DevicePlatform): string {
     ubuntu: 'Ubuntu',
     kylin: 'Kylin',
     uos: 'UOS',
+    deepin: 'Deepin',
     android: 'Android',
     macos: 'macOS',
     linux: 'Linux',
