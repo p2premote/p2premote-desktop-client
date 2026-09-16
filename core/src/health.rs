@@ -913,10 +913,10 @@ mod tests {
             .expect("connect health server");
         let mut conn = TunnelControlConnection::new(stream);
 
-        // 兼容范围内（3..=MAX_COMPAT）的版本应被接受，超出上界才拒绝。
+        // 低于下限的版本被拒；没有上限（见 protocol_version_supported）。
         conn.send(&TunnelControlMessage::Hello {
             source_device_id: 111,
-            protocol_version: crate::tunnel_control::TUNNEL_CONTROL_PROTOCOL_MAX_COMPAT + 1,
+            protocol_version: crate::tunnel_control::TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT - 1,
         })
         .await
         .expect("write hello");
@@ -929,6 +929,28 @@ mod tests {
                 message: "unsupported protocol version".to_string(),
             })
         );
+    }
+
+    /// 版本无上限：高于本端的版本号只要消息结构兼容即可互通。
+    #[tokio::test]
+    async fn health_connection_accepts_higher_protocol_version() {
+        let (addr, _rx) = spawn_test_health_connection().await;
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("connect health server");
+        let mut conn = TunnelControlConnection::new(stream);
+
+        conn.send(&TunnelControlMessage::Hello {
+            source_device_id: 112,
+            protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION + 10,
+        })
+        .await
+        .expect("write hello");
+
+        assert!(matches!(
+            conn.next().await.expect("read hello ack"),
+            Some(TunnelControlMessage::HelloAck { ok: true, .. })
+        ));
     }
 
     /// 验证方案 A 核心：外部通过 PeerHealthRegistry 发送 stop 信号后，

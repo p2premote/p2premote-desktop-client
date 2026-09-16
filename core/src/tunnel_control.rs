@@ -14,15 +14,12 @@ pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 3;
 /// 最低可互连的协议版本。
 pub const TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT: u16 = 3;
 
-/// 最高可互连的协议版本（已发布版本上界）。Hello/心跳/测速消息在
-/// v3→v5 间结构一致（差异仅为 DesktopStart 的 session_secret 增删与
-/// 新增消息类型）；旧端对未知消息 tag 的解析失败只会断开该条控制
-/// 连接，不影响既有消息互通，因此按范围兼容而不强制相等。
-pub const TUNNEL_CONTROL_PROTOCOL_MAX_COMPAT: u16 = 5;
-
-/// 对端 Hello/HelloAck 的版本是否可接受：不再强制与本端相等。
+/// 对端 Hello/HelloAck 的版本是否可接受：不强制与本端相等，只要求不低于
+/// 下限。不设上限——版本号升级但消息实际兼容时不应被拒；将来出现真正的
+/// 破坏性变更时提高 MIN_COMPAT 即可。旧端对未知消息 tag 的解析失败只会
+/// 断开该条控制连接，不影响既有消息互通。
 pub fn protocol_version_supported(version: u16) -> bool {
-    (TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT..=TUNNEL_CONTROL_PROTOCOL_MAX_COMPAT).contains(&version)
+    version >= TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
