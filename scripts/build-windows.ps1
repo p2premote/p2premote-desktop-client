@@ -91,9 +91,9 @@ else {
     Write-Host "sccache enabled (use -NoSccache to disable)"
 }
 
-$rustPunchSource = Join-Path $projectRoot '..\p2premote-punch-rs-gonc'
+$rustPunchSource = Join-Path $projectRoot '..\p2premote-punch-rs'
 if (-not (Test-Path -LiteralPath $rustPunchSource -PathType Container)) {
-    throw "p2premote-punch-rs-gonc source directory not found: $rustPunchSource"
+    throw "p2premote-punch-rs source directory not found: $rustPunchSource"
 }
 $desktopResource = Join-Path $projectRoot 'src-tauri\resources\RustDeskTiny-install.exe'
 $desktopInstaller = $desktopResource

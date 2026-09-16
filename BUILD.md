@@ -43,7 +43,7 @@ artifacts\windows-x64\
 
 Win7 安装包输出到 `artifacts\windows-win7-x64\`。普通 Windows 包保持 `p2pRemote_<version>-<git-sha>_x64-setup.exe` 命名；Win7 包使用 `p2pRemote_<version>-<git-sha>_windows-win7-x64-setup.exe`，不同兼容目标不会互相覆盖。
 
-要求已安装 Node.js、Rust、Tauri CLI、Windows 编译工具链，并且相邻目录 `../p2premote-punch-rs-gonc` 与 `../p2premote-wg-ffi` 必须存在；Rust Punch 由 Cargo 以源码依赖集成，脚本只构建独立的 WireGuard FFI。任何必需工具、源码或资源缺失都会直接失败。
+要求已安装 Node.js、Rust、Tauri CLI、Windows 编译工具链，并且相邻目录 `../p2premote-punch-rs` 与 `../p2premote-wg-ffi` 必须存在；Rust Punch 由 Cargo 以源码依赖集成，脚本只构建独立的 WireGuard FFI。任何必需工具、源码或资源缺失都会直接失败。
 
 ## 2. macOS GUI
 

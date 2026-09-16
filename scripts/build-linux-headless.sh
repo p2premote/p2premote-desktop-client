@@ -97,7 +97,7 @@ BUILD_VERSION="${VERSION}-${GIT_COMMIT}"
 DIST_DIR="$APP_DIR/artifacts/linux-headless"
 # WireGuard-go 从独立的 Go WG 模块构建；打洞库以 Rust path dependency
 # （core/Cargo.toml）编译进客户端，无需预构建产物。
-PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs-gonc"
+PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs"
 WG_FFI_SOURCE_DIR="$REPO_ROOT/../p2premote-wg-ffi"
 if [[ -z "$TARGET_ARCH" ]]; then
   TARGET_ARCH="$(uname -m)"
@@ -234,7 +234,7 @@ else
 fi
 
 if [[ ! -d "$PUNCH_RS_SOURCE_DIR" ]]; then
-  echo "p2premote-punch-rs-gonc source directory not found: $PUNCH_RS_SOURCE_DIR" >&2
+  echo "p2premote-punch-rs source directory not found: $PUNCH_RS_SOURCE_DIR" >&2
   echo "(required as the source path dependency of p2premote-core)" >&2
   exit 1
 fi
