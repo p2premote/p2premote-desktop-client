@@ -71,7 +71,7 @@ const label = computed(() => devicePlatformLabel(platform.value))
 .platform-icon.tone-online,
 .platform-icon.tone-connected { color: var(--status-online); }
 .platform-icon.tone-connecting {
-  color: #f59e0b;
+  color: var(--fluent-warning);
   animation: platform-status-pulse 1.5s var(--fluent-easing) infinite;
 }
 .platform-icon[class*='tone-'] .accent { fill: currentColor; }

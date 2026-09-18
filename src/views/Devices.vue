@@ -1378,6 +1378,7 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   justify-content: center;
   font-size: 21px;
   line-height: 1;
+  --platform-icon-cutout: var(--fluent-layer);
 }
 
 .device-tunnel-badge {
@@ -1508,7 +1509,7 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   align-items: center;
   justify-content: center;
   font-size: 24px;
-  --platform-icon-cutout: var(--fluent-layer-card, #fff);
+  --platform-icon-cutout: var(--fluent-layer);
 }
 
 /* 离线：灰 */
@@ -1525,16 +1526,15 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 
 /* 连接中/重连中：列表状态点承担运动反馈，详情头像保持稳定 */
 .device-avatar.connecting {
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid #f59e0b;
+  color: var(--fluent-warning);
+  background: var(--fluent-warning-bg);
+  border: 1px solid var(--fluent-warning-stroke);
 }
 
-/* 已连接：绿填充（活跃隧道） */
+/* 已连接：仅用绿色图标表达状态，避免色块降低图标辨识度 */
 .device-avatar.connected {
-  color: #fff;
-  background: var(--fluent-success);
-  --platform-icon-cutout: var(--fluent-success);
+  color: var(--fluent-success);
+  background: transparent;
 }
 
 .detail-title-line {
