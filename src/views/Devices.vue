@@ -161,16 +161,11 @@
                   class="action-tile primary"
                   :disabled="!canUseTunnelAction(selectedDevice) || selectedDisconnecting"
                   :aria-label="`${activeTunnelActionText(selectedDevice)}. ${tunnelActionTooltip(selectedDevice)}`"
+                  :title="tunnelActionTooltip(selectedDevice)"
                   @click="openTunnelAction(selectedDevice!)"
                 >
                   <el-icon :class="{ 'is-loading': selectedDisconnecting }"><Loading v-if="selectedDisconnecting" /><Link v-else /></el-icon>
                   <span>{{ activeTunnelActionText(selectedDevice) }}</span>
-                  <el-tooltip
-                    :content="tunnelActionTooltip(selectedDevice)"
-                    placement="top"
-                  >
-                    <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
-                  </el-tooltip>
                 </button>
 				  </div>
 				</div>
@@ -184,13 +179,11 @@
                   class="action-tile"
                   :disabled="!isTunnelConnected(selectedDevice)"
                   :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
+                  :title="remoteAccessTooltip(selectedDevice)"
                   @click="copyRemoteDesktopAddress(selectedDevice!)"
                 >
                   <el-icon><CopyDocument /></el-icon>
                   <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
-                  <el-tooltip :content="remoteAccessTooltip(selectedDevice)" placement="top">
-                    <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
-                  </el-tooltip>
                 </button>
 
                 <button
@@ -1750,7 +1743,7 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 
 .action-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 10px;
 }
 
