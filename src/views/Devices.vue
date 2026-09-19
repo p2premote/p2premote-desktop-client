@@ -1800,7 +1800,7 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 
 .action-tile span {
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: normal;
   line-height: 1.3;
   flex: 1;
