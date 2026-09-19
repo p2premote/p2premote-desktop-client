@@ -586,7 +586,7 @@ test.describe('远程协助', () => {
 
     await expect(page.locator('.tunnel-result-card code')).toHaveText('100.99.71.43:3390')
     const hint = page.locator('.tunnel-result-card .result-hint').nth(1)
-    await expect(hint).toContainText('把端口 3390 改成对应服务端口，例如 RustDesk 直连端口为 21118')
+    await expect(hint).toContainText('把端口 3390 改成对应服务端口，例如 RustDesk 直连端口为 21201')
     await expect(hint).not.toContainText('gonc.cc')
   })
 })

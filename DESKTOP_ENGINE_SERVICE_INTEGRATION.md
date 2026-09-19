@@ -9,7 +9,7 @@ Host，也不通过 WGVPN 健康控制通道管理 RustDeskTiny 生命周期。
 默认直连地址为：
 
 ```text
-<对端 WGVPN 虚拟 IP>:21118
+<对端 WGVPN 虚拟 IP>:21201
 ```
 
 p2pRemote 可以启动本机 RustDeskTiny Controller 并传入该地址，也可以只展示地址
@@ -17,8 +17,8 @@ p2pRemote 可以启动本机 RustDeskTiny Controller 并传入该地址，也可
 
 ## 端口职责
 
-- RustDeskTiny 默认监听 `0.0.0.0:21118`，监听配置由 RustDeskTiny 自己管理。
-- p2pRemote 当前使用 `21118` 作为默认连接目标和界面提示。
+- RustDeskTiny 默认监听 `0.0.0.0:21201`，监听配置由 RustDeskTiny 自己管理。
+- p2pRemote 当前使用 `21201` 作为默认连接目标和界面提示。
 - 后续允许用户为每台设备记录不同的 RustDeskTiny 端口。
 - 设备级端口只是 p2pRemote 的连接目标/提示信息；保存或修改它不得写入、重启或
   重新配置 RustDeskTiny。
@@ -33,7 +33,7 @@ WGVPN `48082` 控制长连接只负责健康检查、心跳和测速。协议中
 p2pRemote 启动 Controller 时只执行：
 
 ```text
-RustDeskTiny.exe --connect <对端虚拟 IP>:<设备记录端口或 21118>
+RustDeskTiny.exe --connect <对端虚拟 IP>:<设备记录端口或 21201>
 ```
 
 启动后不保存进程句柄、不轮询状态，也不随隧道或 p2pRemote 退出而终止
