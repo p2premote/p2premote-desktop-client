@@ -17,52 +17,9 @@ Unicode true
 ; NSIS installer hooks for p2premote-service
 ; perMachine install mode runs as admin, no UAC needed
 
-; Overwrite-install convenience: a bare double-click of the setup exe on a
-; machine that already has p2pRemote first warns that existing tunnels will be
-; disconnected, then reruns itself with /S /UPDATE /R after confirmation
-; (silent update, no WebView2 download, restart app as the logged-in user after
-; install). Fresh installs and launches that already carry /S or /P
-; (service- or app-triggered updates) keep their behavior.
-; This file is included before the template defines PRODUCTNAME and its Vars,
-; so the function below must not reference them: the registry key and binary
-; name are spelled out and must match tauri.conf.json
-; (productName=p2pRemote, mainBinaryName=p2premote, manufacturer=p2premote).
-!define MUI_CUSTOMFUNCTION_GUIINIT P2PRemoteAutoSilentUpdateInit
-
-Function P2PRemoteAutoSilentUpdateInit
-  ; .onGUIInit never runs in silent mode; guard anyway for future template changes.
-  IfSilent p2pr_asu_done
-
-  ; An explicit /P (passive, progress-only) already avoids the wizard.
-  ${GetOptions} $CMDLINE "/P" $R9
-  IfErrors p2pr_asu_check p2pr_asu_done
-
-  p2pr_asu_check:
-  ; The template records the install dir as the default value of
-  ; HKLM\Software\<manufacturer>\<productName> on every install.
-  ReadRegStr $0 HKLM "Software\p2premote\p2pRemote" ""
-  StrCmp $0 "" p2pr_asu_done
-  IfFileExists "$0\p2premote.exe" 0 p2pr_asu_done
-
-  ; Updating replaces and restarts the tunnel-owning service, so require an
-  ; explicit acknowledgement before switching to the unattended update flow.
-  MessageBox MB_YESNO|MB_ICONEXCLAMATION \
-    "The update will disconnect existing tunnel connections. After the update is complete, please reconnect the tunnels." \
-    IDYES p2pr_asu_confirmed IDNO p2pr_asu_done
-
-  p2pr_asu_confirmed:
-
-  ; Relaunch as silent updater; the child inherits this process's elevated
-  ; token, so no second UAC prompt appears.
-  StrCpy $R8 $EXEPATH
-  StrCpy $R9 $R8 1
-  StrCmp $R9 '"' +2 0
-  StrCpy $R8 '"$EXEPATH"'
-  Exec '$R8 /S /UPDATE /R'
-  Quit
-
-  p2pr_asu_done:
-FunctionEnd
+; A manually launched upgrade uses the same visible wizard and component
+; progress as a fresh install. Service- or app-triggered upgrades can continue
+; to pass /S or /P and remain fully unattended.
 
 !macro NSIS_HOOK_PREINSTALL
   nsExec::ExecToLog 'cmd /c echo PREINSTALL >> C:\Windows\Temp\p2premote-installer-trace.log'
@@ -87,18 +44,6 @@ FunctionEnd
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote WGVPN Health" dir=in action=allow protocol=TCP localport=48082 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-service.exe" profile=any enable=yes'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="p2pRemote WGVPN Speed Test"'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="p2pRemote WGVPN Speed Test" dir=in action=allow protocol=UDP localport=48082 remoteip=100.64.0.0/10 program="$INSTDIR\resources\p2premote-service.exe" profile=any enable=yes'
-  ; RustDeskTiny owns its files and service. Its installer is idempotent and
-  ; performs a silent install or in-place upgrade while this installer is elevated.
-  ExecWait '"$INSTDIR\resources\RustDeskTiny-install.exe" --silent-install --install-dir "$INSTDIR\resources\RustDeskTiny"' $3
-  DetailPrint "RustDeskTiny installer exit code: $3"
-  ${If} $3 != 0
-    ; RustDeskTiny is an optional desktop-engine component.  On Win7 its
-    ; installer may return a non-zero compatibility code; do not roll back the
-    ; primary p2pRemote service/GUI installation because of that component.
-    DetailPrint "Warning: RustDeskTiny installation failed; continuing with p2pRemote service setup"
-    nsExec::ExecToLog 'cmd /c echo RUSTDESKTINY_RC_$3 >> C:\Windows\Temp\p2premote-installer-trace.log'
-  ${EndIf}
-
   ; Probe the persisted auto_start flag before touching the service.
   ; The uninstall phase of a reinstall deletes the HKCU Run autostart entries
   ; and the service itself, while data\config.json survives by default and only
@@ -159,6 +104,19 @@ FunctionEnd
   ${If} $1 == "off"
     ExecWait '"$INSTDIR\resources\p2premote-service.exe" --scm disable' $0
     DetailPrint "p2premote-service disable exit code: $0"
+  ${EndIf}
+
+  ; Restore remote connectivity before starting the slower optional desktop
+  ; engine install. The RustDeskTiny installer is idempotent and unattended, so
+  ; leaving the outer GUI open cannot leave p2pRemote permanently offline.
+  DetailPrint "Installing or upgrading RustDeskTiny..."
+  ExecWait '"$INSTDIR\resources\RustDeskTiny-install.exe" --silent-install --install-dir "$INSTDIR\resources\RustDeskTiny"' $3
+  DetailPrint "RustDeskTiny installer exit code: $3"
+  ${If} $3 != 0
+    ; RustDeskTiny is optional. On Win7 its installer may return a non-zero
+    ; compatibility code; keep the primary p2pRemote service running.
+    DetailPrint "Warning: RustDeskTiny installation failed; p2pRemote remains available"
+    nsExec::ExecToLog 'cmd /c echo RUSTDESKTINY_RC_$3 >> C:\Windows\Temp\p2premote-installer-trace.log'
   ${EndIf}
 !macroend
 
@@ -419,10 +377,23 @@ Function PageReinstall
   !endif
   ${NSD_OnClick} $R3 PageReinstallUpdateSelection
 
+  ; A version upgrade must be in-place. Running the old uninstaller here would
+  ; stop and remove the service before the directory/start-menu pages, allowing
+  ; an unattended remote machine to remain offline while the wizard waits for
+  ; input. The Install section performs the required process stop immediately
+  ; before copying files and restores the service before slow optional work.
+  ${If} $R5 == "1"
+    EnableWindow $R2 0
+    SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
+    StrCpy $ReinstallPageCheck 2
+  ${EndIf}
+
   ; Check the first radio button if this the first time
   ; we enter this page or if the second button wasn't
   ; selected the last time we were on this page
-  ${If} $ReinstallPageCheck != 2
+  ${If} $R5 == "1"
+    SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
+  ${ElseIf} $ReinstallPageCheck != 2
     SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0
   ${Else}
     SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0

@@ -68,6 +68,7 @@
         "timestampUrl": "",
         "nsis": {
           "installMode": "perMachine",
+          "installerIcon": "icons/icon.ico",
           "template": "./installer-v1.nsi"
         }
       }
