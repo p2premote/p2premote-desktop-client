@@ -6,6 +6,9 @@ if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 2
 fi
 version="$1"
+# Rust 编译缓存根目录（N 盘不可用时改为对应盘符挂载路径，如 /mnt/d/rust-cache）
+RUST_CACHE_ROOT="${RUST_CACHE_ROOT:-/mnt/n/rust-cache}"
+cargo_target_dir="${CARGO_TARGET_DIR:-$RUST_CACHE_ROOT/wsl/linux-gui-x64}"
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 source_root="$(cd "$repo_dir/.." && pwd)"
 project_name="$(basename "$repo_dir")"
@@ -62,7 +65,7 @@ docker_env=(
   -e P2PREMOTE_PREBUILT_RESOURCES=1
   -e CARGO_NET_GIT_FETCH_WITH_CLI=true
   -e TAURI_TRAY=appindicator
-  -e CARGO_TARGET_DIR="/workspace/$project_name/target/linux-gui-x64"
+  -e CARGO_TARGET_DIR="$cargo_target_dir"
 )
 if [[ -n "${P2PREMOTE_BUILD_PROXY:-}" ]]; then
   for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
@@ -70,8 +73,11 @@ if [[ -n "${P2PREMOTE_BUILD_PROXY:-}" ]]; then
   done
 fi
 
+mkdir -p "$cargo_target_dir"
+
 docker run --rm --platform linux/amd64 \
   -v "$source_root:/workspace" \
+  -v "$cargo_target_dir:$cargo_target_dir" \
   -v p2premote-cargo-ubuntu18:/root/.cargo/registry \
   -v p2premote-cargo-git-ubuntu18:/root/.cargo/git \
   -v p2premote-go-ubuntu18:/root/go/pkg/mod \

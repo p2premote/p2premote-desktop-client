@@ -3,7 +3,9 @@ set -euo pipefail
 
 config="$1"
 repo_dir="$(pwd)"
-cargo_target_dir="${CARGO_TARGET_DIR:-$repo_dir/target/linux-gui-x64}"
+# Rust 编译缓存根目录（由宿主脚本通过 CARGO_TARGET_DIR 注入；此处为独立运行时的默认值）
+RUST_CACHE_ROOT="${RUST_CACHE_ROOT:-/mnt/n/rust-cache}"
+cargo_target_dir="${CARGO_TARGET_DIR:-$RUST_CACHE_ROOT/wsl/linux-gui-x64}"
 dist_dir="$repo_dir/artifacts/linux-gui-x64"
 export CARGO_TARGET_DIR="$cargo_target_dir"
 wg_ffi_source_dir="../p2premote-wg-ffi"

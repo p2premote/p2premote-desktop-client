@@ -7,6 +7,9 @@
 set -euo pipefail
 umask 022
 
+# Rust 编译缓存根目录（N 盘不可用时改为对应盘符挂载路径，如 /mnt/d/rust-cache）
+RUST_CACHE_ROOT="${RUST_CACHE_ROOT:-/mnt/n/rust-cache}"
+
 usage() {
   echo "Usage: $0 -o <output-path> -a <amd64|arm64> -s <p2premote-punch-rs-dir> [--no-sccache]" >&2
 }
@@ -15,7 +18,6 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR=""
 OUT_PATH=""
 ARCH_VALUE=""
-USE_SCCACHE=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,7 +46,6 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --no-sccache)
-      USE_SCCACHE=0
       shift
       ;;
     -h|--help)
@@ -58,14 +59,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$USE_SCCACHE" == "1" ]]; then
-  command -v sccache >/dev/null 2>&1 || { echo "sccache is required by default; install it or pass --no-sccache" >&2; exit 1; }
-  export RUSTC_WRAPPER=sccache
-  echo "==> sccache enabled (use --no-sccache to disable)"
-else
-  export RUSTC_WRAPPER=""
-  echo "==> sccache disabled; Rust will compile locally"
-fi
+export RUSTC_WRAPPER=""
+echo "==> Rust will compile directly"
 
 if [[ -z "$OUT_PATH" ]]; then
   usage
@@ -92,6 +87,15 @@ OUT_DIR="$(dirname "$OUT_PATH")"
 mkdir -p "$OUT_DIR"
 OUT_PATH="$(cd "$OUT_DIR" && pwd)/$(basename "$OUT_PATH")"
 
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  if grep -qi microsoft /proc/version 2>/dev/null && [[ -d /mnt/n ]]; then
+    CARGO_TARGET_DIR="$RUST_CACHE_ROOT/wsl"
+  else
+    CARGO_TARGET_DIR="$SRC_DIR/target"
+  fi
+  export CARGO_TARGET_DIR
+fi
+
 if ! (cd "$SRC_DIR" && rustup target list --installed 2>/dev/null | grep -qx "$RUST_TARGET"); then
   echo "Rust std for $RUST_TARGET is not installed; run: rustup target add $RUST_TARGET" >&2
   exit 1
@@ -105,10 +109,9 @@ echo "==> Building p2premote-punch static library for linux/$ARCH_VALUE (Rust, $
   # The crate pins its toolchain via rust-toolchain.toml (same 1.94.1 as the
   # client) — the stripped archive requires the host to use that same std.
   cargo build --release --lib --target "$RUST_TARGET"
-  if [[ "$USE_SCCACHE" == "1" ]]; then sccache --show-stats; fi
 )
 
-BUILT="$SRC_DIR/target/$RUST_TARGET/release/libp2premote_punch.a"
+BUILT="$CARGO_TARGET_DIR/$RUST_TARGET/release/libp2premote_punch.a"
 if [[ ! -f "$BUILT" ]]; then
   echo "build finished but the static library is missing: $BUILT" >&2
   exit 1

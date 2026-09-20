@@ -7,7 +7,9 @@ if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 version="$1"
-cargo_target_dir="${CARGO_TARGET_DIR:-target}"
+# Rust 编译缓存根目录（与 build-linux-gui-ubuntu18.sh 保持一致）
+RUST_CACHE_ROOT="${RUST_CACHE_ROOT:-/mnt/n/rust-cache}"
+cargo_target_dir="${CARGO_TARGET_DIR:-$RUST_CACHE_ROOT/wsl/linux-gui-x64}"
 deb="$cargo_target_dir/release/bundle/deb/p2premote_${version}_amd64.deb"
 stage="$(mktemp -d /tmp/p2premote-gui-deb.XXXXXX)"
 output="${stage}/p2premote.deb"

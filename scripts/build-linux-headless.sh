@@ -3,6 +3,9 @@
 set -euo pipefail
 umask 022
 
+# Rust 编译缓存根目录（N 盘不可用时改为对应盘符挂载路径，如 /mnt/d/rust-cache）
+RUST_CACHE_ROOT="${RUST_CACHE_ROOT:-/mnt/n/rust-cache}"
+
 usage() {
   echo "Usage: $0 -v <version> [--arch <x86_64|aarch64>] [--proxy <http-proxy-url>] [--no-sccache]" >&2
 }
@@ -10,7 +13,6 @@ usage() {
 VERSION=""
 TARGET_ARCH="${P2PREMOTE_LINUX_ARCH:-}"
 BUILDER_PROXY="${P2PREMOTE_BUILDER_PROXY:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}"
-USE_SCCACHE=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -v)
@@ -45,7 +47,6 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --no-sccache)
-      USE_SCCACHE=0
       shift
       ;;
     -h|--help)
@@ -123,9 +124,9 @@ case "$TARGET_ARCH" in
     ;;
 esac
 DOCKER_PLATFORM="linux/${LINUX_ARCH}"
-CARGO_TARGET_DIR="$REPO_ROOT/target/linux-headless-${LINUX_ARCH}"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$RUST_CACHE_ROOT/wsl}"
 export CARGO_TARGET_DIR
-OUT_DIR="$CARGO_TARGET_DIR/package-assets"
+OUT_DIR="$CARGO_TARGET_DIR/package-assets/linux-headless-${LINUX_ARCH}"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
 WG_CLI="$OUT_DIR/wg"
 
@@ -168,6 +169,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
   RUN_ENV=(
     -e "P2PREMOTE_IN_BUILDER_CONTAINER=1"
     -e "RUSTUP_TOOLCHAIN=1.77.2"
+    -e "CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
   )
   if [[ "${P2PREMOTE_SKIP_WEB_BUILD:-0}" == "1" ]]; then
     RUN_ENV+=(-e "P2PREMOTE_SKIP_WEB_BUILD=1")
@@ -178,60 +180,26 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
   fi
 
   WORKSPACE_DIR="$(cd "$REPO_ROOT/.." && pwd)"
-  SCCACHE_RUN_ARGS=()
-  INNER_SCCACHE_ARG=""
-  if [[ "$USE_SCCACHE" == "1" ]]; then
-    SCCACHE_BIN="$(command -v sccache || true)"
-    if [[ -z "$SCCACHE_BIN" && -x "${HOME}/.cargo/bin/sccache" ]]; then
-      SCCACHE_BIN="${HOME}/.cargo/bin/sccache"
-    fi
-    SCCACHE_CONFIG="${SCCACHE_CONF:-${HOME}/.config/sccache/config}"
-    if [[ -z "$SCCACHE_BIN" || ! -f "$SCCACHE_CONFIG" ]]; then
-      echo "sccache binary/config is required by default; install/configure it or pass --no-sccache" >&2
-      exit 1
-    fi
-    docker volume create "p2p-sccache-${LINUX_ARCH}" >/dev/null
-    SCCACHE_RUN_ARGS=(
-      -v "$SCCACHE_BIN:/usr/local/bin/sccache:ro"
-      -v "$SCCACHE_CONFIG:/tmp/sccache-config:ro"
-      -v "p2p-sccache-${LINUX_ARCH}:/root/.cache/sccache"
-      -e "RUSTC_WRAPPER=/usr/local/bin/sccache"
-      -e "SCCACHE_CONF=/tmp/sccache-config"
-      -e "SCCACHE_DIR=/root/.cache/sccache"
-      -e "SCCACHE_CACHE_SIZE=5G"
-      -e "SCCACHE_SERVER_PORT=4228"
-      -e "SCCACHE_WEBDAV_KEY_PREFIX=sccache/linux-docker-${LINUX_ARCH}"
-    )
-    echo "==> Using sccache with local 5G L0 and WebDAV L1"
-  else
-    INNER_SCCACHE_ARG=" --no-sccache"
-    echo "==> sccache disabled; Rust will compile locally"
-  fi
+  mkdir -p "$CARGO_TARGET_DIR"
+  echo "==> Rust will compile directly; shared target cache: $CARGO_TARGET_DIR"
   echo "==> Building inside $BUILDER_IMAGE (glibc 2.28 baseline, cached toolchains in volumes)"
   exec docker run --rm \
     --network host \
     --platform "$DOCKER_PLATFORM" \
     "${DOCKER_HOST_ARGS[@]}" \
     -v "$WORKSPACE_DIR:/workspace" \
-    -v "p2p-cargo-target-linux-headless-${LINUX_ARCH}:/workspace/p2premote-desktop-client/target" \
+    -v "$CARGO_TARGET_DIR:$CARGO_TARGET_DIR" \
     -v p2p-cargo-registry:/opt/rust/cargo/registry \
     -v p2p-npm-cache:/root/.npm \
     -v p2p-go-mod:/root/go \
     -v p2p-go-build:/root/.cache/go-build \
-    "${SCCACHE_RUN_ARGS[@]}" \
     -w /workspace/p2premote-desktop-client \
     "${RUN_ENV[@]}" \
     "$BUILDER_IMAGE" \
-    bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}'${INNER_SCCACHE_ARG}"
+    bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}' --no-sccache"
 fi
 
-if [[ "$USE_SCCACHE" == "1" ]]; then
-  command -v sccache >/dev/null 2>&1 || { echo "sccache is required by default; install it or pass --no-sccache" >&2; exit 1; }
-  export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
-  echo "==> sccache enabled (use --no-sccache to disable)"
-else
-  export RUSTC_WRAPPER=""
-fi
+export RUSTC_WRAPPER=""
 
 if [[ ! -d "$PUNCH_RS_SOURCE_DIR" ]]; then
   echo "p2premote-punch-rs source directory not found: $PUNCH_RS_SOURCE_DIR" >&2
@@ -291,9 +259,6 @@ echo "==> Building Rust headless binaries ($RUST_TARGET)"
 (
   cd "$REPO_ROOT"
   P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" cargo build --release --target "$RUST_TARGET" -p p2premote-service -p p2premote-cli
-  if command -v sccache >/dev/null 2>&1; then
-    sccache --show-stats
-  fi
 )
 
 rust_release_dir() {
