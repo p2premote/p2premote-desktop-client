@@ -156,35 +156,35 @@
 					<el-icon><SwitchButton /></el-icon>
 					<span>{{ wakingIds.has(selectedDevice.device_id) ? $t('devices.wol.sending') : $t('devices.wol.action') }}</span>
 				</button>
-                <button
-                  type="button"
-                  class="action-tile primary"
-                  :disabled="!canUseTunnelAction(selectedDevice) || selectedDisconnecting"
-                  :aria-label="`${activeTunnelActionText(selectedDevice)}. ${tunnelActionTooltip(selectedDevice)}`"
-                  :title="tunnelActionTooltip(selectedDevice)"
-                  @click="openTunnelAction(selectedDevice!)"
-                >
-                  <el-icon :class="{ 'is-loading': selectedDisconnecting }"><Loading v-if="selectedDisconnecting" /><Link v-else /></el-icon>
-                  <span>{{ activeTunnelActionText(selectedDevice) }}</span>
-                </button>
+                <div class="action-tile-wrap" :title="tunnelActionTooltip(selectedDevice)">
+                  <button
+                    type="button"
+                    class="action-tile primary"
+                    :disabled="!canUseTunnelAction(selectedDevice) || selectedDisconnecting"
+                    :aria-label="`${activeTunnelActionText(selectedDevice)}. ${tunnelActionTooltip(selectedDevice)}`"
+                    @click="openTunnelAction(selectedDevice!)"
+                  >
+                    <el-icon :class="{ 'is-loading': selectedDisconnecting }"><Loading v-if="selectedDisconnecting" /><Link v-else /></el-icon>
+                    <span>{{ activeTunnelActionText(selectedDevice) }}</span>
+                  </button>
 				  </div>
 				</div>
 
 				<div class="action-group">
 				  <div class="action-group-label">{{ $t('devices.detail.connection.remote_group') }}</div>
 				  <div class="action-grid">
-                <button
-                  v-if="supportsBuiltInDesktop(selectedDevice)"
-                  type="button"
-                  class="action-tile"
-                  :disabled="!isTunnelConnected(selectedDevice)"
-                  :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
-                  :title="remoteAccessTooltip(selectedDevice)"
-                  @click="copyRemoteDesktopAddress(selectedDevice!)"
-                >
-                  <el-icon><CopyDocument /></el-icon>
-                  <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
-                </button>
+                <div v-if="supportsBuiltInDesktop(selectedDevice)" class="action-tile-wrap" :title="remoteAccessTooltip(selectedDevice)">
+                  <button
+                    type="button"
+                    class="action-tile"
+                    :disabled="!isTunnelConnected(selectedDevice)"
+                    :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
+                    @click="copyRemoteDesktopAddress(selectedDevice!)"
+                  >
+                    <el-icon><CopyDocument /></el-icon>
+                    <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
+                  </button>
+                </div>
 
                 <button
                   v-if="showWindowsRdpAction(selectedDevice)"
@@ -1743,15 +1743,26 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 
 .action-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  /* 列宽封顶 280px：宽窗口下自动增加列数，而不是把按钮拉长 */
+  grid-template-columns: repeat(auto-fill, minmax(200px, 280px));
   gap: 10px;
+  justify-content: start;
 }
 
 .action-grid-primary {
-  grid-template-columns: repeat(auto-fit, minmax(200px, 280px));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 320px));
 }
 
 /* ===== 操作瓦片：Fluent 按钮（去位移反馈，改背景层变化） ===== */
+.action-tile-wrap {
+  display: block;
+  min-width: 0;
+}
+
+.action-tile-wrap .action-tile {
+  width: 100%;
+}
+
 .action-tile {
   border: 1px solid var(--fluent-stroke);
   border-radius: var(--fluent-radius-md);
