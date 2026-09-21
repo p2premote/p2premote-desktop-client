@@ -167,10 +167,11 @@
                     <el-icon :class="{ 'is-loading': selectedDisconnecting }"><Loading v-if="selectedDisconnecting" /><Link v-else /></el-icon>
                     <span>{{ activeTunnelActionText(selectedDevice) }}</span>
                   </button>
+					  </div>
+					</div>
 				  </div>
-				</div>
 
-				<div class="action-group">
+					<div class="action-group">
 				  <div class="action-group-label">{{ $t('devices.detail.connection.remote_group') }}</div>
 				  <div class="action-grid">
                 <div v-if="supportsBuiltInDesktop(selectedDevice)" class="action-tile-wrap" :title="remoteAccessTooltip(selectedDevice)">

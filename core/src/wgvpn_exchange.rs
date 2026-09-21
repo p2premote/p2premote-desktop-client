@@ -155,6 +155,12 @@ pub struct ExchangePayload {
     pub assigned_ip: u32,
     /// 被动端自己的虚拟 IP（u32）。主动端用它作为对端 IP。
     pub my_ip: u32,
+    /// 本端 WireGuard UDP 监听端口。旧版本缺失时为 0。
+    #[serde(default)]
+    pub wg_port: u16,
+    /// 本端健康/控制 TCP 监听端口。旧版本缺失时为 0。
+    #[serde(default)]
+    pub health_port: u16,
     /// 被动端显式开放给主动端访问的 LAN 网段（仅被动端→主动端方向使用）。
     #[serde(default)]
     pub exposed_lan_cidrs: Vec<String>,
@@ -208,7 +214,25 @@ impl ExchangePayload {
 
     /// 从 JSON 文本（FFI Exchange 返回的 recv_data）解析。
     pub fn parse(text: &str) -> Result<Self> {
-        let mut payload: Self = serde_json::from_str(text).context("parse ExchangePayload JSON")?;
+        let mut payload: Self = serde_json::from_str(text).map_err(|err| {
+            // ExchangePayload contains public WireGuard metadata, never the
+            // private key or punch token. Keep the preview bounded and escape
+            // control characters so malformed/truncated MQTT replies are
+            // diagnosable from a single service-log line.
+            let preview: String = text.chars().take(256).flat_map(char::escape_default).collect();
+            tracing::error!(
+                "[wgvpn-exchange] parse ExchangePayload JSON failed: error={}, bytes={}, preview={:?}",
+                err,
+                text.len(),
+                preview
+            );
+            anyhow!(
+                "parse ExchangePayload JSON: {}; bytes={}, preview={:?}",
+                err,
+                text.len(),
+                preview
+            )
+        })?;
         if payload.pubkey.is_empty() {
             return Err(anyhow!("payload missing pubkey"));
         }
@@ -258,18 +282,22 @@ mod payload_tests {
 
     #[test]
     fn payload_roundtrip_active() {
-        let p = ExchangePayload::for_active(
+        let mut p = ExchangePayload::for_active(
             "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
             12345,
             0x64634702,
             0x646347FE,
         );
+        p.wg_port = 41118;
+        p.health_port = 41119;
         let text = p.render().unwrap();
         let p2 = ExchangePayload::parse(&text).unwrap();
         assert_eq!(p2.pubkey, p.pubkey);
         assert_eq!(p2.device_id, 12345);
         assert_eq!(p2.ip_range_start, 0x64634702);
         assert_eq!(p2.ip_range_end, 0x646347FE);
+        assert_eq!(p2.wg_port, 41118);
+        assert_eq!(p2.health_port, 41119);
     }
 
     #[test]
@@ -306,6 +334,14 @@ mod payload_tests {
     fn invalid_exposed_lan_cidr_rejected() {
         let json = r#"{"pubkey":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=","device_id":1,"ip_range_start":0,"ip_range_end":0,"assigned_ip":0,"my_ip":0,"exposed_lan_cidrs":["192.168.10.0/99"]}"#;
         assert!(ExchangePayload::parse(json).is_err());
+    }
+
+    #[test]
+    fn legacy_payload_without_ports_defaults_to_zero() {
+        let json = r#"{"pubkey":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=","device_id":1,"ip_range_start":1684227842,"ip_range_end":1684228094,"assigned_ip":0,"my_ip":0,"exposed_lan_cidrs":[]}"#;
+        let payload = ExchangePayload::parse(json).unwrap();
+        assert_eq!(payload.wg_port, 0);
+        assert_eq!(payload.health_port, 0);
     }
 }
 
@@ -419,6 +455,8 @@ where
         ip_range_end: 0,
         assigned_ip,
         my_ip,
+        wg_port: local_payload_template.wg_port,
+        health_port: local_payload_template.health_port,
         exposed_lan_cidrs: local_payload_template.exposed_lan_cidrs.clone(),
         warning: local_payload_template.warning.clone(),
     };
@@ -475,6 +513,8 @@ where
         ip_range_end: 0,
         assigned_ip,
         my_ip,
+        wg_port: local_payload_template.wg_port,
+        health_port: local_payload_template.health_port,
         exposed_lan_cidrs: local_payload_template.exposed_lan_cidrs.clone(),
         warning: local_payload_template.warning.clone(),
     };
@@ -535,5 +575,15 @@ mod exchange_tests {
     #[test]
     fn kx_token_appends_suffix() {
         assert_eq!(derive_kx_token("abc"), "abc-kx");
+    }
+
+    #[test]
+    fn parse_error_includes_serde_cause_and_bounded_preview() {
+        let malformed = format!(r#"{{"pubkey": "{}""#, "x".repeat(300));
+        let error = ExchangePayload::parse(&malformed).unwrap_err().to_string();
+        assert!(error.contains("parse ExchangePayload JSON:"));
+        assert!(error.contains("bytes="));
+        assert!(error.contains("preview="));
+        assert!(!error.contains(&"x".repeat(257)));
     }
 }

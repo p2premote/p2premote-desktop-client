@@ -65,6 +65,7 @@ pub(super) fn spawn_wgvpn_health_monitor(
     shared: Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
     peer_virtual_ip: String,
+    peer_health_port: u16,
 ) {
     let source_device_id = match load_machine_config()
         .ok()
@@ -97,7 +98,7 @@ pub(super) fn spawn_wgvpn_health_monitor(
             let _ = previous.stop_tx.send(true);
         }
     }
-    let health_addr = format!("{}:{}", peer_virtual_ip, HEALTH_PORT);
+    let health_addr = format!("{}:{}", peer_virtual_ip, peer_health_port);
     debug!(
         "[wgvpn-health] monitor started: peer_device_id={}, address={}",
         peer_device_id, health_addr

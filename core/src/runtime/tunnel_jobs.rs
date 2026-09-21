@@ -278,7 +278,12 @@ pub(super) fn spawn_wgvpn_job_task(
                     );
                     refresh_wgvpn_sessions(&shared);
                     if is_active && !peer_virtual_ip.is_empty() {
-                        spawn_wgvpn_health_monitor(shared.clone(), peer_device_id, peer_virtual_ip);
+                        spawn_wgvpn_health_monitor(
+                            shared.clone(),
+                            peer_device_id,
+                            peer_virtual_ip,
+                            result.peer_health_port,
+                        );
                     } else if !is_active {
                         spawn_passive_health_watchdog(shared.clone(), peer_device_id);
                     }

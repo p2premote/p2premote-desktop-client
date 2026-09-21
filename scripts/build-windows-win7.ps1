@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $installer = [System.IO.Path]::GetFullPath((Join-Path $projectRoot '..\webview\MicrosoftEdgeWebView2RuntimeInstallerX64V109.0.1518.140.exe'))
 if ([string]::IsNullOrWhiteSpace($RustDeskTinyLegacyInstaller)) {
-    $RustDeskTinyLegacyInstaller = Join-Path $projectRoot '..\remoteDesk\RustDeskTinyLegacy\dist\RustDeskTinyLegacy-install.exe'
+    $RustDeskTinyLegacyInstaller = Join-Path $projectRoot 'src-tauri\resources\RustDeskTinyLegacy-install.exe'
 }
 $RustDeskTinyLegacyInstaller = [System.IO.Path]::GetFullPath($RustDeskTinyLegacyInstaller)
 if (-not (Test-Path -LiteralPath $RustDeskTinyLegacyInstaller -PathType Leaf)) {

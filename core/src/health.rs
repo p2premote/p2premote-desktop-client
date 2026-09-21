@@ -15,7 +15,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
-pub const HEALTH_PORT: u16 = 48082;
+/// Current tunnel health/control port advertised by new clients.
+pub const HEALTH_PORT: u16 = 41119;
+/// Clients released before health-port negotiation always connect here.
+pub const LEGACY_HEALTH_PORT: u16 = 48082;
 const PEER_SESSION_LOOKUP_RETRIES: usize = 5;
 const PEER_SESSION_LOOKUP_RETRY_DELAY_MS: u64 = 100;
 
@@ -51,14 +54,16 @@ type PeerHealthRegistry = Arc<StdMutex<HashMap<i64, PeerHealthControl>>>;
 pub struct HealthServerHandle {
     stop_tx: watch::Sender<bool>,
     peer_controls: PeerHealthRegistry,
-    task: tokio::task::JoinHandle<()>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl HealthServerHandle {
     /// 全局停止：仅 service 退出时调用。消费 self。
     pub fn stop(self) {
         let _ = self.stop_tx.send(true);
-        self.task.abort();
+        for task in self.tasks {
+            task.abort();
+        }
     }
 
     /// 方案 A 核心：主动关闭指定 peer 的 health TCP 连接。
@@ -119,10 +124,28 @@ pub async fn spawn_health_server(
         Err(_) => info!("[Health] started on port {}", HEALTH_PORT),
     }
 
+    let legacy_listener = if LEGACY_HEALTH_PORT == HEALTH_PORT {
+        None
+    } else {
+        match TcpListener::bind(format!("0.0.0.0:{}", LEGACY_HEALTH_PORT)).await {
+            Ok(listener) => {
+                info!("[Health] legacy compatibility listener started on 0.0.0.0:{}", LEGACY_HEALTH_PORT);
+                Some(listener)
+            }
+            Err(err) => {
+                warn!("[Health] legacy compatibility listener unavailable on port {}: {}", LEGACY_HEALTH_PORT, err);
+                None
+            }
+        }
+    };
+
     let (stop_tx, stop_rx) = watch::channel(false);
     let peer_controls: PeerHealthRegistry = Arc::new(StdMutex::new(HashMap::new()));
-    let task = tokio::spawn({
+    let mut tasks = vec![tokio::spawn({
         let peer_controls = peer_controls.clone();
+        let on_disconnect = on_disconnect.clone();
+        let validate_peer = validate_peer.clone();
+        let stop_rx = stop_rx.clone();
         async move {
             health_server_loop(
                 listener,
@@ -133,12 +156,27 @@ pub async fn spawn_health_server(
             )
             .await;
         }
-    });
+    })];
+    if let Some(listener) = legacy_listener {
+        tasks.push(tokio::spawn({
+            let peer_controls = peer_controls.clone();
+            async move {
+                health_server_loop(
+                    listener,
+                    stop_rx,
+                    peer_controls,
+                    on_disconnect,
+                    validate_peer,
+                )
+                .await;
+            }
+        }));
+    }
 
     Ok(HealthServerHandle {
         stop_tx,
         peer_controls,
-        task,
+        tasks,
     })
 }
 

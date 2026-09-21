@@ -1,7 +1,7 @@
 {
   "name": "p2premote",
   "private": true,
-  "version": "1.11.3-72dddd",
+  "version": "1.12.0-334f23",
   "type": "module",
   "scripts": {
     "dev": "vite",

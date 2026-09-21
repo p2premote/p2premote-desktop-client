@@ -136,7 +136,9 @@ impl StreamCounters {
     }
 
     /// Store the end-of-test retransmit total (#156; sender task only, while
-    /// the socket is still open).
+    /// the socket is still open). Unix-only at runtime: the only non-test
+    /// callers live in the `#[cfg(unix)]` TCP_INFO snapshot path.
+    #[cfg(any(unix, test))]
     pub fn set_final_retransmits(&self, n: i64) {
         self.final_retransmits.store(n, Ordering::Relaxed);
     }
@@ -148,6 +150,9 @@ impl StreamCounters {
 
     /// Store the sender's genuinely-final TCP_INFO snapshot (#245; sender task
     /// only, captured while the socket is still open just before it is dropped).
+    /// Unix-only at runtime: the only non-test callers live in the
+    /// `#[cfg(unix)]` TCP_INFO snapshot path.
+    #[cfg(any(unix, test))]
     pub fn set_final_tcp_sample(&self, info: crate::tcp_info::TcpInfoSnapshot) {
         if let Ok(mut g) = self.final_tcp_sample.lock() {
             *g = Some(info);

@@ -4,10 +4,12 @@ param(
     [string]$Version,
     [switch]$SkipBuild,
     [switch]$SkipNpmCi,
-    [switch]$NoSccache,
+    [switch]$NoSccache, # Retained for compatibility; builds always use rustc directly.
     [string]$TauriConfig,
     [string]$PackageTarget = 'windows-x64',
-    [string]$RustDeskTinyInstaller = $env:RUSTDESK_TINY_INSTALLER
+    [string]$RustDeskTinyInstaller = $env:RUSTDESK_TINY_INSTALLER,
+    # 不能命名为 Debug：高级脚本的公共参数已占用 -Debug
+    [switch]$DebugBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,9 +71,14 @@ if ($SkipBuild) {
     exit 0
 }
 
-$cargoTargetDirectory = Join-Path $projectRoot ("target\{0}" -f $PackageTarget)
+$cargoMetadata = & cargo metadata --format-version 1 --no-deps --manifest-path (Join-Path $projectRoot 'Cargo.toml') | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($cargoMetadata.target_directory)) {
+    throw "Unable to resolve Cargo target directory"
+}
+$cargoTargetDirectory = [System.IO.Path]::GetFullPath($cargoMetadata.target_directory)
 $distDirectory = Join-Path $projectRoot ("artifacts\{0}" -f $PackageTarget)
-$nsisDirectory = Join-Path $cargoTargetDirectory 'release\bundle\nsis'
+$buildProfile = if ($DebugBuild) { 'debug' } else { 'release' }
+$nsisDirectory = Join-Path $cargoTargetDirectory ($buildProfile + '\bundle\nsis')
 $expectedInstallerName = "p2pRemote_${buildVersion}_x64-setup.exe"
 $expectedInstallerPath = Join-Path $nsisDirectory $expectedInstallerName
 $publishedInstallerName = if ($PackageTarget -eq 'windows-x64') {
@@ -81,15 +88,8 @@ $publishedInstallerName = if ($PackageTarget -eq 'windows-x64') {
 }
 $publishedInstallerPath = Join-Path $distDirectory $publishedInstallerName
 
-if ($NoSccache) {
-    $env:RUSTC_WRAPPER = ''
-    Write-Host "sccache disabled; Rust will compile locally"
-}
-else {
-    $null = Get-Command sccache -ErrorAction Stop
-    $env:RUSTC_WRAPPER = "sccache"
-    Write-Host "sccache enabled (use -NoSccache to disable)"
-}
+$env:RUSTC_WRAPPER = ''
+Write-Host "Rust will compile directly; target cache: $cargoTargetDirectory"
 
 $rustPunchSource = Join-Path $projectRoot '..\p2premote-punch-rs'
 if (-not (Test-Path -LiteralPath $rustPunchSource -PathType Container)) {
@@ -119,9 +119,7 @@ $replaceDesktopResource = -not [string]::Equals(
     [StringComparison]::OrdinalIgnoreCase)
 $previousClientVersion = $env:P2PREMOTE_CLIENT_VERSION
 $previousWgFfiDir = $env:P2PREMOTE_WG_FFI_DIR
-$previousCargoTargetDir = $env:CARGO_TARGET_DIR
 $env:P2PREMOTE_CLIENT_VERSION = $buildVersion
-$env:CARGO_TARGET_DIR = $cargoTargetDirectory
 $wgFfiSource = Join-Path $projectRoot '..\p2premote-wg-ffi'
 if (-not (Test-Path -LiteralPath $wgFfiSource -PathType Container)) { throw "p2premote-wg-ffi source directory not found: $wgFfiSource" }
 $env:P2PREMOTE_WG_FFI_DIR = (Resolve-Path -LiteralPath $wgFfiSource).Path
@@ -150,6 +148,7 @@ try {
         throw "Tauri CLI is missing: $tauriCli"
     }
     $tauriArgs = @($tauriCli, 'build')
+    if ($DebugBuild) { $tauriArgs += '--debug' }
     if ($TauriConfig) { $tauriArgs += @('--config', $TauriConfig) }
     & node @tauriArgs
     if ($LASTEXITCODE -ne 0) {
@@ -160,7 +159,6 @@ finally {
     Pop-Location
     $env:P2PREMOTE_CLIENT_VERSION = $previousClientVersion
     $env:P2PREMOTE_WG_FFI_DIR = $previousWgFfiDir
-    $env:CARGO_TARGET_DIR = $previousCargoTargetDir
     if ($replaceDesktopResource) {
         if ($desktopResourceOriginallyExisted) {
             Copy-Item -LiteralPath $desktopResourceBackup -Destination $desktopResource -Force
@@ -173,8 +171,6 @@ finally {
         Write-Host "Restored default RustDeskTiny installer resource"
     }
 }
-if (-not $NoSccache) { & sccache --show-stats }
-
 # Tauri normally includes x64 in the NSIS filename, but normalize it here so
 # every Windows package produced by this script is accepted by package
 # management and cannot be mistaken for another architecture.

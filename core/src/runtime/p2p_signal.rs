@@ -422,8 +422,19 @@ pub(super) async fn handle_p2p_notify(
             }
         }
         P2PAttemptMessage::AttemptFailed {
-            attempt_id, error, ..
+            attempt_id,
+            stage,
+            error,
+            ..
         } => {
+            tracing::error!(
+                "[wgvpn] peer attempt failed: source_device_id={}, attempt_id={}, stage={}, error_code={}, error={}",
+                source_device_id,
+                attempt_id,
+                stage,
+                error.code,
+                error.message
+            );
             let locale = current_locale(shared);
             let message = error.localized_message(locale.as_deref());
             if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {

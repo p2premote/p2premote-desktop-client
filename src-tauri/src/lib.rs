@@ -321,17 +321,16 @@ pub fn run() {
                 warn!("[p2premote] Failed to start notifier: {}", err);
             }
 
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
-            {
-                if let Some(main_window) = app.get_window("main") {
-                    let main_window_for_close = main_window.clone();
-                    main_window.on_window_event(move |event| {
-                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                            api.prevent_close();
-                            let _ = main_window_for_close.hide();
-                        }
-                    });
-                }
+            // Closing the native window keeps the GUI process and tray icon alive.
+            // A full exit remains available through the tray's "完全关闭" action.
+            if let Some(main_window) = app.get_window("main") {
+                let main_window_for_close = main_window.clone();
+                main_window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = main_window_for_close.hide();
+                    }
+                });
             }
 
             Ok(())

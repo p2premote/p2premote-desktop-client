@@ -277,7 +277,9 @@ export async function closeWindow(): Promise<void> {
     return
   }
   const tauriWindow = await import('@tauri-apps/api/window')
-  await tauriWindow.appWindow.close()
+  // The title-bar close button means "keep running in the tray". Hiding the
+  // window directly avoids depending on the native close-event interception.
+  await tauriWindow.appWindow.hide()
 }
 
 function ensureWebSocket() {

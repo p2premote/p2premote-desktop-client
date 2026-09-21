@@ -31,7 +31,6 @@ use crate::device_identity::{
 use crate::gonc_ffi;
 use crate::health::{
     spawn_health_server, HealthDisconnectHandler, HealthServerHandle, PassiveHealthEvent,
-    HEALTH_PORT,
 };
 use crate::i18n::localized_message;
 use crate::p2p::wgvpn_flow;
@@ -322,8 +321,18 @@ impl P2PAttemptErrorPayload {
         let localized = localized_message(locale, key, &params);
         if localized == key {
             self.message.clone()
-        } else {
+        } else if self.message.trim().is_empty()
+            || self.message == self.code
+            || self.message == localized
+        {
             localized
+        } else {
+            // Keep the diagnostic supplied by the peer. Replacing it with the
+            // localized category used to turn errors such as access denied or
+            // an invalid WireGuard key into only "WireGuard configuration
+            // failed", leaving neither the UI nor the active-side log with an
+            // actionable cause.
+            format!("{}: {}", localized, self.message)
         }
     }
 }
@@ -1287,7 +1296,7 @@ mod tests {
         );
         assert_eq!(
             error.localized_message(Some("en")),
-            "WireGuard handshake failed"
+            "WireGuard handshake failed: wireguard handshake timeout"
         );
     }
 

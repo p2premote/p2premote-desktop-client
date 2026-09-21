@@ -53,7 +53,7 @@ pub const SPEED_TEST_DURATION_SECS: u32 = 6;
 pub const SPEED_TEST_RUN_TIMEOUT_SECS: u64 = SPEED_TEST_DURATION_SECS as u64 + 15;
 
 /// riperf3 server / client 约定的测速端口。
-/// 与 `HEALTH_PORT`(48082 TCP 健康面)、WebUI(48083) 错开。
+/// 与 `HEALTH_PORT`(41119 TCP 健康面)、WebUI(48083) 错开。
 pub const SPEED_TEST_PORT: u16 = 48084;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +79,7 @@ pub struct TunnelSpeedTestCommand {
 ///
 /// 绑 `0.0.0.0:SPEED_TEST_PORT`——被动端在 wgvpn userspace 后端下没有
 /// TUN 接口，无法绑隧道 IP；绑 0.0.0.0 让 wgvpn 用户态转发能送达流量
-/// （与 health server 0.0.0.0:48082 同理）。
+/// （与 health server 0.0.0.0:41119 同理）。
 ///
 /// 调用方应在 `tokio::spawn` 里启动 `run_once`，listen 就绪后回 `SpeedReady`，
 /// 然后等待一次测试完成。
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn speed_test_port_does_not_collide_with_health_or_webui() {
-        assert_ne!(SPEED_TEST_PORT, 48082, "must not collide with HEALTH_PORT");
+        assert_ne!(SPEED_TEST_PORT, crate::health::HEALTH_PORT, "must not collide with HEALTH_PORT");
         assert_ne!(SPEED_TEST_PORT, 48083, "must not collide with WebUI port");
     }
 

@@ -36,7 +36,16 @@ const WIREGUARD_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// wg0.conf 固定文件名（多 peer 模式下整个接口共用一份配置）。
 const WG_CONF_NAME: &str = "wg0.conf";
 /// WireGuard 本地监听端口。gonc 为每个 peer 创建独立的本地 UDP 转发端口。
-const WGVPN_LISTEN_PORT: u16 = 51820;
+const WGVPN_LISTEN_PORT: u16 = 41118;
+const LEGACY_WGVPN_LISTEN_PORT: u16 = 51820;
+
+fn peer_wg_port(advertised: u16) -> u16 {
+    if advertised == 0 { LEGACY_WGVPN_LISTEN_PORT } else { advertised }
+}
+
+fn peer_health_port(advertised: u16) -> u16 {
+    if advertised == 0 { LEGACY_HEALTH_PORT } else { advertised }
+}
 
 #[cfg(windows)]
 fn wgvpn_trace(message: &str) {
@@ -82,6 +91,8 @@ pub struct WgVpnSession {
     pub peer_device_id: i64,     // 对端 device_id
     pub peer_pubkey: String,     // 对端公钥（wg set remove 用）
     pub peer_virtual_ip: String, // 对端虚拟 IP
+    /// 对端实际健康端口；旧版交换载荷缺失时为 48082。
+    pub peer_health_port: u16,
     /// Cross-account passive sessions keep the WG peer alive while their
     /// AllowedIPs are temporarily empty and the UI waits for approval.
     pub approval_pending: bool,
@@ -323,6 +334,7 @@ pub struct WgVpnStartResult {
     pub success: bool,
     pub virtual_ip: String,
     pub peer_virtual_ip: String,
+    pub peer_health_port: u16,
     pub local_nat_type: String,
     pub remote_nat_type: String,
     pub message: String,
@@ -379,6 +391,8 @@ pub async fn start_active_wgvpn(
     let mut local_payload =
         wgvpn_exchange::ExchangePayload::for_active(&pub_key, my_device_id, ip_start, ip_end);
     local_payload.my_ip = choose_passive_ip_for_peer(&wg_cli, target_device_id, ip_start, ip_end)?;
+    local_payload.wg_port = WGVPN_LISTEN_PORT;
+    local_payload.health_port = HEALTH_PORT;
     let peer_payload = wgvpn_exchange::exchange_as_active_platform(
         Path::new(&punch_lib),
         &punch_token,
@@ -389,6 +403,16 @@ pub async fn start_active_wgvpn(
     let warning = peer_payload.warning.clone();
     let peer_pubkey = peer_payload.pubkey;
     let peer_device_id = peer_payload.device_id;
+    let peer_wg_port = peer_wg_port(peer_payload.wg_port);
+    let peer_health_port = peer_health_port(peer_payload.health_port);
+    tracing::info!(
+        "[wgvpn-exchange] negotiated ports: role=active, local_wg_port={}, local_health_port={}, peer_wg_port={}, peer_health_port={}, peer_legacy={}",
+        WGVPN_LISTEN_PORT,
+        HEALTH_PORT,
+        peer_wg_port,
+        peer_health_port,
+        peer_payload.wg_port == 0 || peer_payload.health_port == 0
+    );
     let my_ip = wgvpn_exchange::u32_to_ipv4(peer_payload.assigned_ip);
     let peer_ip = wgvpn_exchange::u32_to_ipv4(peer_payload.my_ip);
 
@@ -531,6 +555,14 @@ pub async fn start_active_wgvpn(
     let handle = match handle_result {
         Ok(handle) => handle,
         Err(err) => {
+            tracing::error!(
+                "[wgvpn] WireGuard setup failed: role=active, peer_device_id={}, userspace_wg={}, tunnel_existed={}, endpoint={}, error={:#}",
+                target_device_id,
+                uses_userspace_wg(),
+                tunnel_existed,
+                local_endpoint,
+                err
+            );
             let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
             return Err(err);
         }
@@ -543,6 +575,7 @@ pub async fn start_active_wgvpn(
         peer_device_id,
         peer_pubkey: peer_pubkey.clone(),
         peer_virtual_ip: peer_ip.clone(),
+        peer_health_port,
         gonc_handle_id: udp_tunnel.handle_id.clone(),
         local_forward_port: udp_tunnel.local_forward_port,
         is_active: true,
@@ -561,6 +594,7 @@ pub async fn start_active_wgvpn(
         success: true,
         virtual_ip: my_ip,
         peer_virtual_ip: peer_ip,
+        peer_health_port,
         local_nat_type: udp_tunnel.local_nat_type,
         remote_nat_type: udp_tunnel.remote_nat_type,
         message: format!(
@@ -605,6 +639,8 @@ pub async fn start_passive_wgvpn(
     let local_payload_template = wgvpn_exchange::ExchangePayload {
         pubkey: pub_key.clone(),
         device_id: config.device_id.unwrap_or(0),
+        wg_port: WGVPN_LISTEN_PORT,
+        health_port: HEALTH_PORT,
         exposed_lan_cidrs: passive_exposed_lan_cidrs.clone(),
         warning: warning.clone(),
         ..Default::default()
@@ -632,6 +668,16 @@ pub async fn start_passive_wgvpn(
     ).await?;
     let peer_pubkey = active_payload.pubkey;
     let peer_device_id = active_payload.device_id;
+    let peer_wg_port = peer_wg_port(active_payload.wg_port);
+    let peer_health_port = peer_health_port(active_payload.health_port);
+    tracing::info!(
+        "[wgvpn-exchange] negotiated ports: role=passive, local_wg_port={}, local_health_port={}, peer_wg_port={}, peer_health_port={}, peer_legacy={}",
+        WGVPN_LISTEN_PORT,
+        HEALTH_PORT,
+        peer_wg_port,
+        peer_health_port,
+        active_payload.wg_port == 0 || active_payload.health_port == 0
+    );
     // 被动端固定 PASSIVE_IP；对端（主动端）IP = 本端分配的结果（复算保持一致）
     let my_ip = wgvpn_exchange::u32_to_ipv4(
         active_payload
@@ -765,6 +811,14 @@ pub async fn start_passive_wgvpn(
     let handle = match handle_result {
         Ok(handle) => handle,
         Err(err) => {
+            tracing::error!(
+                "[wgvpn] WireGuard setup failed: role=passive, peer_device_id={}, userspace_wg={}, tunnel_existed={}, endpoint={}, error={:#}",
+                source_device_id,
+                use_userspace_router,
+                tunnel_existed,
+                local_endpoint,
+                err
+            );
             release_reserved_ip(reserved_peer_ip);
             let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
             return Err(err);
@@ -816,6 +870,7 @@ pub async fn start_passive_wgvpn(
         peer_device_id,
         peer_pubkey: peer_pubkey.clone(),
         peer_virtual_ip: peer_ip.clone(),
+        peer_health_port,
         gonc_handle_id: udp_tunnel.handle_id.clone(),
         local_forward_port: udp_tunnel.local_forward_port,
         is_active: false,
@@ -887,6 +942,7 @@ pub async fn start_passive_wgvpn(
         success: true,
         virtual_ip: my_ip,
         peer_virtual_ip: peer_ip,
+        peer_health_port,
         local_nat_type: udp_tunnel.local_nat_type,
         remote_nat_type: udp_tunnel.remote_nat_type,
         message: format!(
@@ -915,7 +971,7 @@ async fn stop_wgvpn_internal(
     // 被动端执行 stop 时 is_active=false，不会反向通知，避免停止消息循环。
     if notify_remote && session.is_active && !session.peer_virtual_ip.is_empty() {
         if let Some(source_device_id) = config.device_id {
-            let health_addr = format!("{}:{}", session.peer_virtual_ip, HEALTH_PORT);
+            let health_addr = format!("{}:{}", session.peer_virtual_ip, session.peer_health_port);
             if let Err(err) = notify_remote_tunnel_stop(source_device_id, &health_addr).await {
                 warn!(
                         "[wgvpn] remote stop notice failed: peer_device_id={}, health_addr={}, error={:#}",

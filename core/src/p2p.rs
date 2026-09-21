@@ -1,7 +1,7 @@
 use crate::auth::refresh_with_config;
 use crate::config::MachineConfig;
 use crate::device::RemoteAccessInfo;
-use crate::health::HEALTH_PORT;
+use crate::health::{HEALTH_PORT, LEGACY_HEALTH_PORT};
 use crate::http::{shared_client, ApiResponse};
 use crate::speed_test::{
     build_speed_test_client, extract_download_result, extract_upload_result,

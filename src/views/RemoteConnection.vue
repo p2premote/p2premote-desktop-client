@@ -565,7 +565,7 @@ async function cancelActiveTunnelJob() {
   padding: 16px 20px 20px;
   background: var(--fluent-bg);
   display: grid;
-  grid-template-columns: minmax(340px, 410px) minmax(460px, 1fr);
+  grid-template-columns: minmax(320px, 360px) minmax(420px, 1fr);
   gap: 16px;
   align-items: stretch;
   overflow: hidden;
@@ -1028,7 +1028,7 @@ async function cancelActiveTunnelJob() {
   line-height: 1.5;
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 960px) {
   .remote-connection-page {
     grid-template-columns: 1fr;
     overflow: visible;

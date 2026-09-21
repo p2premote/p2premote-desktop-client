@@ -336,7 +336,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                         .find(|session| {
                             session.peer_device_id == target_device_id && session.is_active
                         })
-                        .map(|session| session.peer_virtual_ip);
+                        .map(|session| (session.peer_virtual_ip, session.peer_health_port));
                     if *cancel_rx.borrow() {
                         publish_active_tunnel_job_cancelled(
                             &shared_for_task,
@@ -376,12 +376,13 @@ pub(super) fn spawn_active_tunnel_job_task(
                         .wgvpn_health_runtime
                         .insert(target_device_id, WgvpnHealthRuntime::default());
                     refresh_wgvpn_sessions(&shared_for_task);
-                    if let Some(peer_virtual_ip) = session_info {
+                    if let Some((peer_virtual_ip, peer_health_port)) = session_info {
                         if !peer_virtual_ip.is_empty() {
                             spawn_wgvpn_health_monitor(
                                 shared_for_task.clone(),
                                 target_device_id,
                                 peer_virtual_ip,
+                                peer_health_port,
                             );
                         } else {
                             mark_wgvpn_health_degraded(
@@ -418,6 +419,13 @@ pub(super) fn spawn_active_tunnel_job_task(
                     last_message = result.message;
                 }
                 Some(Err(err)) => {
+                    tracing::error!(
+                        "[wgvpn] active job attempt failed: target_device_id={}, attempt={}/{}, error={:#}",
+                        target_device_id,
+                        attempt,
+                        ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
+                        err
+                    );
                     last_message = err.to_string();
                 }
                 None => {}
