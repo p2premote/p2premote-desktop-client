@@ -191,31 +191,50 @@
                     >
                       <el-icon><CopyDocument /></el-icon>
                       <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
+                      <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
                     </button>
                   </div>
                 </el-tooltip>
 
-                <button
+                <el-tooltip
                   v-if="showWindowsRdpAction(selectedDevice)"
-                  type="button"
-                  class="action-tile"
-                  :disabled="!isTunnelConnected(selectedDevice)"
-                  @click="launchWindowsRdp(selectedDevice!)"
+                  :content="$t('devices.detail.connection.windows_rdp_tooltip')"
+                  placement="top"
                 >
-                  <el-icon><Monitor /></el-icon>
-                  <span>{{ $t('devices.detail.connection.windows_rdp') }}</span>
-                </button>
+                  <div class="action-tile-wrap">
+                    <button
+                      type="button"
+                      class="action-tile"
+                      :disabled="!isTunnelConnected(selectedDevice)"
+                      :aria-label="`${$t('devices.detail.connection.windows_rdp')}. ${$t('devices.detail.connection.windows_rdp_tooltip')}`"
+                      @click="launchWindowsRdp(selectedDevice!)"
+                    >
+                      <img :src="mstscIcon" class="action-tile-icon" alt="" aria-hidden="true">
+                      <span>{{ $t('devices.detail.connection.windows_rdp') }}</span>
+                      <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
+                    </button>
+                  </div>
+                </el-tooltip>
 
-                <button
+                <el-tooltip
                   v-if="showNativeDesktopAction()"
-                  type="button"
-                  class="action-tile"
-                  :disabled="!isTunnelConnected(selectedDevice)"
-                  @click="launchP2pRemoteDesktop(selectedDevice!)"
+                  :content="$t('devices.detail.connection.p2premote_desktop_tooltip')"
+                  placement="top"
                 >
-                  <el-icon><Monitor /></el-icon>
-                  <span>{{ $t('devices.detail.connection.p2premote_desktop') }}</span>
-                </button>
+                  <div class="action-tile-wrap">
+                    <button
+                      type="button"
+                      class="action-tile"
+                      :disabled="!isTunnelConnected(selectedDevice)"
+                      :aria-label="`${$t('devices.detail.connection.p2premote_desktop')}. ${$t('devices.detail.connection.p2premote_desktop_tooltip')}`"
+                      @click="launchP2pRemoteDesktop(selectedDevice!)"
+                    >
+                      <img :src="rustdeskTinyIcon" class="action-tile-icon" alt="" aria-hidden="true">
+                      <span>{{ $t('devices.detail.connection.p2premote_desktop') }}</span>
+                      <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
+                    </button>
+                  </div>
+                </el-tooltip>
 				  </div>
 				</div>
 
@@ -356,12 +375,13 @@ import {
   InfoFilled,
   Link,
   Loading,
-  Monitor,
   MoreFilled,
   Odometer,
   Refresh,
 	SwitchButton,
 } from '@element-plus/icons-vue'
+import mstscIcon from '../assets/icons/mstsc.png'
+import rustdeskTinyIcon from '../assets/icons/rustdesk-tiny.png'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { useAuthStore } from '../stores/auth'
 import DevicePlatformIcon from '../components/DevicePlatformIcon.vue'
@@ -1804,6 +1824,15 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 .action-tile:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+/* 品牌图标（mstsc / RustDeskTiny）：与 el-icon 同尺寸对齐 */
+.action-tile-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  object-fit: contain;
 }
 
 .action-tile .el-icon {
