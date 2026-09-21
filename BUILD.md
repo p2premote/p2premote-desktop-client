@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | Windows GUI 安装包 | 当前 Windows 主机架构（通常为 x64） | `scripts/build-windows.ps1` |
 | macOS GUI DMG | Universal（x86_64 + arm64） | `scripts/build-macos.sh` |
+| Linux GUI DEB、AppImage | x86_64 | `scripts/build-linux-gui-ubuntu18.sh <version>` |
 | Linux Headless 裸压缩包、DEB、RPM、Docker 镜像 tar | x86_64 / aarch64 | `scripts/build-linux.sh` |
 
 编译缓存统一放在 `target/<构建目标>/`，发布物统一放在 `artifacts/<发布目标>/`。`target` 可随时清理，不再保存需要交付的安装包；`artifacts` 不参与 Cargo 增量编译，也不会被前端 Vite 清理。主要目录如下：
@@ -66,6 +67,26 @@ macOS 包内嵌 Universal `RustDeskTiny.app`。首次远程控制前，用户需
 构建 RustDeskTiny 还要求完整 Xcode（仅 Command Line Tools 不够）、Rust 1.81、Flutter 3.24.5、`flutter_rust_bridge_codegen`、CMake、NASM 2.x，以及同时安装了 `x64-osx` 和 `arm64-osx` 依赖的 vcpkg。通过 `VCPKG_ROOT` 指向该 vcpkg 目录。
 
 ## 3. Linux Headless 四格式统一构建
+
+Linux GUI 与 Headless 共用唯一一套 Debian 10 / glibc 2.28 编译镜像。可预先创建镜像：
+
+```bash
+./scripts/make_compile_image.sh --proxy http://192.0.2.191:7890
+```
+
+正常编译脚本会先检查镜像；镜像不存在时会自动调用该脚本创建，不需要手工执行。
+GUI 与 Headless 不再分别维护 Ubuntu 18 和 Debian 10 镜像。
+
+GUI 构建不会编译 RustDeskTiny。先从 RustDeskTiny GitHub Release 下载 amd64 deb，
+保存为 `src-tauri/resources/RustDeskTiny.deb`，再执行：
+
+```bash
+./scripts/build-linux-gui-ubuntu18.sh 1.12.1
+```
+
+GUI 编译完成后，打包脚本会解开 RustDeskTiny deb，将它的数据文件、运行依赖与服务安装逻辑合并进
+`artifacts/linux-gui-x64/p2premote_<version>_amd64.deb`。GUI 与 Headless 仍输出到不同目录；
+Headless 包不包含 RustDeskTiny。需要临时使用其他文件名时，可通过 `RUSTDESK_TINY_DEB` 指定。
 
 必须在目标架构的 Linux 或 WSL shell 中执行，不能从 Windows PowerShell 直接调用 Linux 脚本：
 

@@ -144,24 +144,12 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     exit 1
   fi
 
-  BUILDER_IMAGE="p2premote-linux-builder:glibc2.28-rust1.77-packages-v5-${LINUX_ARCH}"
+  BUILDER_IMAGE="p2premote-linux-compile:debian10-rust1.77-v1-${LINUX_ARCH}"
   if ! docker image inspect "$BUILDER_IMAGE" >/dev/null 2>&1; then
-    echo "==> Builder image $BUILDER_IMAGE not found; building it first (one-time)"
-    PROXY_ARGS=()
-    if [[ -n "$BUILDER_PROXY" ]]; then
-      echo "==> Using configured proxy for builder downloads"
-      PROXY_ARGS=(--build-arg "http_proxy=${BUILDER_PROXY}"
-        --build-arg "https_proxy=${BUILDER_PROXY}"
-        --build-arg "HTTP_PROXY=${BUILDER_PROXY}"
-        --build-arg "HTTPS_PROXY=${BUILDER_PROXY}")
-    fi
-    if [[ -n "${P2PREMOTE_GO_DOWNLOAD_BASE:-}" ]]; then
-      PROXY_ARGS+=(--build-arg "GO_DOWNLOAD_BASE=${P2PREMOTE_GO_DOWNLOAD_BASE}")
-    fi
-    if [[ -n "${P2PREMOTE_NODE_DOWNLOAD_BASE:-}" ]]; then
-      PROXY_ARGS+=(--build-arg "NODE_DOWNLOAD_BASE=${P2PREMOTE_NODE_DOWNLOAD_BASE}")
-    fi
-    docker build --network host --platform "$DOCKER_PLATFORM" -t "$BUILDER_IMAGE" "${DOCKER_HOST_ARGS[@]}" ${PROXY_ARGS+"${PROXY_ARGS[@]}"} "$APP_DIR/packaging/linux/builder"
+    echo "==> Compile image $BUILDER_IMAGE not found; creating it first"
+    IMAGE_ARGS=(--arch "$LINUX_ARCH")
+    [[ -z "$BUILDER_PROXY" ]] || IMAGE_ARGS+=(--proxy "$BUILDER_PROXY")
+    "$APP_DIR/scripts/make_compile_image.sh" "${IMAGE_ARGS[@]}"
   fi
 
   # Keep headless and Ubuntu 18 GUI builds on the same pinned Rust baseline.

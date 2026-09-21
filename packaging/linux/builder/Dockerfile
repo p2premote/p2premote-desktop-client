@@ -1,5 +1,5 @@
 #
-# Native Linux headless builder ABI baseline: Debian 10 (buster) / glibc 2.28.
+# Unified Linux GUI/headless builder ABI baseline: Debian 10 (buster) / glibc 2.28.
 # Node 22 official binaries require GLIBC_2.28+ (Ubuntu 18.04 / glibc 2.27 is
 # NOT enough — verified empirically), so buster is the lowest Debian/Ubuntu
 # base on which the whole toolchain (Node 22 + Rust + Go + musl) runs natively
@@ -36,11 +36,13 @@ ENV http_proxy=${http_proxy} \
 COPY sources.list /tmp/sources.list
 RUN cp /tmp/sources.list /etc/apt/sources.list \
     && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99-debian-archive \
+    && echo 'Acquire::http::Pipeline-Depth "0"; Acquire::http::No-Cache "true";' > /etc/apt/apt.conf.d/99-http-proxy \
     && apt-get -o Acquire::ForceIPv4=true update \
     && apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
         build-essential \
         linux-libc-dev \
         musl-tools \
+        patchelf \
         pkg-config \
         cmake \
         curl \
@@ -49,8 +51,23 @@ RUN cp /tmp/sources.list /etc/apt/sources.list \
         make \
         perl \
         rpm \
+        libappindicator3-dev \
+        librsvg2-dev \
+        libssl-dev \
+        libwebkit2gtk-4.0-dev \
+        dbus-x11 \
+        systemd \
+        wget \
+        xauth \
+        xvfb \
         xz-utils \
         ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Current RustDeskTiny release debs use control.tar.zst/data.tar.zst, while the
+# Debian 10 dpkg bundled in this baseline predates zstd support.
+RUN apt-get -o Acquire::ForceIPv4=true update \
+    && apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends zstd \
     && rm -rf /var/lib/apt/lists/*
 
 # musl-tools exposes only the generic musl-gcc name. Publish an explicit
@@ -86,10 +103,13 @@ RUN case "$(uname -m)" in \
     && node --version \
     && npm --version
 
+ARG RUSTUP_DIST_SERVER=https://rsproxy.cn
+ARG RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
 RUN curl --http1.1 --fail --location --retry 10 --retry-delay 5 \
         --retry-connrefused --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
         https://sh.rustup.rs -o /tmp/rustup-init.sh \
-    && sh /tmp/rustup-init.sh -y --profile minimal \
+    && RUSTUP_DIST_SERVER="${RUSTUP_DIST_SERVER}" RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT}" \
+        sh /tmp/rustup-init.sh -y --profile minimal \
         --default-toolchain "${RUST_VERSION}" \
         --component rustfmt \
     && rm /tmp/rustup-init.sh \

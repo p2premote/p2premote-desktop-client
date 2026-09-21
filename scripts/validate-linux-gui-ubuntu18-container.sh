@@ -3,7 +3,16 @@ set -euo pipefail
 
 deb="$1"
 appimage="$2"
-dpkg -i "$deb"
+dpkg-deb --info "$deb" >/dev/null
+dpkg-deb --contents "$deb" | grep -q './usr/share/rustdesk/rustdesk' || {
+  echo "combined deb is missing RustDeskTiny" >&2
+  exit 1
+}
+# The Debian 10 compiler image deliberately does not model every target desktop
+# runtime dependency (notably gstreamer1.0-pipewire). Install the already checked
+# package while ignoring dependency resolution; the real install is validated on
+# the Kylin target after the build.
+dpkg --force-depends -i "$deb"
 [[ -L /etc/systemd/system/multi-user.target.wants/p2premote-service.service ]] || {
   echo "p2premote service was not enabled during deb installation" >&2
   exit 1
@@ -28,6 +37,10 @@ for binary in "${binaries[@]}"; do
     exit 1
   fi
 done
+[[ -x /usr/share/rustdesk/rustdesk ]] || {
+  echo "RustDeskTiny executable is missing after package install" >&2
+  exit 1
+}
 
 set +e
 timeout --signal=TERM 8s /opt/p2premote/resources/p2premote-service --foreground \
@@ -39,7 +52,7 @@ if [[ $service_status -ne 124 ]]; then
   echo "p2premote service exited before the smoke-test timeout (status $service_status)" >&2
   exit 1
 fi
-echo "Ubuntu 18.04 service smoke test OK"
+echo "Debian 10 service smoke test OK"
 
 run_gui_smoke_test() {
   local label="$1"
@@ -53,7 +66,7 @@ run_gui_smoke_test() {
     echo "$label exited before the smoke-test timeout (status $status)" >&2
     exit 1
   fi
-  echo "Ubuntu 18.04 GUI smoke test OK: $label"
+  echo "Debian 10 GUI smoke test OK: $label"
 }
 
 useradd --create-home --shell /bin/bash p2ptest

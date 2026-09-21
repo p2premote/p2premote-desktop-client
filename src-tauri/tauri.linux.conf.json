@@ -12,8 +12,8 @@
       "deb": {
         "depends": ["systemd"],
         "provides": ["p2p-remote"],
-        "conflicts": ["p2p-remote"],
-        "replaces": ["p2p-remote"]
+        "conflicts": ["p2p-remote", "p2premote-headless"],
+        "replaces": ["p2p-remote", "p2premote-headless"]
       },
       "resources": [
       "resources/p2premote-service",
