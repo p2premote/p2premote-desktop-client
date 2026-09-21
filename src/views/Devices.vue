@@ -156,36 +156,44 @@
 					<el-icon><SwitchButton /></el-icon>
 					<span>{{ wakingIds.has(selectedDevice.device_id) ? $t('devices.wol.sending') : $t('devices.wol.action') }}</span>
 				</button>
-                <div class="action-tile-wrap" :title="tunnelActionTooltip(selectedDevice)">
-                  <button
-                    type="button"
-                    class="action-tile primary"
-                    :disabled="!canUseTunnelAction(selectedDevice) || selectedDisconnecting"
-                    :aria-label="`${activeTunnelActionText(selectedDevice)}. ${tunnelActionTooltip(selectedDevice)}`"
-                    @click="openTunnelAction(selectedDevice!)"
-                  >
-                    <el-icon :class="{ 'is-loading': selectedDisconnecting }"><Loading v-if="selectedDisconnecting" /><Link v-else /></el-icon>
-                    <span>{{ activeTunnelActionText(selectedDevice) }}</span>
-                  </button>
-					  </div>
+                <el-tooltip :content="tunnelActionTooltip(selectedDevice)" placement="top">
+                  <div class="action-tile-wrap">
+                    <button
+                      type="button"
+                      class="action-tile primary"
+                      :disabled="!canUseTunnelAction(selectedDevice) || selectedDisconnecting"
+                      :aria-label="`${activeTunnelActionText(selectedDevice)}. ${tunnelActionTooltip(selectedDevice)}`"
+                      @click="openTunnelAction(selectedDevice!)"
+                    >
+                      <el-icon :class="{ 'is-loading': selectedDisconnecting }"><Loading v-if="selectedDisconnecting" /><Link v-else /></el-icon>
+                      <span>{{ activeTunnelActionText(selectedDevice) }}</span>
+                    </button>
+                  </div>
+                </el-tooltip>
 					</div>
 				  </div>
 
 					<div class="action-group">
 				  <div class="action-group-label">{{ $t('devices.detail.connection.remote_group') }}</div>
 				  <div class="action-grid">
-                <div v-if="supportsBuiltInDesktop(selectedDevice)" class="action-tile-wrap" :title="remoteAccessTooltip(selectedDevice)">
-                  <button
-                    type="button"
-                    class="action-tile"
-                    :disabled="!isTunnelConnected(selectedDevice)"
-                    :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
-                    @click="copyRemoteDesktopAddress(selectedDevice!)"
-                  >
-                    <el-icon><CopyDocument /></el-icon>
-                    <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
-                  </button>
-                </div>
+                <el-tooltip
+                  v-if="supportsBuiltInDesktop(selectedDevice)"
+                  :content="remoteAccessTooltip(selectedDevice)"
+                  placement="top"
+                >
+                  <div class="action-tile-wrap">
+                    <button
+                      type="button"
+                      class="action-tile"
+                      :disabled="!isTunnelConnected(selectedDevice)"
+                      :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
+                      @click="copyRemoteDesktopAddress(selectedDevice!)"
+                    >
+                      <el-icon><CopyDocument /></el-icon>
+                      <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
+                    </button>
+                  </div>
+                </el-tooltip>
 
                 <button
                   v-if="showWindowsRdpAction(selectedDevice)"
