@@ -114,6 +114,16 @@ where
             None => Ok(None),
         }
     }
+
+    /// Flush pending frames and gracefully close the underlying TCP write side.
+    /// Callers that use connection closure as a control signal must await this
+    /// before tearing down the tunnel that carries the TCP stream.
+    pub async fn close(&mut self) -> Result<()> {
+        self.inner
+            .close()
+            .await
+            .map_err(|err| anyhow!("tunnel connection close failed: {}", err))
+    }
 }
 
 pub fn now_millis() -> i64 {

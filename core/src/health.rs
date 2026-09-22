@@ -46,6 +46,7 @@ struct PassiveSpeedTestCommand {
 struct PeerHealthControl {
     generation: u64,
     stop_tx: watch::Sender<bool>,
+    closed_rx: watch::Receiver<bool>,
     speed_tx: mpsc::UnboundedSender<PassiveSpeedTestCommand>,
 }
 
@@ -68,19 +69,34 @@ impl HealthServerHandle {
 
     /// 方案 A 核心：主动关闭指定 peer 的 health TCP 连接。
     ///
-    /// 发送 stop 信号后，对应的 `health_server_connection_loop` task 会 break 退出，
-    /// drop `TcpStream` 触发 TCP FIN 立即送达主动端，主动端 `conn.next()` 返回
-    /// `None` → `ConnectionClosed` → 立即清理（无宽限期）。
+    /// 发送 stop 信号后，等待连接 task 对 TCP 执行 graceful shutdown。调用方只有
+    /// 在本方法返回后才能拆除承载该连接的隧道，避免 FIN 尚未提交就先删数据面。
     ///
     /// peer 不存在时静默（幂等，重复调用无害）。
-    pub fn close_peer_connection(&self, peer_device_id: i64) {
-        if let Some(control) = self
+    pub async fn close_peer_connection(&self, peer_device_id: i64) {
+        if let Some(mut control) = self
             .peer_controls
             .lock()
             .ok()
             .and_then(|mut m| m.remove(&peer_device_id))
         {
             let _ = control.stop_tx.send(true);
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                control.closed_rx.changed(),
+            )
+            .await
+            {
+                Ok(Ok(())) if *control.closed_rx.borrow() => {}
+                Ok(_) => warn!(
+                    "[Health] peer connection closed without shutdown confirmation, peer_device_id={}",
+                    peer_device_id
+                ),
+                Err(_) => warn!(
+                    "[Health] timed out waiting for peer connection shutdown, peer_device_id={}",
+                    peer_device_id
+                ),
+            }
         }
     }
 
@@ -330,6 +346,7 @@ async fn health_server_connection_loop(
     // HealthServerHandle.close_peer_connection 发送 true，本 loop 收到后 break，
     // drop `TcpStream` 触发 TCP FIN 立即送达主动端（conn.next() → None）。
     let (peer_stop_tx, mut peer_stop_rx) = watch::channel(false);
+    let (closed_tx, closed_rx) = watch::channel(false);
     let (speed_request_tx, mut speed_request_rx) = mpsc::unbounded_channel();
     let replaced_peer_control = peer_controls.lock().ok().and_then(|mut registry| {
         registry.insert(
@@ -337,6 +354,7 @@ async fn health_server_connection_loop(
             PeerHealthControl {
                 generation: connection_generation,
                 stop_tx: peer_stop_tx,
+                closed_rx,
                 speed_tx: speed_request_tx,
             },
         )
@@ -375,6 +393,13 @@ async fn health_server_connection_loop(
                             "[Health] passive initiated close, source_device_id={}",
                             source_device_id
                         );
+                        if let Err(err) = conn.close().await {
+                            warn!(
+                                "[Health] graceful peer connection shutdown failed, source_device_id={}, error={:#}",
+                                source_device_id, err
+                            );
+                        }
+                        let _ = closed_tx.send(true);
                         break;
                     }
                     Ok(()) => {}
@@ -1039,14 +1064,15 @@ mod tests {
         // 等待 connected 回调（确认 per-peer sender 已注册）
         assert_eq!(rx.recv().await, Some((222, PassiveHealthEvent::Connected)));
 
-        // 模拟 stop_wgvpn_job 调用 close_peer_connection：
-        // 取出 sender 并发送 stop 信号。
-        let control = peer_stops
-            .lock()
-            .expect("lock registry")
-            .remove(&222)
-            .expect("peer stop sender registered");
-        control.stop_tx.send(true).expect("send stop signal");
+        // 模拟 stop_wgvpn_job：close_peer_connection 只有在连接 task 已完成
+        // graceful shutdown 后才返回，随后调用方才可以拆除 WG/UDP 数据面。
+        let (server_stop_tx, _server_stop_rx) = watch::channel(false);
+        let handle = HealthServerHandle {
+            stop_tx: server_stop_tx,
+            peer_controls: peer_stops,
+            tasks: Vec::new(),
+        };
+        handle.close_peer_connection(222).await;
 
         // 被动端连接 task 收到信号后 break，drop TcpStream 发送 TCP FIN。
         // 主动端 conn.next() 应返回 None（不返回任何消息、不报错）。

@@ -600,8 +600,9 @@ pub(super) async fn stop_wgvpn_job(
     // 避免主动端长时间无感知（只能等心跳超时 + 宽限期）。
     // 仅对被动隧道生效；主动隧道已由 stop_wgvpn 内的 notify_remote_tunnel_stop 处理。
     if stopped_role == TunnelLifecycleRole::Passive {
-        if let Some(handle) = shared.lock().health_server_handle.as_ref() {
-            handle.close_peer_connection(peer_device_id);
+        let health_server = shared.lock().health_server_handle.clone();
+        if let Some(handle) = health_server {
+            handle.close_peer_connection(peer_device_id).await;
         }
     }
     let cancel_tx = shared

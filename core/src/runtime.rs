@@ -90,7 +90,7 @@ static NEXT_PASSIVE_HEALTH_GRACE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_PASSIVE_HEALTH_WATCHDOG_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// 主动端每 5 秒评估一次健康状态，连续 12 次失败约 60 秒后进入网络异常。
 const WGVPN_HEALTH_FAILURE_THRESHOLD: u8 = 12;
-const WGVPN_HEALTH_GRACE_SECS: u64 = 600;
+const WGVPN_HEALTH_GRACE_SECS: u64 = 300;
 /// 被动会话建立或恢复后，等待主动端首次健康连接的时间。
 const PASSIVE_HEALTH_CONNECT_WAIT_SECS: u64 = 60;
 const DEVICE_STATUS_POLL_SECS: u64 = 30;
