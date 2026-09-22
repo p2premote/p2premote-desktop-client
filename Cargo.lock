@@ -3247,7 +3247,7 @@ dependencies = [
 
 [[package]]
 name = "p2premote"
-version = "1.12.0-334f23"
+version = "1.12.4-fb23c3"
 dependencies = [
  "chrono",
  "once_cell",
