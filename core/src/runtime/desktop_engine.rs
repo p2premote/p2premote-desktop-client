@@ -9,7 +9,7 @@ use std::{
 /// RustDeskTiny owns its listener and defaults to this direct-access port.
 /// A future per-device preference may override the connection target only; p2pRemote must never
 /// write the value into RustDeskTiny's configuration or manage its host lifecycle.
-pub(super) const DEFAULT_RUSTDESK_TINY_PORT: u16 = 21201;
+pub(super) const DEFAULT_RUSTDESK_TINY_PORT: u16 = 21121;
 
 #[cfg(windows)]
 const DETACHED_PROCESS: u32 = 0x00000008;
@@ -127,6 +127,6 @@ mod tests {
 
     #[test]
     fn default_port_matches_rustdesk_tiny_direct_access() {
-        assert_eq!(DEFAULT_RUSTDESK_TINY_PORT, 21201);
+        assert_eq!(DEFAULT_RUSTDESK_TINY_PORT, 21121);
     }
 }

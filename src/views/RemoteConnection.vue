@@ -157,7 +157,7 @@
               {{ $t('remote.connect.other_tool_hint_prefix') }}
               <strong>{{ activeTunnelPort }}</strong>
               {{ $t('remote.connect.other_tool_hint_infix') }}
-              <strong>21201</strong>{{ $t('remote.connect.other_tool_hint_suffix') }}
+              <strong>21121</strong>{{ $t('remote.connect.other_tool_hint_suffix') }}
             </p>
           </div>
 
