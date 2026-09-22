@@ -845,6 +845,13 @@ function tunnelVirtualIp(device: DeviceInfo | null): string {
   return tunnelStatusMap.value[device.device_id]?.virtual_ip || ''
 }
 
+const RUSTDESK_TINY_DEFAULT_PORT = 21121
+
+function rustdeskTinyAddress(device: DeviceInfo | null): string {
+  const virtualIp = tunnelVirtualIp(device)
+  return virtualIp ? `${virtualIp}:${RUSTDESK_TINY_DEFAULT_PORT}` : ''
+}
+
 function tunnelLanCidrs(device: DeviceInfo | null): string[] {
   if (!device || deviceTunnelLifecycle(device).state !== 'connected') return []
   return tunnelStatusMap.value[device.device_id]?.exposed_lan_cidrs || []
@@ -1228,17 +1235,31 @@ async function launchP2pRemoteDesktop(device: DeviceInfo) {
     ElMessage.error(t('devices.message.desktop_capability_missing'))
     return
   }
+  const address = rustdeskTinyAddress(device)
+  if (!address) {
+    ElMessage.error(t('devices.message.no_rustdesk_tiny_address'))
+    return
+  }
+
+  let addressCopied = false
   try {
-    await invoke('start_service_desktop_session', {
-      peerDeviceId: device.device_id,
-      // Reserved for a future per-device hint. It changes only the connection target and never
-      // writes RustDeskTiny's listener configuration.
-      rustdeskTinyPort: null,
-    })
-    ElMessage.success(t('devices.message.desktop_window_started'))
+    await navigator.clipboard.writeText(address)
+    addressCopied = true
+  } catch {
+    // Launch can still use --connect; the copy failure is reported only if
+    // launching also fails so the user gets the most useful next step.
+  }
+
+  try {
+    await invoke('launch_rustdesk_tiny', { address })
+    ElMessage.success(t('devices.message.desktop_window_started', { address }))
   } catch (e) {
-    const msg = typeof e === 'string' ? e : (e as any)?.message || t('common.unknown_error')
-    ElMessage.error(t('devices.message.connect_failed', { error: msg }))
+    if (addressCopied) {
+      ElMessage.warning(t('devices.message.desktop_address_copied', { address }))
+    } else {
+      const msg = typeof e === 'string' ? e : (e as any)?.message || t('common.unknown_error')
+      ElMessage.error(t('devices.message.connect_failed', { error: msg }))
+    }
   }
 }
 

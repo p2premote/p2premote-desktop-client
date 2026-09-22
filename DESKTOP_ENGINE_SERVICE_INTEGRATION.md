@@ -12,8 +12,9 @@ Host，也不通过 WGVPN 健康控制通道管理 RustDeskTiny 生命周期。
 <对端 WGVPN 虚拟 IP>:21121
 ```
 
-p2pRemote 可以启动本机 RustDeskTiny Controller 并传入该地址，也可以只展示地址
-供用户手动连接。连接认证完全由 RustDeskTiny 的临时密码或长期密码完成。
+p2pRemote 在当前登录用户的 GUI 进程中启动本机 RustDeskTiny Controller 并传入该地址，
+同时将地址复制到剪贴板；启动失败时用户可手动粘贴连接。连接认证完全由 RustDeskTiny
+的临时密码或长期密码完成。
 
 ## 端口职责
 
@@ -30,7 +31,7 @@ WGVPN `48082` 控制长连接只负责健康检查、心跳和测速。协议中
 
 ## 本地进程
 
-p2pRemote 启动 Controller 时只执行：
+p2pRemote 的 GUI 进程启动 Controller 时只执行：
 
 ```text
 RustDeskTiny.exe --connect <对端虚拟 IP>:<设备记录端口或 21121>

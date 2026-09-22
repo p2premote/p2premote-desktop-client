@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use once_cell::sync::OnceCell;
@@ -268,6 +270,49 @@ fn require_bundled_binary(app: &AppHandle, binary_name: &str) -> Result<PathBuf,
     }
     info!("[p2premote] verified bundled file: {}", path.display());
     Ok(path)
+}
+
+/// Launch the RustDeskTiny GUI from the interactive Tauri process.
+///
+/// The background service runs in Windows Session 0 and must not create a
+/// desktop window there. Keeping this launch in the GUI process makes the
+/// window visible to the logged-in user while RustDeskTiny continues to own
+/// its own service and listener configuration.
+#[tauri::command]
+pub fn launch_rustdesk_tiny(app: AppHandle, address: String) -> Result<(), String> {
+    let address = address.trim();
+    if address.is_empty() || address.chars().any(char::is_whitespace) {
+        return Err("invalid RustDeskTiny address".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let executable = [
+            "RustDeskTiny/RustDeskTiny.exe",
+            "RustDeskTiny/RustDeskTinyLegacy.exe",
+        ]
+        .iter()
+        .find_map(|name| require_bundled_binary(&app, name).ok())
+        .ok_or_else(|| {
+            "RustDeskTiny executable is missing from application resources".to_string()
+        })?;
+
+        Command::new(&executable)
+            .args(["--connect", address])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("failed to start RustDeskTiny: {error}"))?;
+        info!(path = %executable.display(), address, "[Desktop] RustDeskTiny GUI launched");
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, address);
+        Err("RustDeskTiny GUI launch is only available on Windows".to_string())
+    }
 }
 
 /// 解析 service 的唯一规范路径。安装不完整时直接报错，不搜索旧版或工作目录文件。
