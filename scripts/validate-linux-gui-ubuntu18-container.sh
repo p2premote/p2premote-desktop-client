@@ -4,7 +4,7 @@ set -euo pipefail
 deb="$1"
 appimage="$2"
 dpkg-deb --info "$deb" >/dev/null
-dpkg-deb --contents "$deb" | grep -q './usr/share/rustdesk/rustdesk' || {
+dpkg-deb --contents "$deb" | grep -q './usr/share/rustdesktiny/rustdesktiny' || {
   echo "combined deb is missing RustDeskTiny" >&2
   exit 1
 }
@@ -37,7 +37,7 @@ for binary in "${binaries[@]}"; do
     exit 1
   fi
 done
-[[ -x /usr/share/rustdesk/rustdesk ]] || {
+[[ -x /usr/share/rustdesktiny/rustdesktiny ]] || {
   echo "RustDeskTiny executable is missing after package install" >&2
   exit 1
 }

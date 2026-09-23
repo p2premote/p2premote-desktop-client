@@ -111,13 +111,13 @@ sed -i "s@^Depends: .*@Depends: ${current_depends}, ${tiny_depends}@" "$stage/ro
 sed -i '/^exit 0$/d' "$stage/root/DEBIAN/postinst"
 cat >> "$stage/root/DEBIAN/postinst" <<'EOF'
 if [ "$1" = "configure" ]; then
-  ln -f -s /usr/share/rustdesk/rustdesk /usr/bin/rustdesk
+  ln -f -s /usr/share/rustdesktiny/rustdesktiny /usr/bin/rustdesktiny
   if [ -d /run/systemd/system ]; then
-    install -m 0644 /usr/share/rustdesk/files/systemd/rustdesk.service /usr/lib/systemd/system/rustdesk.service
-    command -v pkill >/dev/null 2>&1 && sed -i 's|pkill|/usr/bin/pkill|g' /usr/lib/systemd/system/rustdesk.service
+    install -m 0644 /usr/share/rustdesktiny/files/systemd/rustdesk.service /usr/lib/systemd/system/rustdesktiny.service
+    command -v pkill >/dev/null 2>&1 && sed -i 's|pkill|/usr/bin/pkill|g' /usr/lib/systemd/system/rustdesktiny.service
     systemctl daemon-reload
-    systemctl enable rustdesk.service >/dev/null
-    systemctl restart rustdesk.service
+    systemctl enable rustdesktiny.service >/dev/null
+    systemctl restart rustdesktiny.service
   fi
 fi
 exit 0
@@ -125,10 +125,10 @@ EOF
 sed -i '/^exit 0$/d' "$stage/root/DEBIAN/prerm"
 cat >> "$stage/root/DEBIAN/prerm" <<'EOF'
 if [ "$1" = "remove" ] || [ "$1" = "upgrade" ]; then
-  rm -f /usr/bin/rustdesk
+  rm -f /usr/bin/rustdesktiny
   if [ -d /run/systemd/system ]; then
-    systemctl stop rustdesk.service >/dev/null 2>&1 || true
-    [ "$1" != "remove" ] || systemctl disable rustdesk.service >/dev/null 2>&1 || true
+    systemctl stop rustdesktiny.service >/dev/null 2>&1 || true
+    [ "$1" != "remove" ] || systemctl disable rustdesktiny.service >/dev/null 2>&1 || true
   fi
 fi
 exit 0
@@ -138,7 +138,7 @@ chown -R 0:0 "$stage/root"
 dpkg-deb --root-owner-group --build "$stage/root" "$output"
 install -m 0644 "$output" "$deb"
 dpkg-deb --info "$deb" >/dev/null
-dpkg-deb --contents "$deb" | grep -q './usr/share/rustdesk/rustdesk' || {
+dpkg-deb --contents "$deb" | grep -q './usr/share/rustdesktiny/rustdesktiny' || {
   echo "combined deb is missing RustDeskTiny" >&2
   exit 1
 }
