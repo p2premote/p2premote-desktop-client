@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::sync::{watch, Notify};
@@ -50,12 +50,15 @@ struct WebAdminState {
 }
 
 struct WebSecurityState {
-    allowed_remote_ip: Option<IpAddr>,
+    allowed_remote_ip: Mutex<Option<IpAddr>>,
     security_code_hash: Mutex<Option<[u8; 32]>>,
     security_code_must_change: AtomicBool,
     session: Mutex<Option<WebSession>>,
     session_revision: watch::Sender<u64>,
     failures: Mutex<HashMap<IpAddr, UnlockFailure>>,
+    /// 首次信任（TOFU）引导期内被信任的首个远程来源 IP，仅存于内存；
+    /// 该客户端设置安全码后白名单落盘，此槽位随即清空。
+    bootstrap_trusted_ip: Mutex<Option<IpAddr>>,
 }
 
 struct WebSession {
@@ -94,6 +97,9 @@ struct WebAuthStatus {
     authenticated: bool,
     security_code_required: bool,
     security_code_change_required: bool,
+    /// 首次信任引导等待完成：全新 Docker 部署尚未设置安全码，前端应
+    /// 引导首个客户端设置安全码以锁定远程访问。
+    first_trust_pending: bool,
     source_ip: String,
 }
 
@@ -166,7 +172,7 @@ impl WebSecurityState {
         }
         let (session_revision, _) = watch::channel(0);
         Ok(Self {
-            allowed_remote_ip,
+            allowed_remote_ip: Mutex::new(allowed_remote_ip),
             security_code_hash: Mutex::new(security_code.as_deref().map(hash_security_code)),
             security_code_must_change: AtomicBool::new(
                 security_code.is_some() && security_code_must_change,
@@ -174,34 +180,103 @@ impl WebSecurityState {
             session: Mutex::new(None),
             session_revision,
             failures: Mutex::new(HashMap::new()),
+            bootstrap_trusted_ip: Mutex::new(None),
         })
     }
 
     fn localhost_only() -> Self {
         let (session_revision, _) = watch::channel(0);
         Self {
-            allowed_remote_ip: None,
+            allowed_remote_ip: Mutex::new(None),
             security_code_hash: Mutex::new(None),
             security_code_must_change: AtomicBool::new(false),
             session: Mutex::new(None),
             session_revision,
             failures: Mutex::new(HashMap::new()),
+            bootstrap_trusted_ip: Mutex::new(None),
         }
     }
 
     fn source_allowed(&self, ip: IpAddr) -> bool {
         let ip = normalize_ip(ip);
         ip.is_loopback()
-            || self.allowed_remote_ip.is_some_and(|allowed| {
-                allowed == ip
-                    || matches!(allowed, IpAddr::V4(value) if value.is_unspecified())
-                        && matches!(ip, IpAddr::V4(_))
-            })
+            || self
+                .allowed_remote_ip
+                .lock()
+                .is_some_and(|allowed| {
+                    allowed == ip
+                        || matches!(allowed, IpAddr::V4(value) if value.is_unspecified())
+                            && matches!(ip, IpAddr::V4(_))
+                })
+    }
+
+    /// Docker 部署（Dockerfile 注入 P2PREMOTE_WEB_ADMIN_FIRST_TRUST=1）启用
+    /// 首次信任引导：无安全码且无白名单的全新部署，首个远程客户端获得
+    /// 引导访问权，设置安全码后白名单锁定到该来源 IP。
+    fn first_trust_bootstrap_enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var("P2PREMOTE_WEB_ADMIN_FIRST_TRUST")
+                .map(|value| {
+                    let value = value.trim();
+                    value == "1" || value.eq_ignore_ascii_case("true")
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    /// 引导窗口是否打开：开关开启、未配置安全码、未配置白名单。
+    fn first_trust_bootstrap_pending_with(&self, enabled: bool) -> bool {
+        enabled
+            && self.allowed_remote_ip.lock().is_none()
+            && self.security_code_hash.lock().is_none()
+    }
+
+    fn first_trust_bootstrap_pending(&self) -> bool {
+        Self::first_trust_bootstrap_enabled() && self.first_trust_bootstrap_pending_with(true)
+    }
+
+    /// 远程来源在引导窗口内认领首次信任；先到先得，之后其他来源一律拒绝。
+    fn claim_first_trust_bootstrap_with(&self, ip: IpAddr, path: &str, enabled: bool) -> bool {
+        if !enabled || path == "/api/health" {
+            return false;
+        }
+        let ip = normalize_ip(ip);
+        if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+            return false;
+        }
+        if !self.first_trust_bootstrap_pending_with(enabled) {
+            return false;
+        }
+        let mut slot = self.bootstrap_trusted_ip.lock();
+        match *slot {
+            Some(trusted) => trusted == ip,
+            None => {
+                *slot = Some(ip);
+                info!(
+                    "[WebAdmin] first-use trust: remote client {ip} granted bootstrap Web admin \
+                     access; it must set a security code to persist remote mode"
+                );
+                true
+            }
+        }
+    }
+
+    fn claim_first_trust_bootstrap(&self, ip: IpAddr, path: &str) -> bool {
+        let enabled = Self::first_trust_bootstrap_enabled();
+        self.claim_first_trust_bootstrap_with(ip, path, enabled)
+    }
+
+    fn first_trust_trusted(&self, ip: IpAddr) -> bool {
+        self.bootstrap_trusted_ip
+            .lock()
+            .is_some_and(|trusted| trusted == normalize_ip(ip))
     }
 
     fn session_valid(&self, headers: &HeaderMap, source_ip: IpAddr, refresh: bool) -> bool {
         if self.security_code_hash.lock().is_none() {
-            return source_ip.is_loopback();
+            // 未配置安全码时仅信任 loopback 与首次信任引导期认领的远程客户端。
+            return source_ip.is_loopback() || self.first_trust_trusted(source_ip);
         }
         let Some(token) = session_cookie(headers) else {
             return false;
@@ -352,7 +427,12 @@ async fn web_admin_server_loop(
             web_source_ip_guard,
         ));
 
-    let addr = web_admin_addr(state.security.allowed_remote_ip.is_some())?;
+    // 引导窗口打开期间（首次信任开启且全新部署）也需要监听 0.0.0.0，
+    // 否则远程客户端永远无法到达服务来认领首次信任。
+    let remote_client_configured = state.security.allowed_remote_ip.lock().is_some();
+    let addr = web_admin_addr(
+        remote_client_configured || state.security.first_trust_bootstrap_pending(),
+    )?;
     info!(
         "[WebAdmin] HTTP listening on http://{} , ui_dir={}, remote_client={}, authentication={}",
         addr,
@@ -360,6 +440,7 @@ async fn web_admin_server_loop(
         state
             .security
             .allowed_remote_ip
+            .lock()
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| "disabled".to_string()),
         if state.security.security_code_hash.lock().is_some() {
@@ -403,10 +484,22 @@ pub(super) fn web_admin_addr_for_log() -> String {
     if !load_machine_config().unwrap_or_default().webui_enabled {
         return "disabled".to_string();
     }
-    let remote_enabled = load_machine_config()
+    let security = load_machine_config()
         .ok()
-        .and_then(|config| config.web_admin_allowed_ip)
-        .is_some_and(|value| !value.trim().is_empty());
+        .map(|config| {
+            WebSecurityState::from_values(
+                config.web_admin_allowed_ip.as_deref(),
+                config.web_admin_security_code.as_deref(),
+                config.web_admin_security_code_must_change,
+            )
+        })
+        .and_then(|result| result.ok());
+    let remote_enabled = security
+        .as_ref()
+        .is_some_and(|security| security.allowed_remote_ip.lock().is_some())
+        || security
+            .as_ref()
+            .is_some_and(|security| security.first_trust_bootstrap_pending());
     web_admin_addr(remote_enabled)
         .map(|addr| format!("http://{}", addr))
         .unwrap_or_else(|_| format!("http://{}", DEFAULT_WEB_ADMIN_ADDR))
@@ -463,7 +556,12 @@ async fn web_source_ip_guard(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    if !state.security.source_allowed(normalize_ip(peer.ip())) {
+    let ip = normalize_ip(peer.ip());
+    if !state.security.source_allowed(ip)
+        && !state
+            .security
+            .claim_first_trust_bootstrap(ip, request.uri().path())
+    {
         return StatusCode::FORBIDDEN.into_response();
     }
     next.run(request).await
@@ -486,6 +584,7 @@ async fn web_auth_status(
             .security
             .security_code_must_change
             .load(Ordering::Acquire),
+        first_trust_pending: state.security.first_trust_bootstrap_pending(),
         source_ip: normalize_ip(peer.ip()).to_string(),
     })
 }
@@ -579,7 +678,9 @@ async fn web_auth_change_security_code(
         .security_code_must_change
         .load(Ordering::Acquire);
     let current_hash = *state.security.security_code_hash.lock();
-    if !must_change {
+    // 尚未配置任何安全码时视为首次设置：不要求旧码（loopback 首次使用与
+    // Docker 首次信任引导都从这里建立初始安全码）。
+    if !must_change && current_hash.is_some() {
         let Some(current_security_code) = request.current_security_code.as_deref() else {
             return (
                 StatusCode::BAD_REQUEST,
@@ -621,8 +722,16 @@ async fn web_auth_change_security_code(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
+    // 首次信任完成：认领引导的远程客户端设置安全码后，把白名单锁定到
+    // 该来源 IP，与安全码同批落盘，保持"白名单非空必须有安全码"的不变量。
+    let source_ip = normalize_ip(peer.ip());
+    let complete_first_trust = state.security.first_trust_trusted(source_ip)
+        && config.web_admin_allowed_ip.is_none();
     config.web_admin_security_code = Some(security_code.to_string());
     config.web_admin_security_code_must_change = false;
+    if complete_first_trust {
+        config.web_admin_allowed_ip = Some(source_ip.to_string());
+    }
     if let Err(err) = save_machine_config(&config) {
         error!("[WebAdmin] failed to save changed security code: {err}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -634,6 +743,15 @@ async fn web_auth_change_security_code(
         .security_code_must_change
         .store(false, Ordering::Release);
     state.security.clear_session();
+    if complete_first_trust {
+        *state.security.allowed_remote_ip.lock() = Some(source_ip);
+        *state.security.bootstrap_trusted_ip.lock() = None;
+        // 白名单从空变为非空会改变监听地址（127.0.0.1 -> 0.0.0.0），触发重建。
+        state
+            .listener_revision
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+        info!("[WebAdmin] first-use trust completed: remote access pinned to {source_ip}");
+    }
     info!(
         "[WebAdmin] security code changed, source_ip={}",
         normalize_ip(peer.ip())
@@ -664,7 +782,9 @@ async fn web_admin_settings(
     Json(serde_json::json!({
         "mode": if allowed_ip.is_some() { "remote" } else { "local" },
         "allowed_ip": allowed_ip,
-        "listen_addr": if allowed_ip.is_some() {
+        "listen_addr": if allowed_ip.is_some()
+            || state.security.first_trust_bootstrap_pending()
+        {
             format!("0.0.0.0:{DEFAULT_WEB_ADMIN_PORT}")
         } else {
             DEFAULT_WEB_ADMIN_ADDR.to_string()
@@ -1647,5 +1767,52 @@ mod tests {
             parse_web_access_config("unknown", Some("10.0.0.8")),
             Err("invalid_access_mode")
         );
+    }
+
+    #[test]
+    fn first_trust_claim_requires_pending_bootstrap_and_first_comer_wins() {
+        let fresh = WebSecurityState::from_values(None, None, false).unwrap();
+        let remote: IpAddr = "192.168.31.23".parse().unwrap();
+        let other: IpAddr = "192.168.31.99".parse().unwrap();
+
+        // 开关关闭、health 探测、loopback 来源都不认领首次信任。
+        assert!(!fresh.claim_first_trust_bootstrap_with(remote, "/", false));
+        assert!(!fresh.claim_first_trust_bootstrap_with(remote, "/api/health", true));
+        assert!(!fresh.claim_first_trust_bootstrap_with(
+            "127.0.0.1".parse().unwrap(),
+            "/",
+            true
+        ));
+
+        assert!(fresh.claim_first_trust_bootstrap_with(remote, "/", true));
+        // 认领后引导窗口仍保持打开（部署依旧无码无白名单），但信任只属于
+        // 首个来源：其他远程来源被拒，认领者继续放行。
+        assert!(fresh.first_trust_bootstrap_pending_with(true));
+        assert!(!fresh.claim_first_trust_bootstrap_with(other, "/", true));
+        assert!(fresh.claim_first_trust_bootstrap_with(remote, "/", true));
+
+        // 已配置安全码或白名单的部署不进入引导窗口。
+        let with_code = WebSecurityState::from_values(None, Some("1234"), false).unwrap();
+        assert!(!with_code.claim_first_trust_bootstrap_with(remote, "/", true));
+        let with_allowed = WebSecurityState::from_values(Some("10.0.0.8"), Some("1234"), false).unwrap();
+        assert!(!with_allowed.claim_first_trust_bootstrap_with(remote, "/", true));
+    }
+
+    #[test]
+    fn first_trust_bootstrap_client_passes_session_without_code() {
+        let security = WebSecurityState::from_values(None, None, false).unwrap();
+        let remote: IpAddr = "192.168.31.23".parse().unwrap();
+        let other: IpAddr = "192.168.31.99".parse().unwrap();
+        assert!(security.claim_first_trust_bootstrap_with(remote, "/", true));
+
+        let headers = HeaderMap::new();
+        assert!(security.session_valid(&headers, remote, false));
+        assert!(security.session_valid(&headers, "127.0.0.1".parse().unwrap(), false));
+        // 未认领的其他来源在无码状态下仍然被拒。
+        assert!(!security.session_valid(&headers, other, false));
+
+        // 设置安全码后（引导完成），无码分支不再生效，回到会话校验路径。
+        *security.security_code_hash.lock() = Some(hash_security_code("1234"));
+        assert!(!security.session_valid(&headers, remote, false));
     }
 }

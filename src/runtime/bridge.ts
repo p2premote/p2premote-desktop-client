@@ -9,6 +9,7 @@ export interface WebAuthStatus {
   authenticated: boolean
   security_code_required: boolean
   security_code_change_required: boolean
+  first_trust_pending?: boolean
   source_ip: string
 }
 

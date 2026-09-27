@@ -68,6 +68,13 @@ ENV P2PREMOTE_INSTALL_ROOT=/opt/p2premote
 ARG P2PREMOTE_UPDATE_TARGET=linux-docker-x64
 ENV P2PREMOTE_UPDATE_TARGET=${P2PREMOTE_UPDATE_TARGET}
 
+# 首次信任（TOFU）引导：无 GUI 的 NAS 场景没有本机浏览器可用，全新部署
+# （未配置安全码且未配置白名单）时 Web Admin 直接监听 0.0.0.0，首个远程
+# 客户端获得引导访问权并被要求设置安全码；设置完成后白名单锁定到该来源
+# IP，其余来源一律拒绝。容器界面创建后无需查看 stdout——引导直接在浏览器
+# 里完成。开关仅在本镜像注入，裸机安装保持 loopback-only 默认。
+ENV P2PREMOTE_WEB_ADMIN_FIRST_TRUST=1
+
 # Web Admin 默认监听端口。host 网络模式下宿主机直接暴露该端口；
 # 外部访问该端口的源 IP 即真实客户端 IP，是 web_admin_allowed_ip 生效的前提。
 EXPOSE 48083

@@ -46,6 +46,8 @@ export default {
       new_placeholder: '新安全码（至少 4 个字符，不能为 0000）',
       confirm_placeholder: '再次输入新安全码',
       change: '修改安全码并进入',
+      first_trust_prompt: '首次使用：请设置 Web 安全码，设置完成后远程访问将锁定到当前设备',
+      first_trust_set: '设置安全码并进入',
       code_mismatch: '两次输入的安全码不一致',
       code_unchanged: '新安全码不能与当前安全码相同',
       invalid_new_code: '新安全码至少需要 4 个字符，且不能为 0000',

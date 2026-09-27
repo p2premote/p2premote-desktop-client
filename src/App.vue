@@ -11,7 +11,15 @@
       <div class="web-auth-card fluent-card">
         <AppLogo :size="48" />
         <h1>p2pRemote</h1>
-        <p>{{ $t(webSecurityCodeChangeRequired ? 'app.web_auth.change_prompt' : 'app.web_auth.prompt') }}</p>
+        <p>{{
+          $t(
+            webFirstTrustPending
+              ? 'app.web_auth.first_trust_prompt'
+              : webSecurityCodeChangeRequired
+                ? 'app.web_auth.change_prompt'
+                : 'app.web_auth.prompt'
+          )
+        }}</p>
         <el-alert
           v-if="webDefaultSecurityCodeActive && !webAuthenticated"
           :title="$t('app.web_auth.initial_code_hint')"
@@ -19,7 +27,7 @@
           :closable="false"
           show-icon
         />
-        <template v-if="webSecurityCodeChangeRequired">
+        <template v-if="webCodeSetupRequired">
           <el-input
             v-model="newWebSecurityCode"
             type="password"
@@ -49,9 +57,9 @@
           type="primary"
           size="large"
           :loading="webAuthLoading"
-          @click="webSecurityCodeChangeRequired ? handleWebSecurityCodeChange() : handleWebUnlock()"
+          @click="webCodeSetupRequired ? handleWebSecurityCodeChange() : handleWebUnlock()"
         >
-          {{ $t(webSecurityCodeChangeRequired ? 'app.web_auth.change' : 'app.web_auth.enter') }}
+          {{ $t(webFirstTrustPending ? 'app.web_auth.first_trust_set' : webCodeSetupRequired ? 'app.web_auth.change' : 'app.web_auth.enter') }}
         </el-button>
         <p class="web-auth-cert-note">{{ $t('app.web_auth.certificate_note') }}</p>
       </div>
@@ -478,6 +486,7 @@ const webAuthRequired = ref(false)
 const webAuthenticated = ref(isTauriRuntime())
 const webSecurityCodeChangeRequired = ref(false)
 const webDefaultSecurityCodeActive = ref(false)
+const webFirstTrustPending = ref(false)
 const webSecurityCode = ref('')
 const newWebSecurityCode = ref('')
 const confirmWebSecurityCode = ref('')
@@ -504,8 +513,12 @@ const webAuthGateVisible = computed(
   () => !isTauriRuntime() && (
     !webAuthChecked.value
     || webSecurityCodeChangeRequired.value
+    || webFirstTrustPending.value
     || (webAuthRequired.value && !webAuthenticated.value)
   ),
+)
+const webCodeSetupRequired = computed(
+  () => webSecurityCodeChangeRequired.value || webFirstTrustPending.value,
 )
 
 async function refreshWebAuthStatus() {
@@ -516,6 +529,7 @@ async function refreshWebAuthStatus() {
     webAuthenticated.value = status.authenticated
     webDefaultSecurityCodeActive.value = status.security_code_change_required
     webSecurityCodeChangeRequired.value = status.security_code_change_required && status.authenticated
+    webFirstTrustPending.value = status.first_trust_pending === true && status.authenticated
     webAuthError.value = ''
   } catch (error) {
     webAuthRequired.value = true
@@ -677,7 +691,7 @@ async function handleWebUnlock() {
     await unlockWebAdmin(webSecurityCode.value)
     webSecurityCode.value = ''
     await refreshWebAuthStatus()
-    if (webAuthenticated.value && !webSecurityCodeChangeRequired.value) {
+    if (webAuthenticated.value && !webCodeSetupRequired.value) {
       resumeWebSocket()
       if (appBootstrapped) startupReady.value = true
       else await bootstrapApp()

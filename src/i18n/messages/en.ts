@@ -43,6 +43,8 @@ const en = {
       new_placeholder: 'New code (at least 4 characters, not 0000)',
       confirm_placeholder: 'Enter the new code again',
       change: 'Change code and continue',
+      first_trust_prompt: 'First use: set a Web security code; remote access will then be pinned to this device',
+      first_trust_set: 'Set security code and continue',
       code_mismatch: 'The security codes do not match',
       code_unchanged: 'The new security code must differ from the current code',
       invalid_new_code: 'The new security code must contain at least 4 characters and cannot be 0000',
