@@ -13,10 +13,50 @@ use tracing::{debug, info};
 
 pub const CAPABILITY_RUSTDESK_TINY: &str = "rustdesk_tiny";
 
+#[cfg(target_os = "linux")]
+const LINUX_RUSTDESK_TINY_EXECUTABLE: &str = "/usr/share/rustdesktiny/rustdesktiny";
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn rustdesk_tiny_executable_installed(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 fn current_capabilities() -> Vec<String> {
-    if cfg!(windows) {
+    #[cfg(windows)]
+    {
         vec![CAPABILITY_RUSTDESK_TINY.to_string()]
-    } else {
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if rustdesk_tiny_executable_installed(std::path::Path::new(LINUX_RUSTDESK_TINY_EXECUTABLE))
+        {
+            vec![CAPABILITY_RUSTDESK_TINY.to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let installed = std::env::current_exe()
+            .ok()
+            .and_then(|service| {
+                service
+                    .parent()
+                    .map(|resources| resources.join("RustDeskTiny.app/Contents/MacOS/RustDeskTiny"))
+            })
+            .is_some_and(|executable| rustdesk_tiny_executable_installed(&executable));
+        if installed {
+            vec![CAPABILITY_RUSTDESK_TINY.to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
         Vec::new()
     }
 }
