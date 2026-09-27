@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Windows GUI 安装包 | 当前 Windows 主机架构（通常为 x64） | `scripts/build-windows.ps1` |
 | macOS GUI DMG | Universal（x86_64 + arm64） | `scripts/build-macos.sh` |
-| Linux GUI DEB、AppImage | x86_64 | `scripts/build-linux-gui.sh <version>` |
+| Linux GUI DEB、AppImage | x86_64 | `scripts/build-linux-gui.sh -v <version>` |
 | Linux Headless 裸压缩包、DEB、RPM、Docker 镜像 tar | x86_64 / aarch64 | `scripts/build-linux.sh` |
 
 编译缓存统一放在 `target/<构建目标>/`，发布物统一放在 `artifacts/<发布目标>/`。`target` 可随时清理，不再保存需要交付的安装包；`artifacts` 不参与 Cargo 增量编译，也不会被前端 Vite 清理。主要目录如下：
@@ -84,7 +84,7 @@ GUI 构建不会编译 RustDeskTiny。先从 RustDeskTiny GitHub Release 下载 
 保存为 `src-tauri/resources/RustDeskTiny.deb`，再执行：
 
 ```bash
-./scripts/build-linux-gui.sh 1.12.1
+./scripts/build-linux-gui.sh -v 1.12.1
 ```
 
 GUI 编译完成后，打包脚本会解开 RustDeskTiny deb，将它的数据文件、运行依赖与服务安装逻辑合并进

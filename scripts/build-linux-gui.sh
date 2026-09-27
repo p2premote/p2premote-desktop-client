@@ -1,11 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: $0 <version>" >&2
+usage() {
+  echo "Usage: $0 -v <version>"
+}
+
+version=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v)
+      [[ $# -ge 2 && -n "$2" ]] || { usage >&2; exit 2; }
+      version="$2"
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$version" ]]; then
+  usage >&2
   exit 2
 fi
-version="$1"
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "version must be in semver format like 1.2.3" >&2
+  exit 2
+fi
 # Rust 编译缓存根目录（N 盘不可用时改为对应盘符挂载路径，如 /mnt/d/rust-cache）
 RUST_CACHE_ROOT="${RUST_CACHE_ROOT:-/mnt/n/rust-cache}"
 cargo_target_dir="${CARGO_TARGET_DIR:-$RUST_CACHE_ROOT/wsl/linux-gui-x64}"
