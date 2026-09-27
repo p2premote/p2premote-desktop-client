@@ -14,6 +14,7 @@ wg_ffi_source_dir="../p2premote-wg-ffi"
 }
 
 version="${P2PREMOTE_LINUX_GUI_VERSION:?P2PREMOTE_LINUX_GUI_VERSION is required}"
+artifact_version="${P2PREMOTE_LINUX_GUI_ARTIFACT_VERSION:?P2PREMOTE_LINUX_GUI_ARTIFACT_VERSION is required}"
 config="src-tauri/tauri.debian10.generated.conf.json"
 frontend_dir="$(mktemp -d /tmp/p2premote-frontend.XXXXXX)"
 node - "src-tauri/tauri.linux.conf.json" "$config" "$version" <<'NODE'
@@ -59,15 +60,15 @@ for resource in \
   }
 done
 "$frontend_dir/node_modules/.bin/tauri" build --config "$config"
-bash scripts/repack-linux-gui-deb.sh "$P2PREMOTE_CLIENT_VERSION"
+bash scripts/repack-linux-gui-deb.sh "$version"
 mkdir -p "$dist_dir"
 install -m 0644 \
-  "$cargo_target_dir/release/bundle/deb/p2premote_${P2PREMOTE_CLIENT_VERSION}_amd64.deb" \
-  "$dist_dir/"
+  "$cargo_target_dir/release/bundle/deb/p2premote_${version}_amd64.deb" \
+  "$dist_dir/p2premote_${artifact_version}_amd64.deb"
 install -m 0755 \
-  "$cargo_target_dir/release/bundle/appimage/p2premote_${P2PREMOTE_CLIENT_VERSION}_amd64.AppImage" \
-  "$dist_dir/"
+  "$cargo_target_dir/release/bundle/appimage/p2premote_${version}_amd64.AppImage" \
+  "$dist_dir/p2premote_${artifact_version}_amd64.AppImage"
 rm -f \
-  "$cargo_target_dir/release/bundle/deb/p2premote_${P2PREMOTE_CLIENT_VERSION}_amd64.deb" \
-  "$cargo_target_dir/release/bundle/appimage/p2premote_${P2PREMOTE_CLIENT_VERSION}_amd64.AppImage"
+  "$cargo_target_dir/release/bundle/deb/p2premote_${version}_amd64.deb" \
+  "$cargo_target_dir/release/bundle/appimage/p2premote_${version}_amd64.AppImage"
 echo "Artifacts: $dist_dir"

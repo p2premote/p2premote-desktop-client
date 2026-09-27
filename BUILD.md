@@ -88,8 +88,9 @@ GUI 构建不会编译 RustDeskTiny。先从 RustDeskTiny GitHub Release 下载 
 ```
 
 GUI 编译完成后，打包脚本会解开 RustDeskTiny deb，将它的数据文件、运行依赖与服务安装逻辑合并进
-`artifacts/linux-gui-x64/p2premote_<version>_amd64.deb`。GUI 与 Headless 仍输出到不同目录；
+`artifacts/linux-gui-x64/p2premote_<version>-<commit-id>_amd64.deb`，AppImage 使用相同的版本与 commit id 后缀。GUI 与 Headless 仍输出到不同目录；
 Headless 包不包含 RustDeskTiny。需要临时使用其他文件名时，可通过 `RUSTDESK_TINY_DEB` 指定。
+GUI 的设备详情上报 `<version>-<commit-id>`；deb 的包版本仍为 `<version>`。
 
 必须在目标架构的 Linux 或 WSL shell 中执行，不能从 Windows PowerShell 直接调用 Linux 脚本：
 

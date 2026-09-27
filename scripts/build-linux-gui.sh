@@ -32,6 +32,12 @@ cargo_target_dir="${CARGO_TARGET_DIR:-$RUST_CACHE_ROOT/wsl/linux-gui-x64}"
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 source_root="$(cd "$repo_dir/.." && pwd)"
 project_name="$(basename "$repo_dir")"
+git_commit="$(git -C "$repo_dir" rev-parse --short=6 HEAD)"
+if [[ ! "$git_commit" =~ ^[0-9a-f]{6}$ ]]; then
+  echo "Failed to resolve the current git commit id" >&2
+  exit 1
+fi
+artifact_version="${version}-${git_commit}"
 
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }
 builder_image="p2premote-linux-compile:debian10-rust1.77-v1-amd64"
@@ -45,7 +51,7 @@ else
 fi
 
 docker_env=(
-  -e P2PREMOTE_CLIENT_VERSION="$version"
+  -e P2PREMOTE_CLIENT_VERSION="$artifact_version"
   -e P2PREMOTE_PREBUILT_RESOURCES=1
   -e CARGO_NET_GIT_FETCH_WITH_CLI=true
   -e TAURI_TRAY=appindicator
@@ -56,6 +62,7 @@ docker_env=(
   -e CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
   -e CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://rsproxy.cn/index/
   -e P2PREMOTE_LINUX_GUI_VERSION="$version"
+  -e P2PREMOTE_LINUX_GUI_ARTIFACT_VERSION="$artifact_version"
 )
 if [[ -n "${P2PREMOTE_BUILD_PROXY:-}" ]]; then
   for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
@@ -77,4 +84,4 @@ docker run --rm --platform linux/amd64 \
   "$builder_image" \
   bash scripts/build-linux-gui-container.sh
 
-"$repo_dir/scripts/validate-linux-gui.sh" "$version"
+"$repo_dir/scripts/validate-linux-gui.sh" "$artifact_version"

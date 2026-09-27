@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: $0 <version>" >&2
+if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{6}$ ]]; then
+  echo "usage: $0 <version>-<commit-id>" >&2
   exit 2
 fi
 version="$1"
