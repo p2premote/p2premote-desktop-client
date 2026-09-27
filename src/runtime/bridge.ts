@@ -119,6 +119,38 @@ export async function getWebAuthStatus(): Promise<WebAuthStatus> {
   })
 }
 
+export async function claimWebFirstTrust(): Promise<void> {
+  const response = await fetch('/api/web-auth/claim-first-trust', {
+    method: 'POST',
+    credentials: 'same-origin',
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || !payload?.ok) {
+    const error = new Error(payload?.error || `First-use claim failed: ${response.status}`)
+    ;(error as Error & { code?: string }).code = payload?.error
+    throw error
+  }
+}
+
+export async function completeWebFirstTrust(
+  newSecurityCode: string,
+  allowedIp: string,
+): Promise<{ source_allowed: boolean; allowed_ip: string }> {
+  const response = await fetch('/api/web-auth/complete-first-trust', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_security_code: newSecurityCode, allowed_ip: allowedIp }),
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || !payload?.ok) {
+    const error = new Error(payload?.error || `First-use setup failed: ${response.status}`)
+    ;(error as Error & { code?: string }).code = payload?.error
+    throw error
+  }
+  return payload
+}
+
 export async function unlockWebAdmin(securityCode: string): Promise<void> {
   const response = await fetch('/api/web-auth/unlock', {
     method: 'POST',

@@ -70,8 +70,8 @@ ENV P2PREMOTE_UPDATE_TARGET=${P2PREMOTE_UPDATE_TARGET}
 
 # 首次信任（TOFU）引导：无 GUI 的 NAS 场景没有本机浏览器可用，全新部署
 # （未配置安全码且未配置白名单）时 Web Admin 直接监听 0.0.0.0，首个远程
-# 客户端获得引导访问权并被要求设置安全码；设置完成后白名单锁定到该来源
-# IP，其余来源一律拒绝。容器界面创建后无需查看 stdout——引导直接在浏览器
+# 客户端获得引导访问权，并在页面中明确填写安全码与允许访问的 IP；提交后
+# 才保存这两个设置。容器界面创建后无需查看 stdout——引导直接在浏览器
 # 里完成。开关仅在本镜像注入，裸机安装保持 loopback-only 默认。
 ENV P2PREMOTE_WEB_ADMIN_FIRST_TRUST=1
 

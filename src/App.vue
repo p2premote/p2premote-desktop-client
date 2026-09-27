@@ -13,7 +13,9 @@
         <h1>p2pRemote</h1>
         <p>{{
           $t(
-            webFirstTrustPending
+            webFirstTrustClaimedByOther
+              ? 'app.web_auth.first_trust_in_use'
+              : webFirstTrustPending
               ? 'app.web_auth.first_trust_prompt'
               : webSecurityCodeChangeRequired
                 ? 'app.web_auth.change_prompt'
@@ -27,7 +29,12 @@
           :closable="false"
           show-icon
         />
-        <template v-if="webCodeSetupRequired">
+        <template v-if="!webFirstTrustClaimedByOther && webCodeSetupRequired">
+          <el-input
+            v-if="webFirstTrustPending"
+            v-model="firstTrustAllowedIp"
+            :placeholder="$t('app.web_auth.first_trust_allowed_ip')"
+          />
           <el-input
             v-model="newWebSecurityCode"
             type="password"
@@ -44,7 +51,7 @@
           />
         </template>
         <el-input
-          v-else
+          v-else-if="!webFirstTrustClaimedByOther"
           v-model="webSecurityCode"
           type="password"
           show-password
@@ -57,9 +64,9 @@
           type="primary"
           size="large"
           :loading="webAuthLoading"
-          @click="webCodeSetupRequired ? handleWebSecurityCodeChange() : handleWebUnlock()"
+          @click="webFirstTrustClaimedByOther ? refreshWebAuthStatus() : webCodeSetupRequired ? handleWebSecurityCodeChange() : handleWebUnlock()"
         >
-          {{ $t(webFirstTrustPending ? 'app.web_auth.first_trust_set' : webCodeSetupRequired ? 'app.web_auth.change' : 'app.web_auth.enter') }}
+          {{ $t(webFirstTrustClaimedByOther ? 'app.web_auth.first_trust_retry' : webFirstTrustPending ? 'app.web_auth.first_trust_set' : webCodeSetupRequired ? 'app.web_auth.change' : 'app.web_auth.enter') }}
         </el-button>
         <p class="web-auth-cert-note">{{ $t('app.web_auth.certificate_note') }}</p>
       </div>
@@ -409,8 +416,10 @@ import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, 
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 import {
+  claimWebFirstTrust,
   closeWindow,
   changeWebAdminSecurityCode,
+  completeWebFirstTrust,
   getWebAdminSettings,
   getWebAuthStatus,
   invoke,
@@ -487,6 +496,8 @@ const webAuthenticated = ref(isTauriRuntime())
 const webSecurityCodeChangeRequired = ref(false)
 const webDefaultSecurityCodeActive = ref(false)
 const webFirstTrustPending = ref(false)
+const webFirstTrustClaimedByOther = ref(false)
+const firstTrustAllowedIp = ref('')
 const webSecurityCode = ref('')
 const newWebSecurityCode = ref('')
 const confirmWebSecurityCode = ref('')
@@ -514,6 +525,7 @@ const webAuthGateVisible = computed(
     !webAuthChecked.value
     || webSecurityCodeChangeRequired.value
     || webFirstTrustPending.value
+    || webFirstTrustClaimedByOther.value
     || (webAuthRequired.value && !webAuthenticated.value)
   ),
 )
@@ -524,16 +536,38 @@ const webCodeSetupRequired = computed(
 async function refreshWebAuthStatus() {
   if (isTauriRuntime()) return
   try {
-    const status = await getWebAuthStatus()
+    let status = await getWebAuthStatus()
+    if (status.first_trust_pending && !status.authenticated) {
+      try {
+        await claimWebFirstTrust()
+        status = await getWebAuthStatus()
+      } catch (error) {
+        if ((error as Error & { code?: string }).code === 'first_trust_claimed') {
+          webFirstTrustClaimedByOther.value = true
+          webFirstTrustPending.value = false
+          webAuthRequired.value = false
+          webAuthenticated.value = false
+          webAuthError.value = ''
+          return
+        }
+        throw error
+      }
+    }
+    webFirstTrustClaimedByOther.value = false
     webAuthRequired.value = status.security_code_required
     webAuthenticated.value = status.authenticated
     webDefaultSecurityCodeActive.value = status.security_code_change_required
     webSecurityCodeChangeRequired.value = status.security_code_change_required && status.authenticated
     webFirstTrustPending.value = status.first_trust_pending === true && status.authenticated
+    if (webFirstTrustPending.value && !firstTrustAllowedIp.value) {
+      firstTrustAllowedIp.value = status.source_ip
+    }
     webAuthError.value = ''
   } catch (error) {
     webAuthRequired.value = true
     webAuthenticated.value = false
+    webFirstTrustPending.value = false
+    webFirstTrustClaimedByOther.value = false
     console.warn('[App] Web authentication status unavailable:', error)
     webAuthError.value = t('app.web_auth.service_unavailable')
   } finally {
@@ -550,14 +584,30 @@ async function handleWebSecurityCodeChange() {
   }
   webAuthLoading.value = true
   try {
-    await changeWebAdminSecurityCode(null, newWebSecurityCode.value)
+    if (webFirstTrustPending.value) {
+      const result = await completeWebFirstTrust(newWebSecurityCode.value, firstTrustAllowedIp.value.trim())
+      if (!result.source_allowed) {
+        webAccessReconnectMessage.value = t('app.web_admin.reconnect_remote', { ip: result.allowed_ip })
+        webAccessDisconnected.value = true
+        return
+      }
+    } else {
+      await changeWebAdminSecurityCode(null, newWebSecurityCode.value)
+    }
     newWebSecurityCode.value = ''
     confirmWebSecurityCode.value = ''
     await refreshWebAuthStatus()
   } catch (error) {
     const code = (error as Error & { code?: string }).code
+    if (code === 'first_trust_claim_expired') {
+      await refreshWebAuthStatus()
+      webAuthError.value = t('app.web_auth.first_trust_expired')
+      return
+    }
     webAuthError.value = code === 'security_code_unchanged'
       ? t('app.web_auth.code_unchanged')
+      : code === 'invalid_allowed_ip'
+        ? t('app.web_auth.first_trust_invalid_ip')
       : t('app.web_auth.invalid_new_code')
   } finally {
     webAuthLoading.value = false
