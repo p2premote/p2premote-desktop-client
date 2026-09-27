@@ -192,6 +192,7 @@ const en = {
     actions: {
       auto_start_enabled: 'Start at boot enabled',
       auto_start_disabled: 'Start at boot disabled',
+      macos_autostart_verify: 'The app attempted to update the macOS login item. Please verify p2pRemote in System Settings > General > Login Items; macOS may require your approval. The background service has a separate switch in this app.',
       background_service_enabled: 'Background service enabled',
       background_service_disabled: 'Background service disabled',
       set_failed: 'Setting failed: {error}',

@@ -206,6 +206,7 @@ export default {
     actions: {
       auto_start_enabled: '已开启开机自启动',
       auto_start_disabled: '已关闭开机自启动',
+      macos_autostart_verify: '程序已尝试修改 macOS 登录项。请到“系统设置 > 通用 > 登录项”核对 p2pRemote 的启动状态；macOS 可能需要您手动批准。后台服务请使用本程序中单独的开关管理。',
       background_service_enabled: '后台网络服务已启用',
       background_service_disabled: '后台网络服务已停用',
       set_failed: '设置失败: {error}',

@@ -570,27 +570,27 @@ async fn ensure_background_service_session_inner(
         warn!("[service] query_service_status failed: {}", e);
         e.to_string()
     })?;
-    #[cfg(target_os = "macos")]
-    let scm_status = if !scm_status.installed || !scm_status.enabled {
-        let service_exe = resolve_service_executable(_app)?;
-        p2premote_core::service_control::install_service(&service_exe)
-            .map_err(|error| error.to_string())?;
-        query_service_status().map_err(|error| error.to_string())?
-    } else {
-        scm_status
-    };
     debug!(
         "[service] SCM status: installed={}, running={}, enabled={}, raw_state={}",
         scm_status.installed, scm_status.running, scm_status.enabled, scm_status.raw_state
     );
 
     if scm_status.installed {
+        #[cfg(target_os = "macos")]
+        if !scm_status.enabled {
+            return Err("macOS background service is not enabled; enable it explicitly in Settings > Background Service and verify it in System Settings > General > Login Items".to_string());
+        }
         if !scm_status.running {
-            debug!("[service] attempting SCM start...");
-            match start_service() {
-                Ok(()) => debug!("[service] SCM start returned Ok"),
-                Err(err) => return Err(format!("failed to start background service: {err:#}")),
+            #[cfg(not(target_os = "macos"))]
+            {
+                debug!("[service] attempting SCM start...");
+                match start_service() {
+                    Ok(()) => debug!("[service] SCM start returned Ok"),
+                    Err(err) => return Err(format!("failed to start background service: {err:#}")),
+                }
             }
+            #[cfg(target_os = "macos")]
+            debug!("[service] waiting for macOS launchd to start the registered service...");
         } else {
             debug!("[service] SCM reports running, waiting for IPC...");
         }
@@ -636,6 +636,9 @@ async fn ensure_background_service_session_inner(
             ));
         }
     } else {
+        #[cfg(target_os = "macos")]
+        return Err("macOS background service is not registered; enable it explicitly in Settings > Background Service and verify it in System Settings > General > Login Items".to_string());
+        #[cfg(not(target_os = "macos"))]
         return Err(
             "background service is not installed; the installation is incomplete".to_string(),
         );

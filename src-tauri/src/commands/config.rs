@@ -228,11 +228,9 @@ async fn save_service_auto_start(enabled: bool) -> Result<(), String> {
 
 /// Tauri 命令：设置开机自启动。
 ///
-/// Windows 下使用 HKCU Run，Linux 下使用 XDG autostart；服务启动类型由服务管理。
-/// 1. 写/删注册表 `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`（用户级自启）；
-/// 2. 装启/停后台 service（Windows 服务或 Linux systemd）；
-/// 3. IPC 写 machine config 持久化自启状态；
-/// 4. 任一步骤失败则回滚前面已改动的注册表与服务状态。
+/// Windows 下使用 HKCU Run，Linux 下使用 XDG autostart。
+/// macOS 下仅尝试注册主应用 Login Item；后台服务由独立开关管理。
+/// Windows/Linux 同步服务自启并在失败时回滚；macOS 由用户在系统设置中核对最终状态。
 #[tauri::command]
 pub async fn set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String> {
     debug!("Set auto start: {}", enabled);
@@ -369,12 +367,8 @@ fn set_macos_login_item(app: &AppHandle, enabled: bool) -> Result<(), String> {
     match p2premote_core::macos_service_management::set_main_app_login_item(enabled)
         .map_err(|error| format!("failed to update macOS Login Item: {error}"))?
     {
-        RegistrationStatus::Enabled if enabled => Ok(()),
+        RegistrationStatus::Enabled | RegistrationStatus::RequiresApproval if enabled => Ok(()),
         RegistrationStatus::NotRegistered | RegistrationStatus::NotFound if !enabled => Ok(()),
-        RegistrationStatus::RequiresApproval => Err(
-            "macOS Login Item is awaiting approval in System Settings > General > Login Items"
-                .to_string(),
-        ),
         status => Err(format!(
             "macOS Login Item update returned unexpected status: {}",
             status.as_str()

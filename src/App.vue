@@ -1417,10 +1417,20 @@ async function handleAutoStartChange(val: boolean) {
 
   try {
     await invoke('set_auto_start', { enabled: val })
-    ElMessage.success(val ? t('app.actions.auto_start_enabled') : t('app.actions.auto_start_disabled'))
+    if (!isMacOS) {
+      ElMessage.success(val ? t('app.actions.auto_start_enabled') : t('app.actions.auto_start_disabled'))
+    }
   } catch (e) {
     autoStart.value = !val
     ElMessage.error(t('app.actions.set_failed', { error: e }))
+  } finally {
+    if (isMacOS) {
+      void ElMessageBox.alert(
+        t('app.actions.macos_autostart_verify'),
+        t('app.auto_login.confirm_title'),
+        { type: 'info', confirmButtonText: t('common.got_it') },
+      ).catch(() => {})
+    }
   }
 }
 
