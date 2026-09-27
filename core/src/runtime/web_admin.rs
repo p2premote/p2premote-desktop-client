@@ -1338,10 +1338,10 @@ async fn web_settings_value(state: &WebAdminState) -> Result<serde_json::Value, 
     }))
 }
 
-/// 浏览器端设置开机自启：只切换服务自身的启动类型（Windows SCM AutoStart /
-/// Linux systemctl enable/disable），不涉及 GUI/notifier 的 HKCU Run 用户级自启项。
-/// 服务进程以 LocalSystem/root 运行，direct 调用本身已有足够权限；不能走
+/// 浏览器端设置 Windows/macOS 服务的启动类型，不涉及 GUI/notifier 的用户级自启项。
+/// 服务进程已有足够权限；不能走
 /// runas 提权回退——服务会话内 UAC 弹窗不可见，只会挂起等待。
+#[cfg(not(target_os = "linux"))]
 fn set_service_auto_start_type(enabled: bool) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
@@ -1365,15 +1365,23 @@ async fn set_web_auto_start(
     enabled: bool,
     state: &WebAdminState,
 ) -> Result<serde_json::Value, String> {
-    set_service_auto_start_type(enabled).map_err(|err| err.to_string())?;
-    if let Err(err) = dispatch_web_data(Data::SetAutoStartConfig { enabled }, state).await {
-        // 状态持久化失败则回滚服务启动类型，避免开关与实际自启状态漂移
-        if let Err(rollback) = set_service_auto_start_type(!enabled) {
-            error!("[WebAdmin] auto start rollback failed: {}", rollback);
+    #[cfg(target_os = "linux")]
+    return dispatch_web_data(Data::SetAutoStartConfig { enabled }, state)
+        .await
+        .map(|_| serde_json::Value::Null);
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        set_service_auto_start_type(enabled).map_err(|err| err.to_string())?;
+        if let Err(err) = dispatch_web_data(Data::SetAutoStartConfig { enabled }, state).await {
+            // 状态持久化失败则回滚服务启动类型，避免开关与实际自启状态漂移
+            if let Err(rollback) = set_service_auto_start_type(!enabled) {
+                error!("[WebAdmin] auto start rollback failed: {}", rollback);
+            }
+            return Err(err);
         }
-        return Err(err);
+        Ok(serde_json::Value::Null)
     }
-    Ok(serde_json::Value::Null)
 }
 
 fn web_service_info() -> WebServiceInfo {

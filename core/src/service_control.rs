@@ -14,7 +14,7 @@ pub struct ServiceStatus {
 }
 
 #[cfg(target_os = "linux")]
-const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/p2premote-service.service";
+const SYSTEMD_UNIT_PATH: &str = "/lib/systemd/system/p2premote-service.service";
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::{anyhow, Context};
@@ -924,7 +924,10 @@ pub fn disable_service() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 pub fn query_service_status() -> Result<ServiceStatus> {
-    if !systemd_unit_path().exists() {
+    // GUI packages ship the unit under /lib; the headless installer uses /etc.
+    if !systemd_unit_path().exists()
+        && !Path::new("/etc/systemd/system/p2premote-service.service").exists()
+    {
         return Ok(ServiceStatus {
             installed: false,
             running: false,

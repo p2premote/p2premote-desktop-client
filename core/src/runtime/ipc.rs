@@ -883,9 +883,37 @@ pub(super) async fn handle_data(
                 Ok(c) => c,
                 Err(resp) => return Some(resp),
             };
+            #[cfg(target_os = "linux")]
+            let previous_enabled = match crate::service_control::query_service_status() {
+                Ok(status) => status.enabled,
+                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            };
+            #[cfg(target_os = "linux")]
+            {
+                let result = if enabled {
+                    crate::service_control::enable_service()
+                } else {
+                    crate::service_control::disable_service()
+                };
+                if let Err(err) = result {
+                    return Some(cmd_response(false, &err.to_string(), None));
+                }
+            }
             config.auto_start = enabled;
+            let result = save_machine_config(&config);
+            #[cfg(target_os = "linux")]
+            if result.is_err() {
+                let rollback = if previous_enabled {
+                    crate::service_control::enable_service()
+                } else {
+                    crate::service_control::disable_service()
+                };
+                if let Err(err) = rollback {
+                    error!("[ServiceRuntime] auto start rollback failed: {}", err);
+                }
+            }
             Some(response_from_result(
-                save_machine_config(&config),
+                result,
                 |_| serde_json::json!({ "auto_start": enabled }),
             ))
         }

@@ -136,32 +136,69 @@ fn expected_run_entries(app: &AppHandle) -> Result<[(&'static str, String); 2], 
     ])
 }
 
+#[cfg(windows)]
 fn set_service_auto_start(app: &AppHandle, enabled: bool) -> Result<(), String> {
     if enabled {
         let service_exe = crate::commands::service::resolve_service_executable(app)?;
-        #[cfg(windows)]
-        {
-            use p2premote_core::service_control::runas_scm_elevated_once;
-            runas_scm_elevated_once("setup", &service_exe).map_err(|e| e.to_string())
-        }
-
-        #[cfg(not(windows))]
-        {
-            p2premote_core::service_control::install_service(&service_exe)
-                .and_then(|_| p2premote_core::service_control::enable_service())
-                .and_then(|_| p2premote_core::service_control::start_service())
-                .map_err(|e| e.to_string())
-        }
+        use p2premote_core::service_control::runas_scm_elevated_once;
+        runas_scm_elevated_once("setup", &service_exe).map_err(|e| e.to_string())
     } else {
-        #[cfg(windows)]
-        {
-            p2premote_core::service_control::runas_scm_elevated("disable", None)
-                .map_err(|e| e.to_string())
+        p2premote_core::service_control::runas_scm_elevated("disable", None)
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_gui_autostart_path() -> Result<std::path::PathBuf, String> {
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".config"))
+        })
+        .ok_or_else(|| "cannot locate the current user's XDG config directory".to_string())?;
+    Ok(config_dir.join("autostart").join("p2premote-gui.desktop"))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_gui_autostart_entry(executable: &std::path::Path) -> Result<String, String> {
+    let path = executable
+        .to_str()
+        .ok_or_else(|| "GUI executable path is not valid UTF-8".to_string())?;
+    if path.contains('\n') || path.contains('\r') {
+        return Err("GUI executable path contains a newline".to_string());
+    }
+    let escaped = path
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`")
+        .replace('%', "%%");
+    Ok(format!(
+        "[Desktop Entry]\nType=Application\nName=p2pRemote\nExec=\"{escaped}\"\nIcon=p2premote\nTerminal=false\nX-p2pRemote-Managed=true\n"
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn write_linux_gui_autostart(
+    path: &std::path::Path,
+    contents: Option<&[u8]>,
+) -> Result<(), String> {
+    match contents {
+        Some(contents) => {
+            std::fs::create_dir_all(path.parent().expect("autostart path has parent"))
+                .map_err(|err| format!("failed to create GUI autostart directory: {err}"))?;
+            std::fs::write(path, contents)
+                .map_err(|err| format!("failed to write GUI autostart entry: {err}"))
         }
-        #[cfg(not(windows))]
-        {
-            p2premote_core::service_control::disable_service().map_err(|e| e.to_string())
-        }
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(format!("failed to remove GUI autostart entry: {err}")),
+        },
     }
 }
 
@@ -191,7 +228,7 @@ async fn save_service_auto_start(enabled: bool) -> Result<(), String> {
 
 /// Tauri 命令：设置开机自启动。
 ///
-/// Windows 下完整职责（Linux 下仅服务部分）：
+/// Windows 下使用 HKCU Run，Linux 下使用 XDG autostart；服务启动类型由服务管理。
 /// 1. 写/删注册表 `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`（用户级自启）；
 /// 2. 装启/停后台 service（Windows 服务或 Linux systemd）；
 /// 3. IPC 写 machine config 持久化自启状态；
@@ -288,8 +325,30 @@ pub async fn set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String>
 
     #[cfg(target_os = "linux")]
     {
-        set_service_auto_start(&app, enabled)?;
-        return save_service_auto_start(enabled).await;
+        let _ = app;
+        let path = linux_gui_autostart_path()?;
+        let previous = match std::fs::read(&path) {
+            Ok(contents) => Some(contents),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(format!("failed to read GUI autostart entry: {err}")),
+        };
+        let entry = if enabled {
+            let executable = std::env::current_exe()
+                .map_err(|err| format!("failed to locate GUI executable: {err}"))?;
+            Some(linux_gui_autostart_entry(&executable)?)
+        } else {
+            None
+        };
+        write_linux_gui_autostart(&path, entry.as_ref().map(String::as_bytes))?;
+        if let Err(err) = save_service_auto_start(enabled).await {
+            if let Err(rollback) = write_linux_gui_autostart(&path, previous.as_deref()) {
+                return Err(format!(
+                    "{err}; failed to restore GUI autostart entry: {rollback}"
+                ));
+            }
+            return Err(err);
+        }
+        return Ok(());
     }
 
     #[cfg(target_os = "macos")]
