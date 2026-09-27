@@ -223,7 +223,7 @@ fi
 
 mkdir -p "$DOCKER_DIST_DIR"
 DOCKER_CONTEXT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/p2premote-docker-context.XXXXXX")"
-IMAGE_TAR="$DOCKER_DIST_DIR/p2premote-client_${BUILD_VERSION}_${TARGET_LABEL}.tar"
+IMAGE_TAR="$DOCKER_DIST_DIR/p2premote-headless-docker_${BUILD_VERSION}_${TARGET_LABEL}.tar"
 IMAGE_TAR_TMP="${IMAGE_TAR}.tmp"
 cleanup() {
   rm -rf -- "$DOCKER_CONTEXT_DIR"

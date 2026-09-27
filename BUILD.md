@@ -105,7 +105,7 @@ Headless 包不包含 RustDeskTiny。需要临时使用其他文件名时，可�
 artifacts/linux-headless/p2premote-headless_<version>-<git-sha>_x86_64-linux-gnu.tar.gz
 artifacts/linux-headless/p2premote-headless_<version>-<git-sha>_amd64.deb
 artifacts/linux-headless/p2premote-headless-<version>-1.<git-sha>.x86_64.rpm
-artifacts/linux-headless/p2premote-client_<version>-<git-sha>_x86_64-linux-gnu.tar
+artifacts/linux-headless/p2premote-headless-docker_<version>-<git-sha>_x86_64-linux-gnu.tar
 ```
 
 镜像默认标签为 `p2premote/client:<version>`，可通过 `--tag` 覆盖。aarch64 构建会把文件名中的架构替换为 `aarch64-linux-gnu`、`arm64` 和 `aarch64`。
