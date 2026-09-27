@@ -202,6 +202,7 @@ fn write_linux_gui_autostart(
     }
 }
 
+#[cfg(windows)]
 async fn load_service_auto_start() -> Result<bool, String> {
     match crate::commands::service::send_command_responsive(Data::GetLoginPreferences).await {
         Ok(Data::CommandResponse {

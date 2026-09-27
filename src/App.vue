@@ -1125,7 +1125,7 @@ async function runStartupPreflight(): Promise<boolean> {
 
     const status = await withTimeout(
       invoke<BackgroundServiceStatus>('ensure_background_service_session'),
-      20_000,
+      isTauriRuntime() && /Linux/i.test(navigator.userAgent) ? 95_000 : 20_000,
       t('app.startup_status.service_timeout')
     )
     backgroundServiceStatus.value = status

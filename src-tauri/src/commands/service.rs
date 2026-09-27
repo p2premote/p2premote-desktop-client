@@ -46,7 +46,11 @@ struct ServiceConnection {
 static SERVICE_CONNECTION: OnceCell<Arc<Mutex<Option<ServiceConnection>>>> = OnceCell::new();
 static SERVICE_SESSION_LOCK: OnceCell<tokio::sync::Mutex<()>> = OnceCell::new();
 static LAST_KNOWN_STATUS: OnceCell<Arc<Mutex<Option<RuntimeStatus>>>> = OnceCell::new();
-// SCM 冷启动最多会等待 10 秒 IPC，就绪检查的总超时必须留出状态收集余量。
+// Linux GUI 按需启动 systemd 服务时，桌面授权代理可能需要用户输入密码。
+#[cfg(target_os = "linux")]
+const SERVICE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+// 其他平台的冷启动最多等待 10 秒 IPC，并留出状态收集余量。
+#[cfg(not(target_os = "linux"))]
 const SERVICE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const IPC_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -316,11 +320,14 @@ pub fn launch_rustdesk_tiny(app: AppHandle, address: String) -> Result<(), Strin
 }
 
 /// 解析 service 的唯一规范路径。安装不完整时直接报错，不搜索旧版或工作目录文件。
-pub(crate) fn resolve_service_executable(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn resolve_service_executable(_app: &AppHandle) -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
-        let service = require_bundled_binary(app, default_service_binary_name())?;
-        require_bundled_binary(app, p2premote_core::config::default_p2p_punch_binary_name())?;
+        let service = require_bundled_binary(_app, default_service_binary_name())?;
+        require_bundled_binary(
+            _app,
+            p2premote_core::config::default_p2p_punch_binary_name(),
+        )?;
         Ok(service)
     }
 
@@ -521,13 +528,37 @@ pub async fn ensure_background_service_session(
     {
         Ok(result) => result,
         Err(_) => {
-            warn!("[service] ensure_background_service_session timed out after 15s");
+            warn!(
+                "[service] ensure_background_service_session timed out after {:?}",
+                SERVICE_CHECK_TIMEOUT
+            );
             Err(crate::commands::localized(
                 "errors.service_check_timeout",
                 &[],
             ))
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+async fn start_linux_service_for_gui() -> Result<(), String> {
+    // systemctl asks the session's PolicyKit agent for authorization when the
+    // GUI user is unprivileged. This starts the installed unit without enabling
+    // it for the next boot.
+    let output = tokio::process::Command::new("systemctl")
+        .args(["start", p2premote_core::service_control::SERVICE_NAME])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|error| format!("failed to request Linux background service start: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "systemctl start failed: {}. If no authorization dialog appeared, start a PolicyKit authentication agent or run sudo systemctl start p2premote-service",
+        detail.trim()
+    ))
 }
 
 fn is_ipc_authorization_error(message: &str) -> bool {
@@ -581,7 +612,11 @@ async fn ensure_background_service_session_inner(
             return Err("macOS background service is not enabled; enable it explicitly in Settings > Background Service and verify it in System Settings > General > Login Items".to_string());
         }
         if !scm_status.running {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "linux")]
+            start_linux_service_for_gui()
+                .await
+                .map_err(|error| format!("failed to start background service: {error}"))?;
+            #[cfg(windows)]
             {
                 debug!("[service] attempting SCM start...");
                 match start_service() {
