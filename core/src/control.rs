@@ -635,6 +635,8 @@ impl Drop for LocalSecurityDescriptor {
 }
 
 #[cfg(windows)]
+// SY = LocalSystem，BA = 管理员，IU = 交互登录用户（包括远程桌面登录）。
+// RU = Pre-Windows 2000 Compatible Access 组，不是“远程交互用户”。
 const CONTROL_PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)(A;;GRGW;;;RU)";
 
 #[cfg(windows)]
@@ -707,32 +709,157 @@ pub async fn accept_ipc_client() -> Result<IpcStream> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create unix socket dir {:?}", parent))?;
-        // 0o755：去掉全局可写位，防止任意用户篡改/删除 socket 目录。
-        // （旧值 0o777 允许全局可写，存在 DoS 风险）
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::symlink_metadata(parent)
+                .with_context(|| format!("failed to inspect unix socket dir {:?}", parent))?;
+            if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+                anyhow::bail!("unsafe unix socket dir owner or type: {:?}", parent);
+            }
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("failed to secure unix socket dir {:?}", parent))?;
+        }
+        #[cfg(not(target_os = "linux"))]
         let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755));
     }
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)
         .with_context(|| format!("failed to bind unix socket {:?}", path))?;
-    // 0o660：仅 owner+group 可读写，去掉全局可读写位。
-    // 配合握手 secret 鉴权（derive_control_secret）。
-    // 注：Linux 下 secret 基于 /etc/machine-id（通常全局可读），同机任意用户可推导，
-    // 因此本机仍有提权面。生产环境建议使用 Windows（Named Pipe ACL 兜底）。
-    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660));
-    let (stream, _) = listener
-        .accept()
-        .await
-        .context("failed to accept unix socket client")?;
-    match stream.peer_cred() {
-        Ok(cred) => tracing::debug!(
+    // Linux 允许本机用户连接，由服务端根据内核提供的对端 UID 校验图形会话。
+    // 握手 secret 来自可读的机器 ID，不能单独作为本机用户的授权依据。
+    #[cfg(target_os = "linux")]
+    let socket_mode = 0o666;
+    #[cfg(not(target_os = "linux"))]
+    let socket_mode = 0o660;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(socket_mode))
+        .with_context(|| format!("failed to set unix socket permissions for {:?}", path))?;
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .context("failed to accept unix socket client")?;
+        #[cfg(target_os = "linux")]
+        let credential = match stream.peer_cred() {
+            Ok(credential) => credential,
+            Err(error) => {
+                tracing::warn!("rejected local IPC client without peer credentials: {error}");
+                continue;
+            }
+        };
+        #[cfg(target_os = "linux")]
+        {
+            let uid = credential.uid();
+            let authorized = tokio::task::spawn_blocking(move || linux_gui_user_is_authorized(uid))
+                .await
+                .context("failed to check Linux IPC peer session")?;
+            let rejection = match authorized {
+                Ok(true) => None,
+                Ok(false) => Some(format!(
+                    "IPC access denied: uid {uid} has no logged-in graphical session"
+                )),
+                Err(error) => Some(format!("IPC authorization check failed: {error:#}")),
+            };
+            if let Some(message) = rejection {
+                tracing::warn!("rejected local IPC client uid={uid}: {message}");
+                let mut conn = Connection::new(to_ipc_stream(stream));
+                let _ = conn
+                    .send(&Data::CommandResponse {
+                        ok: false,
+                        message,
+                        status: None,
+                        request_id: None,
+                        data: None,
+                    })
+                    .await;
+                continue;
+            }
+        }
+        #[cfg(target_os = "linux")]
+        tracing::debug!(
             "accepted local IPC client uid={} gid={} pid={:?}",
-            cred.uid(),
-            cred.gid(),
-            cred.pid()
-        ),
-        Err(err) => tracing::warn!("failed to read local IPC client credentials: {}", err),
+            credential.uid(),
+            credential.gid(),
+            credential.pid()
+        );
+        #[cfg(not(target_os = "linux"))]
+        match stream.peer_cred() {
+            Ok(credential) => tracing::debug!(
+                "accepted local IPC client uid={} gid={} pid={:?}",
+                credential.uid(),
+                credential.gid(),
+                credential.pid()
+            ),
+            Err(error) => tracing::warn!("failed to read local IPC client credentials: {error}"),
+        }
+        return Ok(to_ipc_stream(stream));
     }
-    Ok(to_ipc_stream(stream))
+}
+
+#[cfg(target_os = "linux")]
+fn loginctl_output(args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("/usr/bin/loginctl")
+        .arg("--no-pager")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run loginctl {}", args.join(" ")))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "loginctl {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8(output.stdout).context("invalid UTF-8 from loginctl")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_gui_user_is_authorized(uid: u32) -> Result<bool> {
+    if uid == 0 {
+        return Ok(true);
+    }
+    let uid_arg = uid.to_string();
+    let sessions = loginctl_output(&["show-user", &uid_arg, "--property=Sessions", "--value"])?;
+    for session in sessions.split_whitespace() {
+        // A session can disappear between the two loginctl calls; check the others.
+        let Ok(properties) = loginctl_output(&[
+            "show-session",
+            session,
+            "--property=User",
+            "--property=Class",
+            "--property=Type",
+            "--property=State",
+        ]) else {
+            continue;
+        };
+        if linux_session_is_graphical_user(&properties, uid) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_session_is_graphical_user(properties: &str, uid: u32) -> bool {
+    let mut user = None;
+    let mut class = None;
+    let mut session_type = None;
+    let mut state = None;
+    for line in properties.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            match key {
+                "User" => user = value.parse::<u32>().ok(),
+                "Class" => class = Some(value),
+                "Type" => session_type = Some(value),
+                "State" => state = Some(value),
+                _ => {}
+            }
+        }
+    }
+    user == Some(uid)
+        && class == Some("user")
+        && matches!(session_type, Some("x11" | "wayland" | "mir"))
+        && matches!(state, Some("active" | "online"))
 }
 
 // ---- CLI 便捷封装 ----
@@ -791,6 +918,30 @@ mod tests {
         let credential = server.peer_cred().expect("read peer credential");
         assert_eq!(credential.uid(), unsafe { libc::geteuid() });
         assert_eq!(credential.gid(), unsafe { libc::getegid() });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_ipc_accepts_only_logged_in_graphical_user_sessions() {
+        let graphical = "User=1000\nClass=user\nType=x11\nState=active\n";
+        assert!(linux_session_is_graphical_user(graphical, 1000));
+        assert!(linux_session_is_graphical_user(
+            "User=1000\nClass=user\nType=wayland\nState=online\n",
+            1000
+        ));
+        assert!(!linux_session_is_graphical_user(graphical, 1001));
+        assert!(!linux_session_is_graphical_user(
+            "User=1000\nClass=user\nType=tty\nState=active\n",
+            1000
+        ));
+        assert!(!linux_session_is_graphical_user(
+            "User=1000\nClass=greeter\nType=wayland\nState=active\n",
+            1000
+        ));
+        assert!(!linux_session_is_graphical_user(
+            "User=1000\nClass=user\nType=wayland\nState=closing\n",
+            1000
+        ));
     }
 
     #[cfg(windows)]

@@ -530,6 +530,11 @@ pub async fn ensure_background_service_session(
     }
 }
 
+fn is_ipc_authorization_error(message: &str) -> bool {
+    message.contains("handshake rejected: IPC access denied:")
+        || message.contains("handshake rejected: IPC authorization check failed:")
+}
+
 async fn ensure_background_service_session_inner(
     _app: &AppHandle,
 ) -> Result<ServiceStatusResponse, String> {
@@ -554,6 +559,9 @@ async fn ensure_background_service_session_inner(
         }
         Err(e) => {
             debug!("[service] IPC not available yet: {}", e);
+            if is_ipc_authorization_error(&e.to_string()) {
+                return Err(e.to_string());
+            }
         }
     }
 
@@ -597,6 +605,9 @@ async fn ensure_background_service_session_inner(
                     break;
                 }
                 Err(e) => {
+                    if is_ipc_authorization_error(&e.to_string()) {
+                        return Err(e.to_string());
+                    }
                     if attempt % 5 == 4 {
                         debug!(
                             "[service] IPC not ready after {}ms: {}",
