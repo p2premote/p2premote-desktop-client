@@ -4,7 +4,7 @@ set -eu
 INSTALL_ROOT="/opt/p2premote"
 SERVICE_NAME="p2premote-service"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
-PACKAGE_UNIT_PATH="/usr/lib/systemd/system/${SERVICE_NAME}.service"
+PACKAGE_UNIT_PATH="/lib/systemd/system/${SERVICE_NAME}.service"
 DESKTOP_PATH="/usr/share/applications/p2premote.desktop"
 ICON_PATH="/usr/share/icons/hicolor/512x512/apps/p2premote.png"
 

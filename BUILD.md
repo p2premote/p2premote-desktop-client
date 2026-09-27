@@ -133,7 +133,7 @@ builder 镜像基于 Debian 10 (buster) / glibc 2.28，内置 Node 22、Rust、G
 
 Linux 构建脚本要求架构和编译器严格匹配；缺少目标架构工具链、产物不存在或产物架构不匹配时会直接失败，不会回退到宿主架构或其他 tar 包。
 
-tar.gz、deb 和 rpm 都把程序、配置、日志及运行数据集中在 `/opt/p2premote`。包升级只替换 `resources` 并保留现有数据；卸载包时直接删除整个 `/opt/p2premote`，不保留用户配置或日志。systemd unit 按系统要求安装到 `/usr/lib/systemd/system`。
+tar.gz、deb 和 rpm 都把程序、配置、日志及运行数据集中在 `/opt/p2premote`。包升级只替换 `resources` 并保留现有数据；卸载包时直接删除整个 `/opt/p2premote`，不保留用户配置或日志。systemd unit 安装到 `/lib/systemd/system`。
 
 在 WSL 下可以直接从 `/mnt/c`、`/mnt/d` 等 Windows 映射目录启动构建。脚本会把 tar、deb、rpm 的中间打包目录放在 builder 容器的 `/tmp` 原生 Linux 文件系统中，仅将最终产物复制回工作区，避免 DrvFS 将 `DEBIAN` 等目录呈现为 `0777` 而被打包工具拒绝。
 

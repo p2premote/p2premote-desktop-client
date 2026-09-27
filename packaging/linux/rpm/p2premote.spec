@@ -17,7 +17,7 @@ cp -a %{payload_root}/. %{buildroot}/
 
 %files
 /opt/p2premote/resources
-/usr/lib/systemd/system/p2premote-service.service
+/lib/systemd/system/p2premote-service.service
 /usr/share/applications/p2premote.desktop
 /usr/share/icons/hicolor/512x512/apps/p2premote.png
 
@@ -30,7 +30,7 @@ fi
 /opt/p2premote/resources/configure-installation
 if [ -f /etc/systemd/system/p2premote-service.service ] && \
    cmp -s /etc/systemd/system/p2premote-service.service \
-     /usr/lib/systemd/system/p2premote-service.service; then
+     /lib/systemd/system/p2premote-service.service; then
   rm -f /etc/systemd/system/p2premote-service.service
 fi
 systemctl daemon-reload

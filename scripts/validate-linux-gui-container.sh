@@ -17,7 +17,7 @@ dpkg --force-depends -i "$deb"
   echo "p2premote service was not enabled during deb installation" >&2
   exit 1
 }
-[[ -f /usr/lib/systemd/system/p2premote-service.service ]] || {
+[[ -f /lib/systemd/system/p2premote-service.service ]] || {
   echo "p2premote systemd unit is missing" >&2
   exit 1
 }
@@ -70,6 +70,11 @@ run_gui_smoke_test() {
 }
 
 useradd --create-home --shell /bin/bash p2ptest
+runuser -u p2ptest -- /opt/p2premote/resources/p2premote-cli service status \
+  | grep -q '"installed": true' || {
+  echo "bundled CLI did not detect the packaged systemd service" >&2
+  exit 1
+}
 run_gui_smoke_test deb /usr/bin/p2premote
 grep -Fq 'verified bundled file: /opt/p2premote/resources/p2premote-cli' /tmp/deb.log || {
   echo "deb GUI did not resolve its bundled CLI from /opt/p2premote/resources" >&2

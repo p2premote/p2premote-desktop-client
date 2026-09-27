@@ -5,7 +5,7 @@ if [ "$1" = "configure" ]; then
   /opt/p2premote/resources/configure-installation
   if [ -f /etc/systemd/system/p2premote-service.service ] && \
      cmp -s /etc/systemd/system/p2premote-service.service \
-       /usr/lib/systemd/system/p2premote-service.service; then
+       /lib/systemd/system/p2premote-service.service; then
     rm -f /etc/systemd/system/p2premote-service.service
   fi
   if [ -x /opt/p2premote/resources/configure-kysec ]; then

@@ -79,9 +79,9 @@ rm -rf "$stage/root/usr/lib/p2premote"
 install -m 0755 packaging/linux/gui-ubuntu18/p2premote-launcher "$stage/root/usr/bin/p2premote"
 install -m 0755 packaging/linux/common/configure-installation.sh \
   "$stage/root/opt/p2premote/resources/configure-installation"
-install -d -m 0755 "$stage/root/usr/lib/systemd/system"
+install -d -m 0755 "$stage/root/lib/systemd/system"
 install -m 0644 packaging/linux/common/p2premote-service.service \
-  "$stage/root/usr/lib/systemd/system/p2premote-service.service"
+  "$stage/root/lib/systemd/system/p2premote-service.service"
 
 # Shared runtime state is writable, while application binaries remain root-owned and read-only.
 install -d -m 1777 "$stage/root/opt/p2premote/data" "$stage/root/opt/p2premote/logs"
