@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Windows GUI 安装包 | 当前 Windows 主机架构（通常为 x64） | `scripts/build-windows.ps1` |
 | macOS GUI DMG | Universal（x86_64 + arm64） | `scripts/build-macos.sh` |
-| Linux GUI DEB、AppImage | x86_64 | `scripts/build-linux-gui-ubuntu18.sh <version>` |
+| Linux GUI DEB、AppImage | x86_64 | `scripts/build-linux-gui.sh <version>` |
 | Linux Headless 裸压缩包、DEB、RPM、Docker 镜像 tar | x86_64 / aarch64 | `scripts/build-linux.sh` |
 
 编译缓存统一放在 `target/<构建目标>/`，发布物统一放在 `artifacts/<发布目标>/`。`target` 可随时清理，不再保存需要交付的安装包；`artifacts` 不参与 Cargo 增量编译，也不会被前端 Vite 清理。主要目录如下：
@@ -18,7 +18,7 @@ target/windows-x64/             artifacts/windows-x64/
 target/windows-win7-x64/        artifacts/windows-win7-x64/
 target/linux-gui-x64/           artifacts/linux-gui-x64/
 target/linux-headless-amd64/    artifacts/linux-headless/
-target/linux-headless-arm64/    artifacts/linux-docker/
+target/linux-headless-arm64/    artifacts/linux-headless/
 target/macos-universal/         artifacts/macos-universal/
 ```
 
@@ -76,12 +76,15 @@ Linux GUI 与 Headless 共用唯一一套 Debian 10 / glibc 2.28 编译镜像。
 
 正常编译脚本会先检查镜像；镜像不存在时会自动调用该脚本创建，不需要手工执行。
 GUI 与 Headless 不再分别维护 Ubuntu 18 和 Debian 10 镜像。
+当前 x64 编译镜像为 `p2premote-linux-compile:debian10-rust1.77-v1-amd64`，
+arm64 使用同一标签前缀的 `-arm64` 镜像。镜像创建入口统一为 `make_compile_image.sh`。
+GUI 构建入口为 `build-linux-gui.sh`，由上述 Debian 10 镜像执行。
 
 GUI 构建不会编译 RustDeskTiny。先从 RustDeskTiny GitHub Release 下载 amd64 deb，
 保存为 `src-tauri/resources/RustDeskTiny.deb`，再执行：
 
 ```bash
-./scripts/build-linux-gui-ubuntu18.sh 1.12.1
+./scripts/build-linux-gui.sh 1.12.1
 ```
 
 GUI 编译完成后，打包脚本会解开 RustDeskTiny deb，将它的数据文件、运行依赖与服务安装逻辑合并进
@@ -102,7 +105,7 @@ Headless 包不包含 RustDeskTiny。需要临时使用其他文件名时，可�
 artifacts/linux-headless/p2premote-headless_<version>-<git-sha>_x86_64-linux-gnu.tar.gz
 artifacts/linux-headless/p2premote-headless_<version>-<git-sha>_amd64.deb
 artifacts/linux-headless/p2premote-headless-<version>-1.<git-sha>.x86_64.rpm
-artifacts/linux-docker/p2premote-client_<version>-<git-sha>_x86_64-linux-gnu.tar
+artifacts/linux-headless/p2premote-client_<version>-<git-sha>_x86_64-linux-gnu.tar
 ```
 
 镜像默认标签为 `p2premote/client:<version>`，可通过 `--tag` 覆盖。aarch64 构建会把文件名中的架构替换为 `aarch64-linux-gnu`、`arm64` 和 `aarch64`。

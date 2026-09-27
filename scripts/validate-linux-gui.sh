@@ -21,4 +21,4 @@ docker run --rm --platform linux/amd64 \
   -v "$source_root:/workspace" \
   -w "/workspace/$project_name" \
   "$builder_image" \
-  bash scripts/validate-linux-gui-ubuntu18-container.sh "$deb" "$appimage"
+  bash scripts/validate-linux-gui-container.sh "$deb" "$appimage"

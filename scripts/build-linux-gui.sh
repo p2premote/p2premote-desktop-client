@@ -55,6 +55,6 @@ docker run --rm --platform linux/amd64 \
   -w "/workspace/$project_name" \
   "${docker_env[@]}" \
   "$builder_image" \
-  bash scripts/build-linux-gui-ubuntu18-container.sh
+  bash scripts/build-linux-gui-container.sh
 
-"$repo_dir/scripts/validate-linux-gui-ubuntu18.sh" "$version"
+"$repo_dir/scripts/validate-linux-gui.sh" "$version"

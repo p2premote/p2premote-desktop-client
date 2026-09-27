@@ -59,7 +59,7 @@ for resource in \
   }
 done
 "$frontend_dir/node_modules/.bin/tauri" build --config "$config"
-bash scripts/repack-linux-gui-deb-ubuntu18.sh "$P2PREMOTE_CLIENT_VERSION"
+bash scripts/repack-linux-gui-deb.sh "$P2PREMOTE_CLIENT_VERSION"
 mkdir -p "$dist_dir"
 install -m 0644 \
   "$cargo_target_dir/release/bundle/deb/p2premote_${P2PREMOTE_CLIENT_VERSION}_amd64.deb" \

@@ -29,7 +29,7 @@ Options:
 
 The command emits four files under artifacts:
   linux-headless/*.tar.gz, linux-headless/*.deb, linux-headless/*.rpm,
-  linux-docker/*.tar
+  linux-headless/*.tar
 EOF
 }
 
@@ -125,7 +125,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$APP_DIR/artifacts"
 HEADLESS_DIST_DIR="$DIST_DIR/linux-headless"
-DOCKER_DIST_DIR="$DIST_DIR/linux-docker"
+DOCKER_DIST_DIR="$HEADLESS_DIST_DIR"
 DOCKERFILE="$APP_DIR/packaging/linux/docker/Dockerfile"
 HEADLESS_SCRIPT="$SCRIPT_DIR/build-linux-headless.sh"
 
@@ -193,11 +193,12 @@ else
   echo "==> Reusing an existing headless tgz"
 fi
 
-# The headless script replaces only the package files for the selected version
-# and architecture. Requiring exactly one matching archive also prevents a
-# stale or wrong-architecture package from silently entering the image.
+# Fresh builds must use this commit's output, even when older releases remain.
+# Reuse mode without an explicit path still requires an unambiguous archive.
 if [[ -n "$EXPLICIT_TGZ" ]]; then
   TGZ_PATH="$EXPLICIT_TGZ"
+elif [[ "$SKIP_HEADLESS_BUILD" -eq 0 ]]; then
+  TGZ_PATH="$HEADLESS_DIST_DIR/p2premote-headless_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz"
 else
   shopt -s nullglob
   TGZ_CANDIDATES=("$HEADLESS_DIST_DIR"/p2premote-headless_"$VERSION"-*_"$TARGET_LABEL".tar.gz)

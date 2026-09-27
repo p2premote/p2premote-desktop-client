@@ -136,7 +136,7 @@ WG_CLI="$OUT_DIR/wg"
 if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
   if ! command -v docker >/dev/null 2>&1; then
     echo "Docker is required: the headless package must be built inside the" >&2
-    echo "p2premote-linux-builder container to pin its glibc baseline." >&2
+    echo "p2premote-linux-compile container to pin its glibc baseline." >&2
     exit 1
   fi
   if [[ "$(basename "$REPO_ROOT")" != "p2premote-desktop-client" ]]; then
@@ -178,6 +178,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     -v "$WORKSPACE_DIR:/workspace" \
     -v "$CARGO_TARGET_DIR:$CARGO_TARGET_DIR" \
     -v p2p-cargo-registry:/opt/rust/cargo/registry \
+    -v p2p-cargo-git:/opt/rust/cargo/git \
     -v p2p-npm-cache:/root/.npm \
     -v p2p-go-mod:/root/go \
     -v p2p-go-build:/root/.cache/go-build \
@@ -188,6 +189,11 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
 fi
 
 export RUSTC_WRAPPER=""
+# Use Git's CLI for dependency fetches so it uses the container's HTTP(S)
+# proxy, and keep successful fetches in the shared Cargo Git volume above.
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
+export CARGO_HTTP_TIMEOUT="${CARGO_HTTP_TIMEOUT:-600}"
+export CARGO_NET_RETRY="${CARGO_NET_RETRY:-10}"
 
 if [[ ! -d "$PUNCH_RS_SOURCE_DIR" ]]; then
   echo "p2premote-punch-rs source directory not found: $PUNCH_RS_SOURCE_DIR" >&2
