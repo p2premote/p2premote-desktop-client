@@ -601,8 +601,8 @@ pub fn configure_udp_sender(
         }
     }
     let tv = TimeVal::new(
-        (UDP_SEND_TIMEOUT_MS / 1000) as libc::time_t,
-        ((UDP_SEND_TIMEOUT_MS % 1000) * 1000) as libc::suseconds_t,
+        (UDP_SEND_TIMEOUT_MS / 1000) as _,
+        ((UDP_SEND_TIMEOUT_MS % 1000) * 1000) as _,
     );
     let _ = socket::setsockopt(socket, sockopt::SendTimeout, &tv);
     Ok(())
@@ -634,8 +634,8 @@ pub fn set_rcv_timeout(fd: &impl std::os::unix::io::AsFd, ms: u64) -> Result<()>
     use nix::sys::socket::{self, sockopt};
     use nix::sys::time::TimeVal;
     let tv = TimeVal::new(
-        (ms / 1000) as libc::time_t,
-        ((ms % 1000) * 1000) as libc::suseconds_t,
+        (ms / 1000) as _,
+        ((ms % 1000) * 1000) as _,
     );
     socket::setsockopt(fd, sockopt::ReceiveTimeout, &tv)
         .map_err(|e| RiperfError::Io(std::io::Error::from(e)))

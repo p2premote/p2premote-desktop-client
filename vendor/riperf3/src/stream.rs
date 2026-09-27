@@ -902,7 +902,6 @@ fn tempfile() -> std::io::Result<std::fs::File> {
 /// removes the shared name entirely, so the senders can never collide.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn zc_tempfile_name() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     format!(".riperf3-zc-{}-{}", std::process::id(), seq)

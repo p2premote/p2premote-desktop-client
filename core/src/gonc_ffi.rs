@@ -7,7 +7,9 @@ use p2premote_punch as _;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_os = "linux"))]
 use std::ffi::{CStr, CString};
+#[cfg(not(target_os = "linux"))]
 use std::os::raw::c_char;
 use std::path::Path;
 use std::time::Duration;
@@ -312,6 +314,7 @@ extern "C" {
     fn FreeCString(ptr: *mut c_char);
 }
 
+#[cfg(not(target_os = "linux"))]
 const USERSPACE_WG_ABI_VERSION: u32 = 2;
 
 pub fn get_wg_capabilities(library_path: &Path) -> Result<WgCapabilitiesResult> {
@@ -553,6 +556,7 @@ pub fn cleanup_userspace_wg_platform(library_path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn decode_windows_wg_peer_result(output: &str, action: &str) -> Result<WindowsWgPeerResult> {
     let result: WindowsWgPeerResult = serde_json::from_str(output)
         .with_context(|| format!("failed to decode userspace WG {} result", action))?;
