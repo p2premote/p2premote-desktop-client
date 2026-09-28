@@ -4,6 +4,30 @@ use serde::{Deserialize, Serialize};
 
 pub const VERSION: u8 = 2;
 
+/// Public IPv6 traversal needs a global unicast source, not a LAN-only address.
+pub fn usable_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    let bytes = ip.octets();
+    bytes[0] & 0xe0 == 0x20 && bytes[..4] != [0x20, 0x01, 0x0d, 0xb8]
+}
+
+/// Failure to enumerate addresses means unknown, never confirmed absent.
+pub fn ipv6_available() -> Option<bool> {
+    use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
+    let interfaces = NetworkInterface::show().ok()?;
+    Some(interfaces.into_iter().any(|interface| {
+        let name = interface.name.to_ascii_lowercase();
+        if ["loopback", "wg", "tun", "tap", "tailscale"].iter().any(|prefix| name.starts_with(prefix)) {
+            return false;
+        }
+        interface.addr.into_iter().any(|addr| matches!(addr, Addr::V6(v6) if usable_ipv6(v6.ip)))
+    }))
+}
+
+pub fn tcp_retry_recommended(prefer_tcp: bool, error: &str) -> bool {
+    prefer_tcp && error.strip_prefix("punch_exhausted:")
+        .is_some_and(|networks| networks.split(',').any(|network| matches!(network, "tcp4" | "tcp6")))
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -61,15 +85,22 @@ pub fn eligible(network: &str, local: &[NatEvidence], remote: &[NatEvidence]) ->
 }
 
 pub fn build_plan(preferences: Preferences, local: &[NatEvidence], remote: &[NatEvidence]) -> Vec<String> {
+    build_plan_with_family(preferences, local, remote, None, None)
+}
+
+pub fn build_plan_with_family(preferences: Preferences, local: &[NatEvidence], remote: &[NatEvidence],
+    local_ipv6: Option<bool>, remote_ipv6: Option<bool>) -> Vec<String> {
     network_order(preferences).into_iter()
+        .filter(|network| !network.ends_with('6') || (local_ipv6 != Some(false) && remote_ipv6 != Some(false)))
         .filter(|network| eligible(network, local, remote))
         .map(str::to_string).collect()
 }
 
 /// Fresh evidence is gathered for every attempt; no cross-network cache.
-pub async fn collect_evidence() -> Vec<NatEvidence> {
+pub async fn collect_evidence(ipv6: Option<bool>) -> Vec<NatEvidence> {
+    let networks: &[&str] = if ipv6 == Some(false) { &["udp4", "tcp4"] } else { &["udp4", "udp6", "tcp4", "tcp6"] };
     let result = p2premote_punch::api::detect_nat(
-        &["udp4", "udp6", "tcp4", "tcp6"], std::time::Duration::from_secs(6),
+        networks, std::time::Duration::from_secs(6),
     ).await;
     let mut evidence = result.unwrap_or_default().into_iter()
         .filter(|v| matches!(v.network.as_str(), "udp4" | "udp6" | "tcp4" | "tcp6"))
@@ -118,5 +149,39 @@ mod tests {
         assert_eq!(build_plan(preferences, &[], &[]), ["udp6", "udp4"]);
         assert_eq!(build_plan(preferences, &unknown, &all), ["udp6", "udp4"]);
         assert_eq!(build_plan(preferences, &all, &unknown), ["udp6", "udp4"]);
+    }
+    #[test]
+    fn either_endpoint_without_ipv6_excludes_both_ipv6_transports() {
+        let all = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "easy"));
+        for prefer_ipv6 in [false, true] {
+            for prefer_tcp in [false, true] {
+                let preferences = Preferences { prefer_ipv6, prefer_tcp };
+                for other in [None, Some(false), Some(true)] {
+                    for (local, remote) in [(Some(false), other), (other, Some(false))] {
+                        let plan = build_plan_with_family(preferences, &all, &all, local, remote);
+                        assert!(plan.iter().all(|network| !network.ends_with('6')));
+                        assert!(plan.contains(&"udp4".to_string()));
+                        assert!(plan.contains(&"tcp4".to_string()));
+                    }
+                }
+            }
+        }
+        assert_eq!(build_plan_with_family(Preferences { prefer_ipv6: true, prefer_tcp: true }, &[], &[], None, Some(true)), ["udp6", "udp4"]);
+    }
+    #[test]
+    fn ipv6_address_check_excludes_local_and_documentation_addresses() {
+        for address in ["::", "::1", "fe80::1", "fd00::1", "ff02::1", "2001:db8::1"] {
+            assert!(!usable_ipv6(address.parse().unwrap()), "{address}");
+        }
+        assert!(usable_ipv6("2001:4860:4860::8888".parse().unwrap()));
+    }
+    #[test]
+    fn tcp_hint_requires_a_public_tcp_attempt_and_enabled_preference() {
+        for error in ["punch_exhausted", "punch_exhausted:", "punch_exhausted:udp4,udp6", "traversal_signal_timeout", "peer_cancelled"] {
+            assert!(!tcp_retry_recommended(true, error));
+        }
+        assert!(tcp_retry_recommended(true, "punch_exhausted:tcp4,udp4,udp6"));
+        assert!(tcp_retry_recommended(true, "punch_exhausted:tcp6,udp6,udp4"));
+        assert!(!tcp_retry_recommended(false, "punch_exhausted:tcp4,udp4"));
     }
 }

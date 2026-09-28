@@ -443,7 +443,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                 update_active_tunnel_job_status(
                     &shared_for_task,
                     ActiveTunnelJobStatus {
-            tcp_retry_recommended: config.prefer_tcp && last_message.contains("punch_exhausted"),
+            tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(config.prefer_tcp, &last_message),
                         target_device_id,
                         target_device_uuid: target_uuid_for_task.clone(),
                         state: ActiveTunnelJobState::Waiting,
@@ -481,7 +481,7 @@ pub(super) fn spawn_active_tunnel_job_task(
         update_active_tunnel_job_status(
             &shared_for_task,
             ActiveTunnelJobStatus {
-            tcp_retry_recommended: config.prefer_tcp && last_message.contains("punch_exhausted"),
+            tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(config.prefer_tcp, &last_message),
                 target_device_id,
                 target_device_uuid: target_uuid_for_task,
             state: ActiveTunnelJobState::Failed,
@@ -639,9 +639,12 @@ pub(super) async fn start_wgvpn_active_with_notify(
         },
         event = event_rx.recv() => match event {
             Some(P2PAttemptEvent::Failed { error_code, message }) => {
-                let _ = start_handle.await;
+                let local_result = start_handle.await;
                 let _ = wgvpn_flow::stop_wgvpn(config, target_device_id).await;
-                Err(anyhow!("{}: {}", error_code, message))
+                match local_result {
+                    Ok(Err(error)) if error.to_string().starts_with("punch_exhausted:") => Err(error),
+                    _ => Err(anyhow!("{}: {}", error_code, message)),
+                }
             },
             Some(P2PAttemptEvent::Cancelled) => {
                 let _ = start_handle.await;

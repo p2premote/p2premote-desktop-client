@@ -10,7 +10,13 @@ use tokio::sync::{mpsc, Notify};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Frame {
-    Capabilities { evidence: Vec<NatEvidence> },
+    Capabilities {
+        evidence: Vec<NatEvidence>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ipv6_available: Option<bool>,
+        #[serde(default)]
+        ipv6_gate_supported: bool,
+    },
     Plan { networks: Vec<String> },
     PlanAck { networks: Vec<String> },
     Prepare { round: u8, network: String, mode: String, token: String, timeout_secs: u64 },
@@ -138,13 +144,15 @@ impl Session {
 
     pub async fn start(&self, template: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
         self.check()?;
-        let evidence = traversal_policy::collect_evidence().await;
-        self.send(Frame::Capabilities { evidence: evidence.clone() }).await?;
-        let remote = match self.wait(0, 0).await? {
-            Frame::Capabilities { evidence } if evidence.len() <= 32 => evidence,
+        let ipv6_available = traversal_policy::ipv6_available();
+        let evidence = traversal_policy::collect_evidence(ipv6_available).await;
+        self.send(Frame::Capabilities { evidence: evidence.clone(), ipv6_available, ipv6_gate_supported: true }).await?;
+        let (remote, remote_ipv6, remote_gate) = match self.wait(0, 0).await? {
+            Frame::Capabilities { evidence, ipv6_available, ipv6_gate_supported } if evidence.len() <= 32 => (evidence, ipv6_available, ipv6_gate_supported),
             _ => return Err(anyhow!("invalid_traversal_capabilities")),
         };
-        let networks = traversal_policy::build_plan(self.negotiation.preferences, &evidence, &remote);
+        let networks = traversal_policy::build_plan_with_family(self.negotiation.preferences, &evidence, &remote,
+            if remote_gate { ipv6_available } else { None }, if remote_gate { remote_ipv6 } else { None });
         if self.active {
             self.send(Frame::Plan { networks: networks.clone() }).await?;
             match self.wait(0, 2).await? {
@@ -161,6 +169,7 @@ impl Session {
         // LAN eligibility is independent of public NAT classification.
         let rounds = std::iter::once(("udp4".to_string(), "lan", 6u64)).chain(networks.into_iter()
             .map(|n| { let seconds = if n.starts_with("tcp") { 10 } else { 30 }; (n, "internet", seconds) }));
+        let mut attempted_networks = Vec::new();
         for (index, (network, mode, timeout_secs)) in rounds.enumerate() {
             self.check()?;
             let round = (index + 1) as u8;
@@ -179,7 +188,13 @@ impl Session {
                 self.send(Frame::Ready { round }).await?;
             }
             // Never abandon this call: cancellation must drain a late handle.
-            let result = gonc_ffi::start_udp_tunnel_native(&req).await;
+            // Older v2 peers still require their original plan and round IDs.
+            // Keep that handshake, but never invoke native IPv6 without a source.
+            let skip_ipv6 = req.network.ends_with('6') && ipv6_available == Some(false);
+            let result = if skip_ipv6 { Err(anyhow!("ipv6_unavailable")) } else {
+                if mode == "internet" { attempted_networks.push(req.network.clone()); }
+                gonc_ffi::start_udp_tunnel_native(&req).await
+            };
             tracing::info!(peer = self.peer, round, network = %req.network, mode = %req.traversal_mode,
                 success = result.is_ok(), "application traversal round completed");
             let mut owned = PendingTunnel(result.ok());
@@ -208,7 +223,7 @@ impl Session {
             }
             drop(owned);
         }
-        Err(anyhow!("punch_exhausted"))
+        Err(anyhow!("punch_exhausted:{}", attempted_networks.join(",")))
     }
 }
 
@@ -236,5 +251,13 @@ mod tests {
         let s = session();
         s.cancelled.store(true, Ordering::Release);
         assert!(s.wait(1, 4).await.is_err());
+    }
+    #[test]
+    fn capability_address_family_is_optional_and_boolean() {
+        let frame: Frame = serde_json::from_str(r#"{"kind":"capabilities","evidence":[]}"#).unwrap();
+        assert!(matches!(frame, Frame::Capabilities { ipv6_available: None, .. }));
+        let frame: Frame = serde_json::from_str(r#"{"kind":"capabilities","evidence":[],"ipv6_available":false}"#).unwrap();
+        assert!(matches!(frame, Frame::Capabilities { ipv6_available: Some(false), .. }));
+        assert!(serde_json::from_str::<Frame>(r#"{"kind":"capabilities","evidence":[],"ipv6_available":"false"}"#).is_err());
     }
 }

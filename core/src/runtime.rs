@@ -1602,7 +1602,7 @@ mod tests {
 
     #[test]
     fn negotiated_punch_failures_retry_but_invalid_plans_and_cancellation_do_not() {
-        for error in ["punch_exhausted", "traversal_signal_timeout"] {
+        for error in ["punch_exhausted", "punch_exhausted:udp4,udp6", "punch_exhausted:tcp4,udp4,udp6", "traversal_signal_timeout"] {
             assert_eq!(classify_tunnel_error_code(error), "hole_punch_wait_timeout");
             assert!(is_retryable_tunnel_error(error));
         }
