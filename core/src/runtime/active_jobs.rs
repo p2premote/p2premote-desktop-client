@@ -143,6 +143,7 @@ pub(super) fn spawn_active_tunnel_job_task(
     tokio::spawn(async move {
         let mut last_message = String::new();
         let mut last_attempt = 0;
+        let mut last_attempt_id = String::new();
         let config = match load_machine_config() {
             Ok(config) => config,
             Err(err) => {
@@ -211,6 +212,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     &config,
                     &opened,
                     target_device_id,
+                    &last_attempt_id,
                     false,
                     "user_cancelled".to_string(),
                     "user_cancelled".to_string(),
@@ -244,6 +246,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                 attempt,
                 now_ts()
             ));
+            last_attempt_id = attempt_id.clone();
             let punch_token = build_punch_token(&format!(
                 "{}-{}-{}",
                 config.device_id.unwrap_or_default(),
@@ -322,7 +325,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                             target_device_id,
                             target_uuid_for_task.clone(),
                         );
-                        let _ = close_active_p2p_job(&config, &opened, target_device_id, false, "user_cancelled".to_string(), "user_cancelled".to_string()).await;
+                        let _ = close_active_p2p_job(&config, &opened, target_device_id, &attempt_id, false, "user_cancelled".to_string(), "user_cancelled".to_string()).await;
                         return;
                     }
                     None
@@ -350,6 +353,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                             &config,
                             &opened,
                             target_device_id,
+                            &attempt_id,
                             false,
                             "user_cancelled".to_string(),
                             "user_cancelled".to_string(),
@@ -410,6 +414,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                         &config,
                         &opened,
                         target_device_id,
+                        &attempt_id,
                         true,
                         source_nat_type,
                         target_nat_type,
@@ -469,7 +474,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                                 target_device_id,
                                 target_uuid_for_task.clone(),
                             );
-                            let _ = close_active_p2p_job(&config, &opened, target_device_id, false, "user_cancelled".to_string(), "user_cancelled".to_string()).await;
+                            let _ = close_active_p2p_job(&config, &opened, target_device_id, &attempt_id, false, "user_cancelled".to_string(), "user_cancelled".to_string()).await;
                             return;
                         }
                     }
@@ -513,6 +518,7 @@ pub(super) fn spawn_active_tunnel_job_task(
             &config,
             &opened,
             target_device_id,
+            &last_attempt_id,
             false,
             error_code,
             last_message,

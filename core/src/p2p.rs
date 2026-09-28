@@ -145,6 +145,8 @@ struct NotifyP2PEndRequest {
     target_device_id: i64,
     source_nat_type: String,
     target_nat_type: String,
+    traversal_plan: String,
+    traversal_selection: String,
     error_code: String,
     error_message: String,
 }
@@ -674,6 +676,8 @@ async fn notify_p2p_end(
     target_device_id: i64,
     source_nat_type: String,
     target_nat_type: String,
+    traversal_plan: String,
+    traversal_selection: String,
     error_code: String,
     error_message: String,
 ) -> Result<()> {
@@ -694,6 +698,8 @@ async fn notify_p2p_end(
             target_device_id,
             source_nat_type,
             target_nat_type,
+            traversal_plan,
+            traversal_selection,
             error_code,
             error_message,
         })
@@ -711,6 +717,7 @@ pub async fn close_active_p2p_job(
     config: &MachineConfig,
     opened: &ActiveP2POpenResult,
     target_device_id: i64,
+    attempt_id: &str,
     success: bool,
     error_code: String,
     error_message: String,
@@ -719,6 +726,7 @@ pub async fn close_active_p2p_job(
         config,
         opened,
         target_device_id,
+        attempt_id,
         success,
         String::new(),
         String::new(),
@@ -732,6 +740,7 @@ pub async fn close_active_p2p_job_with_nat(
     config: &MachineConfig,
     opened: &ActiveP2POpenResult,
     target_device_id: i64,
+    attempt_id: &str,
     success: bool,
     source_nat_type: String,
     target_nat_type: String,
@@ -741,6 +750,7 @@ pub async fn close_active_p2p_job_with_nat(
     let source_device_id = config
         .device_id
         .ok_or_else(|| anyhow!("device not registered"))?;
+    let (traversal_plan, traversal_selection) = crate::traversal::take_plan(attempt_id);
     notify_p2p_end(
         config,
         opened.connection_id.clone(),
@@ -750,6 +760,8 @@ pub async fn close_active_p2p_job_with_nat(
         target_device_id,
         source_nat_type,
         target_nat_type,
+        traversal_plan,
+        traversal_selection,
         error_code,
         error_message,
     )

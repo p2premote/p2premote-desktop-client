@@ -48,6 +48,36 @@ impl Frame {
 
 static SESSIONS: Lazy<Mutex<HashMap<String, Arc<Session>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Negotiated plan records, keyed by attempt ID, for the /api/v1/p2p/end
+/// report. Entries are consumed by take_plan when the job reports its result;
+/// the registry is bounded so a crash between punch and report cannot grow it
+/// without limit.
+static PLANS: Lazy<Mutex<HashMap<String, PlanRecord>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Default, Clone)]
+struct PlanRecord { proposed: String, acknowledged: String }
+
+fn record_plan(attempt: &str, proposed: Option<String>, acknowledged: Option<String>) {
+    let mut plans = PLANS.lock();
+    if plans.len() >= 512 {
+        tracing::warn!("traversal plan registry overflow; clearing stale entries");
+        plans.clear();
+    }
+    let entry = plans.entry(attempt.to_string()).or_default();
+    if let Some(value) = proposed { entry.proposed = value; }
+    if let Some(value) = acknowledged { entry.acknowledged = value; }
+}
+
+/// Take the negotiated plan (proposed by the initiator, acknowledged by the
+/// peer) for the server-side p2p/end report. Empty strings mean the attempt
+/// never reached plan negotiation (legacy peer or early failure).
+pub fn take_plan(attempt: &str) -> (String, String) {
+    match PLANS.lock().remove(attempt) {
+        Some(record) => (record.proposed, record.acknowledged),
+        None => (String::new(), String::new()),
+    }
+}
+
 pub struct Session {
     attempt_id: String,
     connection_id: String,
@@ -155,12 +185,14 @@ impl Session {
             if remote_gate { ipv6_available } else { None }, if remote_gate { remote_ipv6 } else { None });
         if self.active {
             tracing::info!(peer = self.peer, networks = ?networks, "traversal plan proposed to peer");
+            record_plan(&self.attempt_id, Some(networks.join(",")), None);
             self.send(Frame::Plan { networks: networks.clone() }).await?;
             let accepted = match self.wait(0, 2).await? {
                 Frame::PlanAck { networks } => networks,
                 _ => return Err(anyhow!("traversal_plan_mismatch")),
             };
             tracing::info!(peer = self.peer, networks = ?accepted, "traversal plan selection acknowledged by peer");
+            record_plan(&self.attempt_id, None, Some(accepted.join(",")));
             if accepted != networks {
                 return Err(anyhow!("traversal_plan_mismatch"));
             }
@@ -171,9 +203,11 @@ impl Session {
             };
             tracing::info!(peer = self.peer, proposed = ?offered, selected = ?networks,
                 "traversal plan received from initiator; responding with independently recomputed selection");
+            record_plan(&self.attempt_id, Some(offered.join(",")), None);
             if offered != networks {
                 return Err(anyhow!("traversal_plan_mismatch"));
             }
+            record_plan(&self.attempt_id, None, Some(networks.join(",")));
             self.send(Frame::PlanAck { networks: networks.clone() }).await?;
         }
         // LAN eligibility is independent of public NAT classification.
