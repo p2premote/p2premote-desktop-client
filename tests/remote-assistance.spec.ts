@@ -269,6 +269,23 @@ async function setServiceAvailable(page: Page, available: boolean) {
   }, available)
 }
 
+test('远程协助打洞失败可以关闭 TCP 优先并重新发起', async ({ page }) => {
+  await openRemoteAssistance(page)
+  await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill('设备代码：428279225\n临时密码：123456')
+  await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
+  await expect(page.getByRole('heading', { name: '对方电脑', exact: true })).toBeVisible()
+  await page.evaluate(() => {
+    (window as any).__p2premoteMockState.preferences.prefer_tcp = true
+    window.dispatchEvent(new CustomEvent('p2p-active-tunnel-job-updated', { detail: {
+      target_device_id: 22, state: 'failed', attempt: 1, max_attempts: 30,
+      message: 'punch_exhausted', tcp_retry_recommended: true,
+    } }))
+  })
+  await page.getByRole('button', { name: '关闭 TCP 优先并重试', exact: true }).click()
+  await expect.poll(async () => (await mockCalls(page)).filter(call => call.cmd === 'start_service_anonymous_active_tunnel').length).toBe(2)
+  await expect.poll(() => page.evaluate(() => (window as any).__p2premoteMockState.preferences.prefer_tcp)).toBe(false)
+})
+
 test.describe('远程协助', () => {
   test('邀请卡片只提供复制邀请信息入口', async ({ page }) => {
     await openRemoteAssistance(page)
@@ -485,17 +502,13 @@ test.describe('远程协助', () => {
       runtime.tunnel_lifecycles[0].message = '等待主动端恢复'
     })
     await page.getByRole('button', { name: '刷新' }).click()
-    await expect(page.locator('.action-tile.primary')).toContainText('断开被动隧道')
+    await expect(page.locator('.action-tile.primary')).toContainText('取消')
     await expect(page.locator('.action-tile.primary')).toHaveAttribute(
       'aria-label',
-      /断开被动隧道.*关闭当前 P2P 通道/,
+      /取消.*取消当前隧道任务/,
     )
 
     await page.locator('.action-tile.primary').click()
-    const disconnectDialog = page.locator('.el-message-box').filter({ hasText: '断开隧道？' })
-    await expect(disconnectDialog).toBeVisible()
-    await expect(disconnectDialog).toContainText('当前通过该隧道的连接会立即中断')
-    await disconnectDialog.getByRole('button', { name: '断开隧道' }).click()
     await expect.poll(async () => {
       const calls = await mockCalls(page)
       return calls.some(call => call.cmd === 'stop_service_tunnel' && call.args?.sourceDeviceId === 22)
@@ -557,7 +570,7 @@ test.describe('远程协助', () => {
     await page.getByRole('button', { name: '隧道状态' }).click()
     await expect(page.getByRole('heading', { name: /主动隧道 1/ })).toBeVisible()
     await expect(page.getByRole('heading', { name: /被动隧道 1/ })).toBeVisible()
-    await expect(page.getByText('客厅 PC 5700')).toBeVisible()
+    await expect(page.getByText('客厅 PC 5700').first()).toBeVisible()
     await expect(page.getByText('来自 209758171')).toBeVisible()
     await expect(page.getByText('隧道已连接')).not.toBeVisible()
 
@@ -585,7 +598,7 @@ test.describe('远程协助', () => {
 
     await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill('设备代码：428279225\n临时密码：123456')
     await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
-    await expect(page.getByText('对方电脑', { exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '对方电脑', exact: true })).toBeVisible()
     await page.evaluate(() => {
       window.dispatchEvent(new CustomEvent('p2p-active-tunnel-job-updated', {
         detail: {
@@ -613,7 +626,7 @@ test.describe('远程协助', () => {
 
     await page.getByPlaceholder(/请粘贴对方发来的邀请信息/).fill('设备代码：428279225\n临时密码：123456')
     await page.locator('.connect-card').getByRole('button', { name: /建立远程连接/ }).click()
-    await expect(page.getByText('对方电脑', { exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '对方电脑', exact: true })).toBeVisible()
 
     await page.evaluate(() => {
       window.dispatchEvent(new CustomEvent('p2p-active-tunnel-job-updated', {
@@ -625,13 +638,13 @@ test.describe('远程协助', () => {
           max_attempts: 30,
           message: '隧道已自动建立成功',
           updated_at: Date.now(),
-          result: { success: true, local_port: 0, rdp_address: '100.99.71.43:3390' },
+          result: { success: true, local_port: 0, remote_protocol: 'rdp', rdp_address: '100.99.71.43:3390' },
         },
       }))
     })
 
-    await expect(page.locator('.tunnel-result-card code')).toHaveText('100.99.71.43:3390')
-    const hint = page.locator('.tunnel-result-card .result-hint').nth(1)
+    await expect(page.locator('.result-section code')).toHaveText('100.99.71.43:3390')
+    const hint = page.locator('.result-section .result-hint').nth(1)
     await expect(hint).toContainText('把端口 3390 改成对应服务端口，例如 RustDesk 直连端口为 21121')
     await expect(hint).not.toContainText('gonc.cc')
   })

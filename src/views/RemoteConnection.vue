@@ -148,6 +148,10 @@
             </div>
           </div>
 
+          <div v-if="activeJob?.tcp_retry_recommended" class="detail-section result-section">
+            <el-alert :title="$t('app.settings.tcp_failure_hint')" type="warning" :closable="false" />
+            <el-button :loading="connecting" @click="disableTcpAndRetry">{{ $t('app.settings.disable_tcp_retry') }}</el-button>
+          </div>
           <div v-if="activeJob?.state === 'succeeded'" class="detail-section result-section">
             <div class="section-title">{{ $t('remote.connect.result_label') }}</div>
             <code v-if="activeTunnelAddress" class="connection-address">{{ activeTunnelAddress }}</code>
@@ -230,6 +234,7 @@ interface ActiveTunnelJobStatus {
   max_attempts: number
   message: string
   updated_at: number
+  tcp_retry_recommended?: boolean
   result?: {
     success: boolean
     local_port: number
@@ -487,6 +492,27 @@ async function copyInviteInfo() {
 
 async function copyActiveTunnelAddress() {
   await copyText(activeTunnelAddress.value, t('remote.message.address_copied'))
+}
+
+async function disableTcpAndRetry() {
+  if (!verifiedDevice.value || connecting.value) return
+  const peer = verifiedDevice.value.device_id
+  connecting.value = true
+  try {
+    const preferences = await invoke<{ prefer_ipv6: boolean }>('get_connection_preferences')
+    await invoke('save_connection_preferences', { preferIpv6: preferences.prefer_ipv6, preferTcp: false })
+    await invoke('stop_active_tunnel_job', { targetDeviceId: peer })
+    const deadline = Date.now() + 150_000
+    while (true) {
+      const status = await invoke<BackgroundServiceStatus>('get_service_status')
+      const job = status.runtime?.active_tunnel_jobs?.find(item => item.target_device_id === peer)
+      if (!job || !['running', 'waiting'].includes(job.state)) break
+      if (Date.now() >= deadline) throw new Error(t('app.settings.draining'))
+      await new Promise(resolve => window.setTimeout(resolve, 500))
+    }
+    await handleConnect()
+  } catch (error) { ElMessage.error(String(error)) }
+  finally { connecting.value = false }
 }
 
 async function handleConnect() {
