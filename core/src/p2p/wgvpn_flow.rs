@@ -152,7 +152,7 @@ fn log_gonc_udp_punch_established(
     tunnel: &gonc_ffi::UdpTunnelResult,
 ) {
     tracing::info!(
-        "[wgvpn] gonc UDP punch established: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, selected_traversal={}, transport_mode={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}",
+        "[wgvpn] gonc punch established: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, selected_traversal={}, transport_mode={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}",
         role,
         peer_device_id,
         tunnel.attempts,
@@ -183,7 +183,7 @@ fn log_gonc_udp_punch_failed(
         .downcast_ref::<gonc_ffi::UdpTunnelFailure>()
         .map(|failure| &failure.result);
     tracing::warn!(
-        "[wgvpn] gonc UDP punch failed: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, selected_traversal={}, transport_mode={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}, error={:#}",
+        "[wgvpn] gonc punch failed: role={}, peer_device_id={}, attempts={}, elapsed_ms={}, network={}, selected_traversal={}, transport_mode={}, traversal_role={}, local_forward_addr={}, local_forward_port={}, peer_endpoint={}, local_nat_type={}, remote_nat_type={}, local_lan_addr={}, local_nat_addr={}, remote_lan_addr={}, remote_nat_addr={}, error={:#}",
         role,
         peer_device_id,
         failure.map_or(0, |result| result.attempts),
@@ -421,16 +421,17 @@ pub async fn start_active_wgvpn(
     // 3. gonc 加密 UDP 数据面。WireGuard 只看到本机 UDP endpoint。
     // Do not log the punch token: it is a connection secret.
     let udp_tunnel_request = UdpTunnelRequest::wgvpn(&punch_token, "active", WGVPN_LISTEN_PORT);
+    let traversal_session = crate::traversal::lookup(&punch_token);
     tracing::info!(
-            "[wgvpn] gonc UDP punch start: role=active, peer_device_id={}, timeout_secs={}, network={}, local_target={}:{}",
+            "[wgvpn] gonc punch start: role=active, peer_device_id={}, timeout_secs={}, network={}, local_target={}:{}",
             target_device_id,
             udp_tunnel_request.timeout_secs,
-            udp_tunnel_request.network,
+            if traversal_session.is_some() { "negotiated" } else { udp_tunnel_request.network.as_str() },
             udp_tunnel_request.remote_target_ip,
             udp_tunnel_request.remote_target_port,
         );
     let udp_punch_started_at = Instant::now();
-    let tunnel_result = match crate::traversal::lookup(&punch_token) {
+    let tunnel_result = match traversal_session {
         Some(session) => session.start(&udp_tunnel_request).await,
         None => gonc_ffi::start_udp_tunnel_native(&udp_tunnel_request).await,
     };
@@ -698,16 +699,17 @@ pub async fn start_passive_wgvpn(
 
     // 2. gonc 加密 UDP 数据面。Do not log the punch token.
     let udp_tunnel_request = UdpTunnelRequest::wgvpn(&punch_token, "passive", WGVPN_LISTEN_PORT);
+    let traversal_session = crate::traversal::lookup(&punch_token);
     tracing::info!(
-            "[wgvpn] gonc UDP punch start: role=passive, peer_device_id={}, timeout_secs={}, network={}, local_target={}:{}",
+            "[wgvpn] gonc punch start: role=passive, peer_device_id={}, timeout_secs={}, network={}, local_target={}:{}",
             source_device_id,
             udp_tunnel_request.timeout_secs,
-            udp_tunnel_request.network,
+            if traversal_session.is_some() { "negotiated" } else { udp_tunnel_request.network.as_str() },
             udp_tunnel_request.remote_target_ip,
             udp_tunnel_request.remote_target_port,
         );
     let udp_punch_started_at = Instant::now();
-    let tunnel_result = match crate::traversal::lookup(&punch_token) {
+    let tunnel_result = match traversal_session {
         Some(session) => session.start(&udp_tunnel_request).await,
         None => gonc_ffi::start_udp_tunnel_native(&udp_tunnel_request).await,
     };
@@ -1027,7 +1029,7 @@ async fn stop_wgvpn_internal(
 
     // 2. 停止该 peer 对应的 gonc UDP 数据面
     if let Err(e) = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &session.gonc_handle_id) {
-        warn!("[wgvpn] stop gonc udp tunnel failed: {:#}", e);
+        warn!("[wgvpn] stop gonc tunnel failed: {:#}", e);
         cleanup_errors.push(format!("stop gonc UDP tunnel: {e:#}"));
     }
 

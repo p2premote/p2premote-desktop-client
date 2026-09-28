@@ -191,6 +191,8 @@ impl Session {
             // Older v2 peers still require their original plan and round IDs.
             // Keep that handshake, but never invoke native IPv6 without a source.
             let skip_ipv6 = req.network.ends_with('6') && ipv6_available == Some(false);
+            tracing::info!(peer = self.peer, round, network = %req.network, mode = %req.traversal_mode,
+                timeout_secs, skipped = skip_ipv6, "application traversal round start");
             let result = if skip_ipv6 { Err(anyhow!("ipv6_unavailable")) } else {
                 if mode == "internet" { attempted_networks.push(req.network.clone()); }
                 gonc_ffi::start_udp_tunnel_native(&req).await
