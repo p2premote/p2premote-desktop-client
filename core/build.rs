@@ -14,9 +14,10 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", resources_dir.display());
     println!("cargo:rerun-if-changed={}", punch_library.display());
 
-    // On Linux the punch FFI is compiled in from source via the
-    // p2premote-punch path dependency; no prebuilt library is needed.
-    // Windows/macOS keep loading the Go DLL/dylib at runtime.
+    // Punch/Exchange is compiled in from source on every platform via the
+    // p2premote-punch path dependency. Windows/macOS additionally load the
+    // userspace WireGuard data plane library (p2premote-wg-ffi, wgonly) at
+    // build time for linking; Linux needs no prebuilt library.
     if target_os != "linux" && !punch_library.exists() {
         panic!(
             "{} not found; wgvpn binaries require it during build",
@@ -38,7 +39,7 @@ fn requires_runtime_library_copy(target_os: &str) -> bool {
 fn punch_library_name(target_os: &str) -> &'static str {
     match target_os {
         "windows" => "p2premote-wg.dll",
-        "macos" => "libp2premote-punch.dylib",
+        "macos" => "libp2premote-wg.dylib",
         "linux" => "libp2premote-punch.a",
         other => panic!("unsupported target OS: {other}"),
     }

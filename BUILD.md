@@ -46,6 +46,8 @@ Win7 安装包输出到 `artifacts\windows-win7-x64\`。普通 Windows 包保持
 
 要求已安装 Node.js、Rust、Tauri CLI、Windows 编译工具链，并且相邻目录 `../p2premote-punch-rs` 与 `../p2premote-wg-ffi` 必须存在；Rust Punch 由 Cargo 以源码依赖集成，脚本只构建独立的 WireGuard FFI。任何必需工具、源码或资源缺失都会直接失败。
 
+RustDeskTiny 引擎安装包使用预编译产物，不进 git：本地 `src-tauri/resources/RustDeskTiny-install.exe` 已存在时直接复用，缺失时（如 CI）按 `scripts/rustdesktiny-artifacts.env` 钉版从 GitHub Release 自动下载并校验 SHA-256；也可用 `-RustDeskTinyInstaller` 或环境变量 `RUSTDESK_TINY_INSTALLER` 指定其他安装包。Win7 包使用的 `RustDeskTinyLegacy-install.exe` 来自独立的 RustDeskTinyLegacy 仓库 Release，遵循同样的"本地优先、缺失自动下载"策略。
+
 ## 2. macOS GUI
 
 正式发布必须在 macOS 主机配置 Developer ID Application 证书与 Apple 公证凭据后执行：
@@ -56,22 +58,26 @@ export APPLE_NOTARY_KEYCHAIN_PROFILE='p2premote-notary'
 ./scripts/build-macos.sh -v 1.11.2
 ```
 
-脚本会构建 x86_64 与 arm64 的 service、CLI、Punch 动态库及 Tauri GUI，合并为 Universal App，随后签名、公证并生成 `artifacts/macos-universal/p2pRemote_<version>_macos-universal.dmg`。编译缓存位于 `target/macos-universal`。没有发布证书的内部测试机可使用 `--unsigned` 生成 ad-hoc 签名、未经公证的 DMG；该产物只用于测试，不应对外分发：
+脚本会构建 x86_64 与 arm64 的 service、CLI、WireGuard 数据面动态库（`libp2premote-wg.dylib`）及 Tauri GUI，合并为 Universal App，随后签名、公证并生成 `artifacts/macos-universal/p2pRemote_<version>_macos-universal.dmg`。编译缓存位于 `target/macos-universal`。没有发布证书的内部测试机可使用 `--unsigned` 生成 ad-hoc 签名、未经公证的 DMG；该产物只用于测试，不应对外分发：
 
 ```bash
 ./scripts/build-macos.sh -v 1.11.2 --no-sccache --unsigned
 ```
 
+与 Windows/Linux 一致，Punch/Exchange 由 `../p2premote-punch-rs` 以 Cargo 源码依赖集成，Go 侧只从 `../p2premote-wg-ffi` 构建 wgonly 的 userspace WireGuard 数据面（产物 `libp2premote-wg.dylib`，与 Windows 的 `p2premote-wg.dll` 同源同参数）；相邻目录这两个仓库必须存在，不再依赖 Go 版 `p2premote-punch` 老库。
+
 macOS 包内嵌 Universal `RustDeskTiny.app`。首次远程控制前，用户需要在“系统设置 → 隐私与安全性”中为 RustDeskTiny 授予屏幕录制、辅助功能和输入监控权限。
 
-构建 RustDeskTiny 还要求完整 Xcode（仅 Command Line Tools 不够）、Rust 1.81、Flutter 3.24.5、`flutter_rust_bridge_codegen`、CMake、NASM 2.x，以及同时安装了 `x64-osx` 和 `arm64-osx` 依赖的 vcpkg。通过 `VCPKG_ROOT` 指向该 vcpkg 目录。
+RustDeskTiny 不在本机编译：与 Windows 的 `RustDeskTiny-install.exe`、Linux 的 `RustDeskTiny.deb` 一样使用预编译产物。两个单架构压缩包在 `src-tauri/resources/` 已存在时直接复用，缺失时（如 CI）按 `scripts/rustdesktiny-artifacts.env` 钉版从 GitHub Release 自动下载并校验 SHA-256；构建脚本随后自动解包并用 lipo 合成 Universal app。这些产物不进 git。
+
+需要复用已合成的 app 时，可通过 `RUSTDESK_TINY_APP` 指向该 `RustDeskTiny.app` 跳过合并。由于不再编译 RustDeskTiny，macOS 构建机不需要完整 Xcode、Flutter 与 vcpkg，只需 Rust、Go 1.20+、Node.js 与 Command Line Tools。
 
 ## 3. Linux Headless 四格式统一构建
 
 Linux GUI 与 Headless 共用唯一一套 Debian 10 / glibc 2.28 编译镜像。可预先创建镜像：
 
 ```bash
-./scripts/make_compile_image.sh --proxy http://192.0.2.191:7890
+./scripts/make_compile_image.sh --proxy http://<内网代理地址>:<端口>
 ```
 
 正常编译脚本会先检查镜像；镜像不存在时会自动调用该脚本创建，不需要手工执行。
@@ -80,8 +86,7 @@ GUI 与 Headless 不再分别维护 Ubuntu 18 和 Debian 10 镜像。
 arm64 使用同一标签前缀的 `-arm64` 镜像。镜像创建入口统一为 `make_compile_image.sh`。
 GUI 构建入口为 `build-linux-gui.sh`，由上述 Debian 10 镜像执行。
 
-GUI 构建不会编译 RustDeskTiny。先从 RustDeskTiny GitHub Release 下载 amd64 deb，
-保存为 `src-tauri/resources/RustDeskTiny.deb`，再执行：
+GUI 构建不会编译 RustDeskTiny：`build-linux-gui.sh` 启动容器前检查 `src-tauri/resources/RustDeskTiny.deb`，本地已有直接复用，缺失时按 `scripts/rustdesktiny-artifacts.env` 钉版自动下载并校验 SHA-256（该产物不进 git），然后执行：
 
 ```bash
 ./scripts/build-linux-gui.sh -v 1.12.1

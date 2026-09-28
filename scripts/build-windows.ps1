@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [Alias('v')]
     [string]$Version,
@@ -125,7 +125,11 @@ if (-not [string]::IsNullOrWhiteSpace($RustDeskTinyInstaller)) {
         throw "RustDeskTiny installer is missing: $desktopInstaller"
     }
 } elseif (-not (Test-Path -LiteralPath $desktopResource -PathType Leaf)) {
-    throw "RustDeskTiny installer is missing. Pass -RustDeskTinyInstaller or set RUSTDESK_TINY_INSTALLER."
+    # 产物不进 git：本地缺失时（Jenkins / GitHub Actions 等干净环境）按钉版自动下载
+    & (Join-Path $PSScriptRoot 'fetch-rustdesktiny-artifact.ps1') -Kind 'windows-x64'
+    if (-not (Test-Path -LiteralPath $desktopResource -PathType Leaf)) {
+        throw "RustDeskTiny installer is still missing after download. Pass -RustDeskTinyInstaller or set RUSTDESK_TINY_INSTALLER."
+    }
 }
 $desktopInstallerProduct = (Get-Item -LiteralPath $desktopInstaller).VersionInfo.ProductName
 if ($PackageTarget -eq 'windows-win7-x64') {

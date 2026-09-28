@@ -42,15 +42,25 @@ repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cargo_target_dir="$repo_dir/target/macos-universal"
 dist_dir="$repo_dir/artifacts/macos-universal"
 export CARGO_TARGET_DIR="$cargo_target_dir"
-punch_dir="${P2PREMOTE_PUNCH_DIR:-$(cd "$repo_dir/../p2premote-punch" && pwd)}"
+# Punch/Exchange 与 Windows/Linux 一致由 p2premote-punch-rs 源码集成；
+# Go 侧只构建 p2premote-wg-ffi（wgonly）的 userspace WireGuard 数据面 dylib，
+# 与 Windows 的 p2premote-wg.dll 同源同参数（GOTOOLCHAIN 钉版仅 Windows 的
+# Win7 兼容需要，macOS 用本机 Go >= 1.20 即可）。
+wg_ffi_dir="${P2PREMOTE_WG_FFI_DIR:-$(cd "$repo_dir/../p2premote-wg-ffi" && pwd)}"
 resources_dir="$repo_dir/src-tauri/resources"
-tiny_dir="${RUSTDESK_TINY_DIR:-$(cd "$repo_dir/../remoteDesk/RustDeskTiny" && pwd)}"
-tiny_build_script="$tiny_dir/scripts/build-macos-tiny.sh"
-tiny_artifact="$tiny_dir/dist/macos-universal-release/RustDeskTiny.app"
+# RustDeskTiny 使用预编译产物（与 Windows 的 RustDeskTiny-install.exe、Linux 的
+# RustDeskTiny.deb 同一模式）：两个单架构 zip 来自 RustDeskTiny GitHub Release
+# （tan00/rustdeskTiny，CI 用 ditto 归档），本地缺失时按
+# scripts/rustdesktiny-artifacts.env 钉版自动下载；脚本解包后 lipo 合成 universal
+# app，不再依赖源码全量编译（无需 remoteDesk 检出、Xcode/Flutter/vcpkg 工具链）。
+# RUSTDESK_TINY_APP 可直接指向已合成的 universal RustDeskTiny.app 复用。
+tiny_app="${RUSTDESK_TINY_APP:-}"
+tiny_zip_x64="$resources_dir/RustDeskTiny-macos-x86_64.zip"
+tiny_zip_arm64="$resources_dir/RustDeskTiny-macos-aarch64.zip"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/p2premote-macos.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 
-for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun hdiutil; do
+for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun hdiutil ditto file; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
 done
 if [[ "$use_sccache" == 1 ]]; then
@@ -62,12 +72,65 @@ else
   echo "==> sccache disabled; Rust will compile locally"
 fi
 
+is_macho() {
+  file -b "$1" | grep -q '^Mach-O'
+}
+
+# 以 x86_64 包为基准复制后，逐个把 arm64 包中的 Mach-O 切片 lipo 进去。
+# 基准选 x86_64 是因为 Info.plist 等非二进制资源两个架构相同，而 x86_64 侧的
+# LSMinimumSystemVersion 更低，老 Intel Mac 才能继续安装合并后的包。
+merge_universal_app() {
+  local x64_app="$1"
+  local arm_app="$2"
+  local out_app="$3"
+  rm -rf "$out_app"
+  mkdir -p "$(dirname "$out_app")"
+  cp -a "$x64_app" "$out_app"
+
+  local arm_file rel out_file merged=0
+  while IFS= read -r -d '' arm_file; do
+    rel="${arm_file#"$arm_app"/}"
+    out_file="$out_app/$rel"
+    if [[ ! -f "$out_file" ]]; then
+      echo "Warning: file exists only in the arm64 bundle, skipping: $rel" >&2
+      continue
+    fi
+    if [[ "$rel" == *.plist ]] && ! cmp -s "$out_file" "$arm_file"; then
+      echo "Note: $rel differs between arch bundles; keeping the x86_64 copy"
+    fi
+    if is_macho "$out_file" && is_macho "$arm_file"; then
+      lipo -create "$out_file" "$arm_file" -output "$out_file"
+      merged=$((merged + 1))
+    fi
+  done < <(cd "$arm_app" && find . -type f -print0)
+
+  for binary in RustDeskTiny service; do
+    lipo "$out_app/Contents/MacOS/$binary" -verify_arch x86_64 arm64
+  done
+  echo "==> Merged $merged Mach-O slices into the universal RustDeskTiny.app"
+}
+
 mkdir -p "$resources_dir"
-[[ -f "$tiny_build_script" ]] || { echo "RustDeskTiny macOS build script not found: $tiny_build_script" >&2; exit 1; }
-bash "$tiny_build_script"
-[[ -d "$tiny_artifact" ]] || { echo "RustDeskTiny universal app is missing after build: $tiny_artifact" >&2; exit 1; }
+if [[ -z "$tiny_app" ]]; then
+  # 产物不进 git：本地已有直接复用，缺失时（CI 等干净环境）按钉版自动下载并校验
+  "$repo_dir/scripts/fetch-rustdesktiny-artifact.sh" macos-x86_64
+  "$repo_dir/scripts/fetch-rustdesktiny-artifact.sh" macos-aarch64
+  echo "==> Merging RustDeskTiny prebuilt archives into a universal app"
+  ditto -x -k "$tiny_zip_x64" "$build_dir/tiny-x86_64"
+  ditto -x -k "$tiny_zip_arm64" "$build_dir/tiny-arm64"
+  merge_universal_app \
+    "$build_dir/tiny-x86_64/RustDeskTiny.app" \
+    "$build_dir/tiny-arm64/RustDeskTiny.app" \
+    "$build_dir/tiny-universal/RustDeskTiny.app"
+  tiny_app="$build_dir/tiny-universal/RustDeskTiny.app"
+fi
+[[ -d "$tiny_app" ]] || { echo "RustDeskTiny.app is missing: $tiny_app" >&2; exit 1; }
+[[ -f "$tiny_app/Contents/MacOS/RustDeskTiny" && -f "$tiny_app/Contents/MacOS/service" ]] || {
+  echo "RustDeskTiny.app is incomplete (needs Contents/MacOS/RustDeskTiny and service): $tiny_app" >&2
+  exit 1
+}
 rm -rf "$resources_dir/RustDeskTiny.app"
-cp -a "$tiny_artifact" "$resources_dir/RustDeskTiny.app"
+cp -a "$tiny_app" "$resources_dir/RustDeskTiny.app"
 rustup target add x86_64-apple-darwin aarch64-apple-darwin
 mkdir -p "$resources_dir" "$build_dir/x86_64" "$build_dir/arm64"
 
@@ -83,25 +146,26 @@ build_rust_helper() {
   cp "$cargo_target_dir/$triple/release/p2premote-cli" "$arch_dir/p2premote-cli"
 }
 
-build_punch() {
+build_wg() {
   local goarch="$1"
   local clang_arch="$2"
   local output="$3"
   (
-    cd "$punch_dir"
+    cd "$wg_ffi_dir"
     CGO_ENABLED=1 GOOS=darwin GOARCH="$goarch" CC="clang -arch $clang_arch" \
-      go build -buildmode=c-shared -ldflags "-s -w" -o "$output" ./punchffi
+      go build -tags wgonly -mod=mod \
+      -buildmode=c-shared -ldflags "-s -w" -o "$output" ./punchffi
   )
-  install_name_tool -id "@rpath/libp2premote-punch.dylib" "$output"
+  install_name_tool -id "@rpath/libp2premote-wg.dylib" "$output"
   rm -f "${output%.dylib}.h"
 }
 
-build_punch amd64 x86_64 "$build_dir/x86_64/libp2premote-punch.dylib"
-build_punch arm64 arm64 "$build_dir/arm64/libp2premote-punch.dylib"
+build_wg amd64 x86_64 "$build_dir/x86_64/libp2premote-wg.dylib"
+build_wg arm64 arm64 "$build_dir/arm64/libp2premote-wg.dylib"
 build_rust_helper x86_64-apple-darwin "$build_dir/x86_64"
 build_rust_helper aarch64-apple-darwin "$build_dir/arm64"
 
-for artifact in p2premote-service p2premote-cli libp2premote-punch.dylib; do
+for artifact in p2premote-service p2premote-cli libp2premote-wg.dylib; do
   lipo -create \
     "$build_dir/x86_64/$artifact" \
     "$build_dir/arm64/$artifact" \
@@ -113,7 +177,7 @@ if [[ "$unsigned" == 0 && -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   codesign --force --deep --timestamp --options runtime \
     --sign "$APPLE_SIGNING_IDENTITY" "$resources_dir/RustDeskTiny.app"
   codesign --force --timestamp --options runtime \
-    --sign "$APPLE_SIGNING_IDENTITY" "$resources_dir/libp2premote-punch.dylib"
+    --sign "$APPLE_SIGNING_IDENTITY" "$resources_dir/libp2premote-wg.dylib"
   codesign --force --timestamp --options runtime \
     --sign "$APPLE_SIGNING_IDENTITY" "$resources_dir/p2premote-service"
   codesign --force --timestamp --options runtime \
@@ -134,12 +198,10 @@ macos_config="$build_dir/tauri.macos.conf.json"
   if [[ "$unsigned" == 1 ]]; then
     env -u APPLE_SIGNING_IDENTITY \
       P2PREMOTE_CLIENT_VERSION="$version" \
-      P2PREMOTE_PUNCH_DIR="$punch_dir" \
       P2PREMOTE_PREBUILT_RESOURCES=1 \
       npx tauri build --target universal-apple-darwin --bundles app --config "$macos_config"
   else
     P2PREMOTE_CLIENT_VERSION="$version" \
-    P2PREMOTE_PUNCH_DIR="$punch_dir" \
     P2PREMOTE_PREBUILT_RESOURCES=1 \
     APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" \
       npx tauri build --target universal-apple-darwin --bundles app --config "$macos_config"
@@ -161,7 +223,7 @@ else
     --sign "$APPLE_SIGNING_IDENTITY" "$app_path"
 fi
 lipo "$app_path/Contents/MacOS/p2pRemote" -verify_arch x86_64 arm64
-for artifact in p2premote-service p2premote-cli libp2premote-punch.dylib; do
+for artifact in p2premote-service p2premote-cli libp2premote-wg.dylib; do
   lipo "$app_path/Contents/Resources/resources/$artifact" -verify_arch x86_64 arm64
 done
 lipo "$app_path/Contents/Resources/resources/RustDeskTiny.app/Contents/MacOS/RustDeskTiny" \

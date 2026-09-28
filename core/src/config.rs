@@ -355,9 +355,10 @@ pub fn default_p2p_punch_binary_name() -> &'static str {
         "libp2premote-punch.a"
     }
 
+    // macOS 使用与 Windows 同源的 p2premote-wg-ffi（wgonly）数据面动态库。
     #[cfg(all(not(windows), not(target_os = "linux")))]
     {
-        "libp2premote-punch.dylib"
+        "libp2premote-wg.dylib"
     }
 }
 
@@ -1144,5 +1145,7 @@ mod wgvpn_tests {
         assert!(path.to_string_lossy().ends_with("p2premote-wg.dll"));
         #[cfg(target_os = "linux")]
         assert!(path.to_string_lossy().ends_with("libp2premote-punch.a"));
+        #[cfg(target_os = "macos")]
+        assert!(path.to_string_lossy().ends_with("libp2premote-wg.dylib"));
     }
 }

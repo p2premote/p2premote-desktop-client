@@ -1,0 +1,306 @@
+# 桌面客户端自动构建。
+#
+# 仓库布局要求：构建脚本按“兄弟目录”寻址多个独立仓库——
+#   p2premote-desktop-client（本仓库，Cargo workspace 含 core/service/cli/src-tauri）
+#   ../p2premote-punch-rs   （core/Cargo.toml 的 path 依赖 ../../p2premote-punch-rs，
+#                             Punch/Exchange 三平台统一 Rust 源码集成）
+#   ../p2premote-wg-ffi     （Windows/macOS 的 userspace WireGuard 数据面：分别产出
+#                             p2premote-wg.dll / libp2premote-wg.dylib，wgonly）
+# 因此这些仓库必须推到同一个 GitHub 账号/组织下，本 workflow 用
+# actions/checkout 的 path: ../<repo> 在 runner 上还原出与本地 p2premote-all
+# 一致的目录结构（runner 的 workspace 本身就是 /.../work/<repo>/<repo>，
+# 目录名必须保持 p2premote-desktop-client，_build-linux-headless.sh 会校验）。
+#
+# 触发方式：
+#   1. push tag（如 v1.12.4）：自动构建并上传全部产物；
+#   2. Actions 页面手动触发（workflow_dispatch），输入三段式版本号。
+#
+# 私有仓库注意：github.token 只能读当前仓库。上述仓库中任何一个为私有时，
+# 需要在 Settings -> Secrets and variables -> Actions 配置 CROSS_REPO_TOKEN
+# （classic PAT，勾选 repo 读权限）；未配置时表达式自动回退到 github.token
+# （公开仓库足够）。
+#
+# macOS 说明：RustDeskTiny 已改为预编译产物（zip 不进 git，缺失时按
+# scripts/rustdesktiny-artifacts.env 钉版自动下载并校验，构建时 lipo 合并），
+# CI 无需 Xcode/Flutter/vcpkg。
+# CI 产物为 --unsigned 测试包（ad-hoc 签名，不可对外分发）；正式 Developer ID
+# 签名与公证需导入证书 secrets（APPLE_SIGNING_IDENTITY /
+# APPLE_NOTARY_KEYCHAIN_PROFILE）后去掉 --unsigned，或继续用专用 Mac 编译机。
+#
+# 未包含的平台（按需自行添加 job）：
+#   - Windows 7 包：scripts/build-windows-win7.ps1，需独立工具链；
+#     RustDeskTinyLegacy 安装器已可按钉版自动下载（独立仓库 Release）。
+#   - Linux aarch64：build-linux.sh --arch aarch64，前置
+#     docker/setup-qemu-action@v3 注册 binfmt（QEMU 全模拟编译很慢）。
+
+name: build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（三段式 SemVer，例如 1.12.4）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # tag 触发取 tag 名（v 前缀在 resolve-version 中剥离），手动触发取输入值
+  RAW_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  CHECKOUT_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+  # RustDeskTiny 预编译产物不入库（resources/ 下的安装器/deb/zip 均已 untrack），
+  # CI 按此固定版本从公开 Release 下载；升级 RustDeskTiny 时同步修改
+  RUSTDESK_TINY_VERSION: '1.5.1'
+  RUSTDESK_TINY_RELEASE: https://github.com/tan00/rustdeskTiny/releases/download
+  # Debian 10 编译镜像，headless 与 GUI 共用；改名时必须同步
+  # build-linux.sh / build-linux-gui.sh / make_compile_image.sh 中的 builder_image
+  COMPILE_IMAGE: p2premote-linux-compile:debian10-rust1.77-v1-amd64
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve and validate version
+        id: resolve
+        run: |
+          v="${RAW_VERSION#v}"
+          if [[ ! "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版本号必须是三段式 SemVer（如 1.12.4），当前为 '$v'"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  windows-x64:
+    name: Windows x64 NSIS 安装包
+    needs: resolve-version
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout p2premote-desktop-client
+        uses: actions/checkout@v4
+
+      - name: Checkout p2premote-punch-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-punch-rs
+          path: ../p2premote-punch-rs
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Checkout p2premote-wg-ffi
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-wg-ffi
+          path: ../p2premote-wg-ffi
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # src-tauri/build.rs 固定 GOTOOLCHAIN=go1.20.14，精确安装该版本，
+      # 避免构建过程中再触发工具链自动下载
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.20.14'
+          cache-dependency-path: ../p2premote-wg-ffi/go.sum
+
+      # rust-toolchain.toml 锁定 1.77.2（Win7 兼容线）
+      - uses: dtolnay/rust-toolchain@1.77.2
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download RustDeskTiny installer
+        run: |
+          curl -fL --retry 3 -o src-tauri/resources/RustDeskTiny-install.exe \
+            "$RUSTDESK_TINY_RELEASE/$RUSTDESK_TINY_VERSION/RustDeskTiny-install.exe"
+
+      # 脚本内部完成：版本号写入、npm ci、punch/wg-ffi/Go DLL 编排、
+      # npx tauri build、NSIS 产物归档到 artifacts/windows-x64/
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -v "${{ needs.resolve-version.outputs.version }}"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: artifacts/windows-x64/
+          if-no-files-found: error
+
+  linux-headless-x86_64:
+    name: Linux headless x86_64（tar.gz/deb/rpm/docker）
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout p2premote-desktop-client
+        uses: actions/checkout@v4
+
+      - name: Checkout p2premote-punch-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-punch-rs
+          path: ../p2premote-punch-rs
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Checkout p2premote-wg-ffi
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-wg-ffi
+          path: ../p2premote-wg-ffi
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      # 首次构建会现场创建 Debian 10 编译镜像（整套工具链下载，非常慢），
+      # 用 docker save 的镜像 tar 做缓存；Dockerfile 或创建脚本变化时自动失效重建
+      - name: Cache compile image
+        id: compile-image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/p2premote-linux-compile-image.tar
+          key: compile-image-amd64-${{ hashFiles('packaging/linux/builder/**', 'scripts/make_compile_image.sh') }}
+
+      - name: Restore compile image
+        if: steps.compile-image.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/p2premote-linux-compile-image.tar
+
+      # 宿主机只需 git + docker；前端/Go/Rust 全部在容器内完成，
+      # 一次编译派生 tar.gz、deb、rpm、docker 镜像 tar 四种格式
+      - name: Build all four formats
+        run: ./scripts/build-linux.sh -v "${{ needs.resolve-version.outputs.version }}"
+
+      - name: Save compile image for next run
+        if: steps.compile-image.outputs.cache-hit != 'true'
+        run: docker save -o /tmp/p2premote-linux-compile-image.tar "$COMPILE_IMAGE"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-headless-x86_64
+          path: artifacts/linux-headless/
+          if-no-files-found: error
+
+  linux-gui-x86_64:
+    name: Linux GUI x86_64（deb/AppImage）
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # 脚本默认 /mnt/n/rust-cache 是本机 N 盘路径；CI 改用 runner 临时目录
+      RUST_CACHE_ROOT: ${{ runner.temp }}/rust-cache
+    steps:
+      - name: Checkout p2premote-desktop-client
+        uses: actions/checkout@v4
+
+      - name: Checkout p2premote-punch-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-punch-rs
+          path: ../p2premote-punch-rs
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Checkout p2premote-wg-ffi
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-wg-ffi
+          path: ../p2premote-wg-ffi
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      # 与 linux-headless 共用同一编译镜像缓存；两个 job 并行且缓存均未命中时
+      # 会各自构建一次镜像（其中一个 save 同 key 冲突仅告警，不影响构建结果）
+      - name: Cache compile image
+        id: compile-image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/p2premote-linux-compile-image.tar
+          key: compile-image-amd64-${{ hashFiles('packaging/linux/builder/**', 'scripts/make_compile_image.sh') }}
+
+      - name: Restore compile image
+        if: steps.compile-image.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/p2premote-linux-compile-image.tar
+
+      # GUI deb 打包需要解包合并 RustDeskTiny（headless 不含，无需下载）
+      - name: Download RustDeskTiny deb
+        run: |
+          curl -fL --retry 3 -o src-tauri/resources/RustDeskTiny.deb \
+            "$RUSTDESK_TINY_RELEASE/$RUSTDESK_TINY_VERSION/RustDeskTiny-$RUSTDESK_TINY_VERSION.deb"
+
+      - name: Build GUI package
+        run: ./scripts/build-linux-gui.sh -v "${{ needs.resolve-version.outputs.version }}"
+
+      - name: Save compile image for next run
+        if: steps.compile-image.outputs.cache-hit != 'true'
+        run: docker save -o /tmp/p2premote-linux-compile-image.tar "$COMPILE_IMAGE"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-gui-x86_64
+          path: artifacts/linux-gui-x64/
+          if-no-files-found: error
+
+  macos-universal:
+    name: macOS universal DMG（unsigned 测试包）
+    needs: resolve-version
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Checkout p2premote-desktop-client
+        uses: actions/checkout@v4
+
+      # Punch/Exchange 与其他平台一致走 p2premote-punch-rs（core 的 path 依赖）；
+      # Go 侧只需 p2premote-wg-ffi（wgonly 数据面 dylib，与 Windows 同源）
+      - name: Checkout p2premote-punch-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-punch-rs
+          path: ../p2premote-punch-rs
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Checkout p2premote-wg-ffi
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-wg-ffi
+          path: ../p2premote-wg-ffi
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # wg-ffi go.mod 为 go 1.20，与 Windows job 相同精确版本
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.20.14'
+          cache-dependency-path: ../p2premote-wg-ffi/go.sum
+
+      # rust-toolchain.toml 锁定 1.77.2；双架构 target 由脚本内 rustup target add 补齐
+      - uses: dtolnay/rust-toolchain@1.77.2
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download RustDeskTiny macOS archives
+        run: |
+          for arch in x86_64 aarch64; do
+            curl -fL --retry 3 -o "src-tauri/resources/RustDeskTiny-macos-$arch.zip" \
+              "$RUSTDESK_TINY_RELEASE/$RUSTDESK_TINY_VERSION/RustDeskTiny-macos-$arch.zip"
+          done
+
+      # RustDeskTiny 走预编译 zip，脚本自动解包 lipo 合并；
+      # CI 无证书，只能出 --unsigned 测试包
+      - name: Build unsigned DMG
+        run: ./scripts/build-macos.sh -v "${{ needs.resolve-version.outputs.version }}" --no-sccache --unsigned
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal-unsigned
+          path: artifacts/macos-universal/
+          if-no-files-found: error

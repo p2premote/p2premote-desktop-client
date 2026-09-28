@@ -39,6 +39,12 @@ if [[ ! "$git_commit" =~ ^[0-9a-f]{6}$ ]]; then
 fi
 artifact_version="${version}-${git_commit}"
 
+# RustDeskTiny deb 不进 git：本地已有直接复用，缺失时（CI）按钉版自动下载。
+# 容器内 repack-linux-gui-deb.sh 会通过 workspace 挂载读到它。
+if [[ -z "${RUSTDESK_TINY_DEB:-}" ]]; then
+  "$repo_dir/scripts/fetch-rustdesktiny-artifact.sh" linux-amd64
+fi
+
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }
 builder_image="p2premote-linux-compile:debian10-rust1.77-v1-amd64"
 if ! docker image inspect "$builder_image" >/dev/null 2>&1; then

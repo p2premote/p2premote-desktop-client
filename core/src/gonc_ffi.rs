@@ -1,7 +1,9 @@
 //! gonc FFI client for wgvpn key exchange and UDP data tunnel.
 
-// Linux/Windows/macOS 通过源码 path 依赖集成纯打洞库。当前调用边界仍保留
-// C ABI 以维持迁移期间的协议兼容；后续阶段再将主程序调用改为原生 Rust API。
+// Punch/Exchange 在 Linux/Windows/macOS 三个平台都通过源码 path 依赖
+// （p2premote-punch-rs，原生 Rust API）集成。Go 侧只保留 userspace
+// WireGuard 数据面 FFI：Windows 为 p2premote-wg.dll（raw-dylib），
+// macOS 为 libp2premote-wg.dylib，均出自 p2premote-wg-ffi（wgonly）。
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 use p2premote_punch as _;
 
@@ -112,11 +114,6 @@ impl std::fmt::Display for UdpTunnelFailure {
 }
 
 impl std::error::Error for UdpTunnelFailure {}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct StopUdpTunnelRequest {
-    pub handle_id: String,
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StartSubnetRouterRequest {
@@ -283,22 +280,12 @@ pub struct SubnetRouterResult {
     pub error: String,
 }
 
-// The Rust Punch crate is linked directly on Linux and Windows. Only macOS
-// still uses the legacy combined dynamic library while its standalone WG
-// backend is completed.
-#[cfg(target_os = "macos")]
-#[link(name = "p2premote-punch")]
-extern "C" {
-    fn StartUdpTunnel(input: *const c_char) -> *mut c_char;
-    fn StopUdpTunnel(input: *const c_char) -> *mut c_char;
-    fn Exchange(input: *const c_char) -> *mut c_char;
-}
-
-// Go owns the userspace-WireGuard ABI. On Windows this is the deliberately
-// thin p2premote-wg.dll, not the former all-in-one Punch library.
+// Go owns the userspace-WireGuard ABI. Windows links the deliberately thin
+// p2premote-wg.dll via raw-dylib; macOS links the equivalent wgonly
+// libp2premote-wg.dylib built from the same p2premote-wg-ffi source.
 #[cfg(not(target_os = "linux"))]
 #[cfg_attr(windows, link(name = "p2premote-wg", kind = "raw-dylib"))]
-#[cfg_attr(target_os = "macos", link(name = "p2premote-punch"))]
+#[cfg_attr(target_os = "macos", link(name = "p2premote-wg"))]
 extern "C" {
     fn StartSubnetRouter(input: *const c_char) -> *mut c_char;
     fn StopSubnetRouter(input: *const c_char) -> *mut c_char;
@@ -602,30 +589,8 @@ where
     Ok(output)
 }
 
-pub fn start_udp_tunnel(
-    library_path: &Path,
-    request: &UdpTunnelRequest,
-) -> Result<UdpTunnelResult> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (library_path, request);
-        return Err(anyhow!("legacy Punch FFI is only available on macOS"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        validate_punch_library_available(library_path)?;
-        let input =
-            serde_json::to_string(request).context("failed to encode udp tunnel request")?;
-        let output = ffi_call(
-            &input,
-            |ptr| unsafe { StartUdpTunnel(ptr) },
-            "StartUdpTunnel",
-        )?;
-        parse_udp_tunnel_result(&output)
-    }
-}
-
-/// Native Rust Punch path used by Linux/Windows once the crate is linked.
+/// Native Rust Punch path used by Linux/Windows/macOS; the punch crate is
+/// linked in-process on all three platforms.
 /// The temporary JSON conversion keeps the existing core result contract
 /// stable while the strongly typed API is migrated at call sites.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
@@ -655,37 +620,14 @@ pub fn stop_udp_tunnel_native(handle_id: &str) {
 }
 
 pub fn stop_udp_tunnel(library_path: &Path, handle_id: &str) -> Result<()> {
+    // All supported platforms stop tunnels through the linked Rust Punch
+    // crate; the library path is kept for signature compatibility.
+    let _ = library_path;
     if handle_id.is_empty() {
         return Ok(());
     }
-    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-    {
-        let _ = library_path;
-        stop_udp_tunnel_native(handle_id);
-        return Ok(());
-    }
-    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
-    {
-        validate_punch_library_available(library_path)?;
-        let input = serde_json::to_string(&StopUdpTunnelRequest {
-            handle_id: handle_id.to_string(),
-        })
-        .context("failed to encode stop udp tunnel request")?;
-        let output = ffi_call(&input, |ptr| unsafe { StopUdpTunnel(ptr) }, "StopUdpTunnel")?;
-        let result: StopUdpTunnelResult = serde_json::from_str(&output)
-            .with_context(|| format!("invalid stop tunnel result: {}", output))?;
-        if !result.ok {
-            return Err(anyhow!(
-                "stop udp tunnel failed: {}",
-                if result.error.is_empty() {
-                    "unknown error"
-                } else {
-                    result.error.as_str()
-                }
-            ));
-        }
-        Ok(())
-    }
+    stop_udp_tunnel_native(handle_id);
+    Ok(())
 }
 
 pub fn start_subnet_router(
@@ -884,78 +826,8 @@ impl ExchangeMode {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[cfg(target_os = "macos")]
-struct ExchangeRequest {
-    token: String,
-    exmode: i32,
-    send_data: String,
-    role_hint: String,
-    timeout_secs: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[cfg(target_os = "macos")]
-struct ExchangeResponse {
-    ok: bool,
-    #[serde(default)]
-    recv_data: String,
-    #[serde(default)]
-    error: String,
-}
-
-pub fn exchange_payload(
-    library_path: &Path,
-    token: &str,
-    mode: ExchangeMode,
-    send_data: &str,
-    timeout: Duration,
-) -> Result<String> {
-    if timeout.is_zero() {
-        return Err(anyhow!("exchange timeout must be greater than zero"));
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (library_path, token, mode, send_data, timeout);
-        return Err(anyhow!("legacy Punch FFI is only available on macOS"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let timeout_secs = timeout
-            .as_secs()
-            .saturating_add(u64::from(timeout.subsec_nanos() != 0));
-        validate_punch_library_available(library_path)?;
-        let req = ExchangeRequest {
-            token: token.to_string(),
-            exmode: mode.as_int(),
-            send_data: send_data.to_string(),
-            role_hint: if mode == ExchangeMode::Mutual {
-                "active"
-            } else {
-                "passive"
-            }
-            .to_string(),
-            timeout_secs,
-        };
-        let input = serde_json::to_string(&req).context("encode exchange request")?;
-        let output = ffi_call(&input, |ptr| unsafe { Exchange(ptr) }, "Exchange")?;
-        let resp: ExchangeResponse = serde_json::from_str(&output)
-            .with_context(|| format!("invalid exchange result: {}", output))?;
-        if !resp.ok {
-            return Err(anyhow!(
-                "exchange failed: {}",
-                if resp.error.is_empty() {
-                    "unknown error"
-                } else {
-                    resp.error.as_str()
-                }
-            ));
-        }
-        Ok(resp.recv_data)
-    }
-}
-
-/// Native Rust Punch exchange for the Linux/Windows migration path.
+/// Native Rust Punch exchange used by all platforms; the punch crate is
+/// linked in-process on Linux/Windows/macOS.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn exchange_payload_native(
     token: &str,
@@ -1108,18 +980,5 @@ mod tests {
             parse_subnet_router_result(r#"{"ok":true,"started":true}"#, "start subnet router")
                 .unwrap_err();
         assert!(err.to_string().contains("handle_id"));
-    }
-
-    #[test]
-    fn exchange_rejects_zero_timeout_before_ffi() {
-        let err = exchange_payload(
-            Path::new("unused"),
-            "token",
-            ExchangeMode::Mutual,
-            "{}",
-            Duration::ZERO,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("greater than zero"));
     }
 }

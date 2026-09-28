@@ -1,13 +1,11 @@
-//! 公钥 + 虚拟 IP 协商模块（通过 gonc FFI 库交换，零子进程）。
+//! 公钥 + 虚拟 IP 协商模块。
 //!
-//! 通过 Rust Punch 的 MQTT 加密通道双向交换载荷：
+//! 通过 Rust Punch（进程内链接）的 MQTT 加密通道双向交换载荷：
 //! - 主动端：一次 Mutual 模式调用，发出本端载荷并接收对端载荷。
 //! - 被动端：两次调用——先 WaitOnly 收主动端载荷，本地分配 IP，再 Reply 回传。
 //!
 //! 载荷为 JSON 序列化的 ExchangePayload，gonc 侧用 AES-GCM 加密传输。
-//! 全程使用进程内 gonc 动态库完成交换。
 
-use crate::gonc_ffi::{exchange_payload, ExchangeMode};
 use crate::wgvpn::validate_public_key;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -355,42 +353,8 @@ pub fn derive_kx_token(base_token: &str) -> String {
     format!("{}-kx", base_token)
 }
 
-/// 主动端执行交换：Mutual 模式一次调用，发出本端载荷并接收对端载荷。
-///
+/// 主动端执行交换：Mutual 模式一次调用，发出本端载荷并接收对端载荷，
 /// 返回被动端回传的载荷（含 assigned_ip / my_ip）。
-pub fn exchange_as_active(
-    punch_lib: &Path,
-    base_token: &str,
-    local_payload: &ExchangePayload,
-    timeout: Duration,
-) -> Result<ExchangePayload> {
-    let kx_token = derive_kx_token(base_token);
-    let send_data = local_payload.render()?;
-
-    tracing::info!(
-        "[wgvpn-exchange] active exchange (mutual): token={}, payload_bytes={}",
-        kx_token,
-        send_data.len()
-    );
-    let recv = exchange_payload(
-        punch_lib,
-        &kx_token,
-        ExchangeMode::Mutual,
-        &send_data,
-        timeout,
-    )?;
-    let peer_payload = ExchangePayload::parse(&recv)?;
-    tracing::info!(
-        "[wgvpn-exchange] active received peer payload: device_id={}, assigned_ip={}, peer_my_ip={}",
-        peer_payload.device_id,
-        u32_to_ipv4(peer_payload.assigned_ip),
-        u32_to_ipv4(peer_payload.my_ip)
-    );
-    Ok(peer_payload)
-}
-
-/// Native Rust Punch variant of the active exchange. Kept alongside the
-/// legacy blocking FFI wrapper until both flow call sites are migrated.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn exchange_as_active_native(
     base_token: &str,
@@ -413,74 +377,6 @@ pub async fn exchange_as_active_native(
 ///
 /// `allocate` 闭包接收（对端 device_id, IP 范围），返回分配的 (assigned_ip, my_ip)。
 /// 这样被动端的 IP 分配策略由 p2p.rs 决定，本模块只负责传输。
-pub fn exchange_as_passive<F>(
-    punch_lib: &Path,
-    base_token: &str,
-    local_payload_template: &ExchangePayload,
-    timeout: Duration,
-    allocate: F,
-) -> Result<ExchangePayload>
-where
-    F: FnOnce(i64, u32, u32, u32) -> Result<(u32, u32)>,
-{
-    let kx_token = derive_kx_token(base_token);
-
-    // 阶段1：WaitOnly 接收主动端载荷
-    tracing::info!(
-        "[wgvpn-exchange] passive phase1 (waitOnly): token={}",
-        kx_token
-    );
-    let recv = exchange_payload(punch_lib, &kx_token, ExchangeMode::WaitOnly, "", timeout)?;
-    let active_payload = ExchangePayload::parse(&recv)?;
-    tracing::info!(
-        "[wgvpn-exchange] passive received active payload: device_id={}, ip_range={}..={}",
-        active_payload.device_id,
-        u32_to_ipv4(active_payload.ip_range_start),
-        u32_to_ipv4(active_payload.ip_range_end)
-    );
-
-    // 调用方决定 IP 分配
-    let (assigned_ip, my_ip) = allocate(
-        active_payload.device_id,
-        active_payload.ip_range_start,
-        active_payload.ip_range_end,
-        active_payload.my_ip,
-    )?;
-
-    // 构造被动端的回传载荷
-    let passive_payload = ExchangePayload {
-        pubkey: local_payload_template.pubkey.clone(),
-        device_id: local_payload_template.device_id,
-        ip_range_start: 0,
-        ip_range_end: 0,
-        assigned_ip,
-        my_ip,
-        wg_port: local_payload_template.wg_port,
-        health_port: local_payload_template.health_port,
-        exposed_lan_cidrs: local_payload_template.exposed_lan_cidrs.clone(),
-        warning: local_payload_template.warning.clone(),
-    };
-    let send_data = passive_payload.render()?;
-
-    // 阶段2：Reply 回传
-    tracing::info!(
-        "[wgvpn-exchange] passive phase2 (reply): token={}, assigned_ip={}",
-        kx_token,
-        u32_to_ipv4(assigned_ip)
-    );
-    // Reply 模式期望收到对端再次发来的载荷作为确认；gonc 内部会校验。
-    // 这里用 Mutual 模式更稳妥：发出去并接收对方（对方是 Mutual 重发）。
-    let _ = exchange_payload(
-        punch_lib,
-        &kx_token,
-        ExchangeMode::Mutual,
-        &send_data,
-        timeout,
-    )?;
-
-    Ok(active_payload)
-}
-
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn exchange_as_passive_native<F>(
     base_token: &str,
@@ -529,7 +425,9 @@ where
     Ok(active_payload)
 }
 
-/// Platform-selected async exchange used by the service flow.
+/// Platform-selected async exchange used by the service flow. All supported
+/// platforms (Linux/Windows/macOS) run the linked Rust Punch crate; the
+/// punch_lib argument is kept for signature compatibility.
 pub async fn exchange_as_active_platform(
     punch_lib: &Path,
     base_token: &str,
@@ -543,7 +441,10 @@ pub async fn exchange_as_active_platform(
     }
     #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
-        exchange_as_active(punch_lib, base_token, local_payload, timeout)
+        let _ = (punch_lib, base_token, local_payload, timeout);
+        Err(anyhow!(
+            "Rust Punch exchange is not available on this platform"
+        ))
     }
 }
 
@@ -564,7 +465,10 @@ where
     }
     #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
-        exchange_as_passive(punch_lib, base_token, local_payload, timeout, allocate)
+        let _ = (punch_lib, base_token, local_payload, timeout, allocate);
+        Err(anyhow!(
+            "Rust Punch exchange is not available on this platform"
+        ))
     }
 }
 

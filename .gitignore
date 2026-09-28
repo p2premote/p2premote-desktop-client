@@ -33,6 +33,9 @@ src-tauri/resources/p2premote-service.exe
 src-tauri/resources/p2premote-desktop-engine
 src-tauri/resources/p2premote-desktop-engine.exe
 src-tauri/resources/RustDeskTiny/
+# RustDeskTiny 发布产物（安装器/deb/zip/合成 app）：本地保留复用，
+# 缺失时由构建脚本按 scripts/rustdesktiny-artifacts.env 钉版自动下载，不进 git
+src-tauri/resources/RustDeskTiny*
 src-tauri/.generated/
 
 # Editor directories and files

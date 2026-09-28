@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)][string]$Version,
     [switch]$NoSccache,
     [string]$RustDeskTinyLegacyInstaller
@@ -7,12 +7,20 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $installer = [System.IO.Path]::GetFullPath((Join-Path $projectRoot '..\webview\MicrosoftEdgeWebView2RuntimeInstallerX64V109.0.1518.140.exe'))
-if ([string]::IsNullOrWhiteSpace($RustDeskTinyLegacyInstaller)) {
+$legacyInstallerProvided = -not [string]::IsNullOrWhiteSpace($RustDeskTinyLegacyInstaller)
+if (-not $legacyInstallerProvided) {
     $RustDeskTinyLegacyInstaller = Join-Path $projectRoot 'src-tauri\resources\RustDeskTinyLegacy-install.exe'
 }
 $RustDeskTinyLegacyInstaller = [System.IO.Path]::GetFullPath($RustDeskTinyLegacyInstaller)
 if (-not (Test-Path -LiteralPath $RustDeskTinyLegacyInstaller -PathType Leaf)) {
-    throw "RustDeskTinyLegacy installer is missing: $RustDeskTinyLegacyInstaller"
+    if ($legacyInstallerProvided) {
+        throw "RustDeskTinyLegacy installer is missing: $RustDeskTinyLegacyInstaller"
+    }
+    # 产物不进 git：默认路径缺失时（Jenkins / GitHub Actions 等干净环境）按钉版自动下载
+    & (Join-Path $PSScriptRoot 'fetch-rustdesktiny-artifact.ps1') -Kind 'windows-win7-x64'
+    if (-not (Test-Path -LiteralPath $RustDeskTinyLegacyInstaller -PathType Leaf)) {
+        throw "RustDeskTinyLegacy installer is still missing after download. Pass -RustDeskTinyLegacyInstaller to use a local file."
+    }
 }
 
 if ([Environment]::Is64BitOperatingSystem -eq $false) { throw 'Win7 package builds require an x64 build host.' }

@@ -11,7 +11,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../notifier/Cargo.toml");
     println!("cargo:rerun-if-changed=../core/src");
     println!("cargo:rerun-if-changed=../core/Cargo.toml");
-    println!("cargo:rerun-if-env-changed=P2PREMOTE_PUNCH_DIR");
+    println!("cargo:rerun-if-env-changed=P2PREMOTE_WG_FFI_DIR");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PREBUILT_RESOURCES");
     println!("cargo:rerun-if-env-changed=RUSTDESK_TINY_ARTIFACT_DIR");
 
@@ -76,7 +76,7 @@ fn punch_library_name(target_os: &str) -> String {
     if target_os == "windows" {
         "p2premote-wg.dll".to_string()
     } else if target_os == "macos" {
-        "libp2premote-punch.dylib".to_string()
+        "libp2premote-wg.dylib".to_string()
     } else if target_os == "linux" {
         "libp2premote-punch.a".to_string()
     } else {
@@ -129,11 +129,7 @@ fn build_punch_library_into_resources() {
     if target_os == "linux" {
         return;
     }
-    let source_env = if target_os == "windows" {
-        "P2PREMOTE_WG_FFI_DIR"
-    } else {
-        "P2PREMOTE_PUNCH_DIR"
-    };
+    let source_env = "P2PREMOTE_WG_FFI_DIR";
     let source_dir = PathBuf::from(
         env::var_os(source_env).unwrap_or_else(|| panic!("{} is not set", source_env)),
     );
@@ -164,13 +160,15 @@ fn build_punch_library_into_resources() {
     } else {
         command.arg("-buildmode=c-shared");
     }
-    // Windows Punch/Exchange now run in Rust. Build only the WireGuard data
-    // plane with the Go 1.20-compatible module so the resulting DLL remains
-    // runnable on Windows 7. macOS keeps the legacy combined library until
-    // its WG implementation is migrated separately.
-    if target_os == "windows" {
+    // Punch/Exchange run in Rust on all platforms. Build only the WireGuard
+    // data plane from p2premote-wg-ffi with the wgonly tag. Windows pins the
+    // Go 1.20 toolchain so the DLL stays runnable on Windows 7; macOS uses
+    // the host Go (>= 1.20 per go.mod).
+    if target_os == "windows" || target_os == "macos" {
         command.arg("-tags").arg("wgonly");
         command.arg("-mod=mod");
+    }
+    if target_os == "windows" {
         command.env("GOTOOLCHAIN", "go1.20.14");
     }
     command
@@ -200,7 +198,7 @@ fn build_punch_library_into_resources() {
     }
     if target_os == "macos" {
         let output = Command::new("install_name_tool")
-            .args(["-id", "@rpath/libp2premote-punch.dylib"])
+            .args(["-id", "@rpath/libp2premote-wg.dylib"])
             .arg(&target)
             .output()
             .unwrap_or_else(|err| panic!("failed to invoke install_name_tool: {}", err));
@@ -373,7 +371,10 @@ fn copy_desktop_engine_into_resources() {
     }
     let installer = resources_dir.join("RustDeskTiny-install.exe");
     if !installer.is_file() {
-        panic!("RustDeskTiny installer resource is missing: {}", installer.display());
+        panic!(
+            "RustDeskTiny installer resource is missing: {} (run scripts/fetch-rustdesktiny-artifact.ps1 to download the pinned release artifact, or let scripts/build-windows.ps1 fetch it)",
+            installer.display()
+        );
     }
 }
 
