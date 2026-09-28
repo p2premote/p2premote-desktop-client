@@ -108,7 +108,7 @@
                 <div>
                   <strong>{{ tunnelLifecycleTitle(selectedDevice) + tunnelLifecycleDots(selectedDevice) }}</strong>
                   <p>{{ tunnelLifecycleDescription(selectedDevice) }}</p>
-                  <p v-if="tunnelStatusMap[selectedDevice.device_id]?.network">{{ tunnelStatusMap[selectedDevice.device_id]?.network?.toUpperCase() }}</p>
+                  <p v-if="tunnelStatusMap[selectedDevice.device_id]?.network">{{ $t('devices.lifecycle.desc_connected_network', { network: tunnelStatusMap[selectedDevice.device_id]?.network?.toUpperCase() }) }}</p>
                   <p v-if="tunnelLanCidrs(selectedDevice).length">
                     {{ $t('devices.lifecycle.desc_connected_with_lan', { cidrs: tunnelLanCidrs(selectedDevice).join(', ') }) }}
                   </p>
