@@ -205,6 +205,7 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { Close, CopyDocument, Monitor } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
+import { useConnectingDots } from '../composables/useConnectingDots'
 const { t } = useI18n()
 
 interface AnonymousConnectResponse {
@@ -278,9 +279,13 @@ const temporaryPasswordDisplay = computed(() => {
   }
   return savingPassword.value ? t('remote.status.generating_password') : t('remote.status.waiting_password')
 })
+const connectingDots = useConnectingDots()
 const activeJobTitle = computed(() => {
   if (!activeJob.value) return ''
-  return t(`remote.status.${activeJob.value.state}`)
+  const title = t(`remote.status.${activeJob.value.state}`)
+  // running/waiting 是主动打洞进行中：追加 '.' → '..' → '...' 滚动省略号提示未卡死
+  const inProgress = activeJob.value.state === 'running' || activeJob.value.state === 'waiting'
+  return inProgress ? title + connectingDots.value : title
 })
 const activeJobMessage = computed(() => {
   if (!activeJob.value) return ''

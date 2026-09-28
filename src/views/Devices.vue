@@ -106,7 +106,7 @@
               >
                 <span class="lifecycle-dot"></span>
                 <div>
-                  <strong>{{ tunnelLifecycleTitle(selectedDevice) }}</strong>
+                  <strong>{{ tunnelLifecycleTitle(selectedDevice) + tunnelLifecycleDots(selectedDevice) }}</strong>
                   <p>{{ tunnelLifecycleDescription(selectedDevice) }}</p>
                   <p v-if="tunnelStatusMap[selectedDevice.device_id]?.network">{{ tunnelStatusMap[selectedDevice.device_id]?.network?.toUpperCase() }}</p>
                   <p v-if="tunnelLanCidrs(selectedDevice).length">
@@ -355,6 +355,7 @@ import rustdeskTinyIcon from '../assets/icons/rustdesk-tiny.png'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { useAuthStore } from '../stores/auth'
 import DevicePlatformIcon from '../components/DevicePlatformIcon.vue'
+import { useConnectingDots } from '../composables/useConnectingDots'
 const { t } = useI18n()
 
 interface TunnelSpeedTestResult {
@@ -588,6 +589,8 @@ function deviceTunnelLifecycle(device: DeviceInfo | null): TunnelLifecycleStatus
   }
 }
 
+const connectingDots = useConnectingDots()
+
 /// 设备连接状态的视觉呈现：offline/online/connecting/connected。
 /// 统一列表状态点与详情头像的颜色语义：
 ///   - offline 灰：不可达
@@ -619,6 +622,12 @@ function tunnelLifecycleTitle(device: DeviceInfo | null): string {
   }
   const state = lifecycle.state
   return t(`devices.lifecycle.${state}`)
+}
+
+/// 打洞进行中在标题后追加 '.' → '..' → '...' 滚动省略号，
+/// 提示过程仍在推进（每秒一帧）。
+function tunnelLifecycleDots(device: DeviceInfo | null): string {
+  return deviceTunnelLifecycle(device).state === 'connecting' ? connectingDots.value : ''
 }
 
 function tunnelLifecycleDescription(device: DeviceInfo | null): string {
