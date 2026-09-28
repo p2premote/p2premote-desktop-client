@@ -14,7 +14,7 @@ use tracing::{debug, info};
 pub const CAPABILITY_RUSTDESK_TINY: &str = "rustdesk_tiny";
 
 #[cfg(target_os = "linux")]
-const LINUX_RUSTDESK_TINY_EXECUTABLE: &str = "/usr/share/rustdesktiny/rustdesktiny";
+pub const LINUX_RUSTDESK_TINY_EXECUTABLE: &str = "/usr/share/rustdesktiny/rustdesktiny";
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn rustdesk_tiny_executable_installed(path: &std::path::Path) -> bool {

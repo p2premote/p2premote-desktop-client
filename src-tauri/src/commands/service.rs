@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
-#[cfg(target_os = "windows")]
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -278,10 +277,11 @@ fn require_bundled_binary(app: &AppHandle, binary_name: &str) -> Result<PathBuf,
 
 /// Launch the RustDeskTiny GUI from the interactive Tauri process.
 ///
-/// The background service runs in Windows Session 0 and must not create a
-/// desktop window there. Keeping this launch in the GUI process makes the
-/// window visible to the logged-in user while RustDeskTiny continues to own
-/// its own service and listener configuration.
+/// On Windows the background service runs in Session 0 and must not create a
+/// desktop window there; the GUI process also keeps the launch visible on
+/// Linux/macOS without relying on the service (which runs headless under
+/// systemd/launchd). RustDeskTiny continues to own its own service and
+/// listener configuration.
 #[tauri::command]
 pub fn launch_rustdesk_tiny(app: AppHandle, address: String) -> Result<(), String> {
     let address = address.trim();
@@ -301,22 +301,51 @@ pub fn launch_rustdesk_tiny(app: AppHandle, address: String) -> Result<(), Strin
             "RustDeskTiny executable is missing from application resources".to_string()
         })?;
 
-        Command::new(&executable)
-            .args(["--connect", address])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("failed to start RustDeskTiny: {error}"))?;
-        info!(path = %executable.display(), address, "[Desktop] RustDeskTiny GUI launched");
+        spawn_rustdesk_tiny(executable, address)?;
         Ok(())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = &app;
+        let executable = PathBuf::from(p2premote_core::device::LINUX_RUSTDESK_TINY_EXECUTABLE);
+        if !executable.is_file() {
+            return Err(format!(
+                "RustDeskTiny executable is missing: {} (install the p2premote deb package)",
+                executable.display()
+            ));
+        }
+        spawn_rustdesk_tiny(executable, address)?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let executable = require_bundled_binary(&app, "RustDeskTiny.app/Contents/MacOS/RustDeskTiny")
+            .map_err(|_| {
+                "RustDeskTiny executable is missing from application resources".to_string()
+            })?;
+        spawn_rustdesk_tiny(executable, address)?;
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         let _ = (app, address);
-        Err("RustDeskTiny GUI launch is only available on Windows".to_string())
+        Err("RustDeskTiny GUI launch is not available on this platform".to_string())
     }
+}
+
+fn spawn_rustdesk_tiny(executable: PathBuf, address: &str) -> Result<(), String> {
+    Command::new(&executable)
+        .args(["--connect", address])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("failed to start RustDeskTiny: {error}"))?;
+    info!(path = %executable.display(), address, "[Desktop] RustDeskTiny GUI launched");
+    Ok(())
 }
 
 /// 解析 service 的唯一规范路径。安装不完整时直接报错，不搜索旧版或工作目录文件。
