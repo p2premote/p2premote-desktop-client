@@ -185,7 +185,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     -w /workspace/p2premote-desktop-client \
     "${RUN_ENV[@]}" \
     "$BUILDER_IMAGE" \
-    bash -c "git config --global --add safe.directory '*' && ./scripts/build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}' --no-sccache"
+    bash -c "git config --global --add safe.directory '*' && ./scripts/_build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}' --no-sccache"
 fi
 
 export RUSTC_WRAPPER=""

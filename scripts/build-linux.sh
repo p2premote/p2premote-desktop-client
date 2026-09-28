@@ -6,7 +6,7 @@
 #   - rpm package
 #   - Docker image archive
 #
-# build-linux-headless.sh remains the low-level producer for the first three
+# _build-linux-headless.sh remains the low-level producer for the first three
 # packages. This script is the single user-facing entry point and reuses the
 # exact tar.gz produced by that build as the Docker image input.
 
@@ -127,7 +127,7 @@ DIST_DIR="$APP_DIR/artifacts"
 HEADLESS_DIST_DIR="$DIST_DIR/linux-headless"
 DOCKER_DIST_DIR="$HEADLESS_DIST_DIR"
 DOCKERFILE="$APP_DIR/packaging/linux/docker/Dockerfile"
-HEADLESS_SCRIPT="$SCRIPT_DIR/build-linux-headless.sh"
+HEADLESS_SCRIPT="$SCRIPT_DIR/_build-linux-headless.sh"
 
 [[ -f "$HEADLESS_SCRIPT" ]] || { echo "Headless build script not found: $HEADLESS_SCRIPT" >&2; exit 1; }
 [[ -f "$DOCKERFILE" ]] || { echo "Dockerfile not found: $DOCKERFILE" >&2; exit 1; }

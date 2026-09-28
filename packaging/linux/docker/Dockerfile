@@ -5,7 +5,7 @@
 # shell 与包管理器，常用命令由静态 busybox 提供，体积较 ubuntu:22.04
 # 单阶段方案（~140MB）减少约六成。
 #
-# 复用 build-linux-headless.sh 产出的 GNU/glibc tgz 产物，避免在 Docker
+# 复用 _build-linux-headless.sh 产出的 GNU/glibc tgz 产物，避免在 Docker
 # builder 里重新装配 Rust + Node + musl 工具链。仅支持 host 网络模式：
 # bridge 模式下 Web Admin 看到的来源 IP 会塌缩为 docker0 网关地址，导致
 # web_admin_allowed_ip 白名单依赖容器看到的真实来源地址。
