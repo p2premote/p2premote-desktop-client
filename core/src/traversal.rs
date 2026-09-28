@@ -168,7 +168,7 @@ impl Session {
         }
         // LAN eligibility is independent of public NAT classification.
         let rounds = std::iter::once(("udp4".to_string(), "lan", 6u64)).chain(networks.into_iter()
-            .map(|n| { let seconds = if n.starts_with("tcp") { 10 } else { 30 }; (n, "internet", seconds) }));
+            .map(|n| (n, "internet", 30u64)));
         let mut attempted_networks = Vec::new();
         for (index, (network, mode, timeout_secs)) in rounds.enumerate() {
             self.check()?;
