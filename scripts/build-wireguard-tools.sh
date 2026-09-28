@@ -124,7 +124,7 @@ echo "==> Building static wg for linux/${ARCH} with ${CC_VALUE}"
 export CFLAGS="-O3${EXTRA_CFLAGS}"
 make -C "$WORK_DIR/source/src" wg \
   CC="$CC_VALUE" \
-  LDFLAGS="-static" \
+  LDFLAGS="-static -Wl,--build-id=sha1" \
   WITH_WGQUICK=no \
   WITH_BASHCOMPLETION=no \
   WITH_SYSTEMDUNITS=no

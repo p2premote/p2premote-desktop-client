@@ -60,13 +60,35 @@ function Update-RegexReplace {
     Write-Utf8NoBomFile -Path $Path -Content $updated
 }
 
-Update-RegexReplace -Path $packageJsonPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
-Update-RegexReplace -Path $tauriConfigPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
-Update-RegexReplace -Path $cargoTomlPath -Pattern '(?m)^version = ".*"$' -Replacement ('version = "{0}"' -f $buildVersion)
+function Set-ClientVersion {
+    Update-RegexReplace -Path $packageJsonPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
+    Update-RegexReplace -Path $tauriConfigPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
+    Update-RegexReplace -Path $cargoTomlPath -Pattern '(?m)^version = ".*"$' -Replacement ('version = "{0}"' -f $buildVersion)
 
-Write-Host "Updated client version to $buildVersion"
+    Write-Host "Updated client version to $buildVersion"
+}
+
+# Snapshot which version files are clean so the build can restore them afterwards;
+# files that already carry local edits are left untouched.
+$versionTrackedFiles = @('package.json', 'src-tauri/tauri.conf.json', 'src-tauri/Cargo.toml', 'Cargo.lock')
+$versionFilesToRestore = @(
+    foreach ($trackedFile in $versionTrackedFiles) {
+        & git -C $projectRoot diff --quiet -- $trackedFile
+        if ($LASTEXITCODE -eq 0) { $trackedFile }
+    }
+)
+
+function Restore-VersionFiles {
+    if ($versionFilesToRestore.Count -eq 0) { return }
+    & git -C $projectRoot restore --worktree -- $versionFilesToRestore
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "failed to restore version files: $($versionFilesToRestore -join ', ')"
+    }
+}
 
 if ($SkipBuild) {
+    # -SkipBuild deliberately leaves the stamped files dirty for a manual build.
+    Set-ClientVersion
     Write-Host "SkipBuild enabled, tauri build was not executed."
     exit 0
 }
@@ -136,6 +158,7 @@ if ($replaceDesktopResource) {
 }
 Push-Location $projectRoot
 try {
+    Set-ClientVersion
     # node_modules 可能被 WSL/容器内的 Linux 构建重装为 Linux 版本，每次构建前先恢复 Windows 版本
     if (-not $SkipNpmCi) {
         & npm ci
@@ -170,6 +193,7 @@ finally {
         }
         Write-Host "Restored default RustDeskTiny installer resource"
     }
+    Restore-VersionFiles
 }
 # Tauri normally includes x64 in the NSIS filename, but normalize it here so
 # every Windows package produced by this script is accepted by package
