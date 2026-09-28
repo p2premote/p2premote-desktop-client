@@ -1652,9 +1652,12 @@ async function checkForUpdates(manual = false) {
     forceUpdateVisible.value = false
 
     if (result.mode === 'optional') {
+      // 与 Android 端一致：服务端返回更新日志时在弹窗中追加展示
+      const releaseNotes = (result.release_notes || '').trim()
+      const notesSuffix = releaseNotes ? `\n\n${releaseNotes}` : ''
       if (manual) {
         await ElMessageBox.confirm(
-          t('app.actions.update_available_force', { current: result.current, latest: result.latest }),
+          t('app.actions.update_available_force', { current: result.current, latest: result.latest }) + notesSuffix,
           t('app.actions.update_available_title'),
           {
             confirmButtonText: t('app.actions.update_now'),
@@ -1668,7 +1671,7 @@ async function checkForUpdates(manual = false) {
       if (!optionalUpdatePrompted.value) {
         optionalUpdatePrompted.value = true
         await ElMessageBox.confirm(
-          t('app.actions.update_available_optional', { current: result.current, latest: result.latest }),
+          t('app.actions.update_available_optional', { current: result.current, latest: result.latest }) + notesSuffix,
           t('app.actions.update_available_title'),
           {
             confirmButtonText: t('app.actions.update_now'),

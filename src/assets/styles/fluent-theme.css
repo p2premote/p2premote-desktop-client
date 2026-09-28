@@ -709,6 +709,11 @@ body,
     color: var(--fluent-text);
 }
 
+/* 更新提示等文案含 \n 换行（如追加的更新日志），EP 默认会折叠空白 */
+.el-message-box__message {
+    white-space: pre-line;
+}
+
 .el-message-box__btns .el-button + .el-button {
     margin-left: 8px;
 }
