@@ -107,7 +107,7 @@ export default {
       prefer_ipv6: 'IPv6 优先',
       prefer_tcp: 'TCP 优先',
       prefer_ipv6_hint: '两端设备均有 IPv6 地址时建议开启，有助于提升直连链路稳定性。',
-      prefer_tcp_hint: '两端处于同城或同运营商时可尝试开启，有机会提升上传速率和链路稳定性，但打洞成功率可能低于 UDP。仅在至少一端满足 easy NAT 条件时尝试 TCP。',
+      prefer_tcp_hint: '运营商限制 UDP 上传速率时可尝试开启，优先使用公网 TCP 打洞；成功率可能低于 UDP。仅在至少一端满足 easy NAT 条件时尝试 TCP，失败后回退 UDP。局域网始终使用 UDP4。',
       connection_scope: '自动保存，下一次由本机发起连接时生效。优先方式不可用时自动尝试其他方式。',
       discard_lan: 'LAN 访问配置尚未保存，关闭并放弃修改？',
       tcp_failure_hint: '已开启 TCP 优先，建议关闭后重试。',

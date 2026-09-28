@@ -159,8 +159,7 @@ impl Session {
             self.send(Frame::PlanAck { networks: networks.clone() }).await?;
         }
         // LAN eligibility is independent of public NAT classification.
-        let lan = if self.negotiation.preferences.prefer_tcp { "tcp4" } else { "udp4" };
-        let rounds = std::iter::once((lan.to_string(), "lan", 6u64)).chain(networks.into_iter()
+        let rounds = std::iter::once(("udp4".to_string(), "lan", 6u64)).chain(networks.into_iter()
             .map(|n| { let seconds = if n.starts_with("tcp") { 10 } else { 30 }; (n, "internet", seconds) }));
         for (index, (network, mode, timeout_secs)) in rounds.enumerate() {
             self.check()?;

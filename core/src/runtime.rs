@@ -1177,7 +1177,8 @@ fn classify_tunnel_error_code(message: &str) -> &'static str {
     {
         return code;
     }
-    if message.starts_with("hole_punch_wait_timeout:")
+    if matches!(structured_code, "punch_exhausted" | "traversal_signal_timeout")
+        || message.starts_with("hole_punch_wait_timeout:")
         || (message.contains("exchange failed:") && message.contains("timeout"))
         || (message.contains("udp tunnel failed:")
             && (message.contains("timeout")
@@ -1597,6 +1598,17 @@ mod tests {
 
         config.auto_login = false;
         assert!(!persistent_login_enabled(&config));
+    }
+
+    #[test]
+    fn negotiated_punch_failures_retry_but_invalid_plans_and_cancellation_do_not() {
+        for error in ["punch_exhausted", "traversal_signal_timeout"] {
+            assert_eq!(classify_tunnel_error_code(error), "hole_punch_wait_timeout");
+            assert!(is_retryable_tunnel_error(error));
+        }
+        for error in ["invalid_traversal_sequence", "traversal_plan_mismatch", "traversal_cancelled", "approval_denied", "peer_offline"] {
+            assert!(!is_retryable_tunnel_error(error));
+        }
     }
 
     fn passive_lifecycle(peer_device_id: i64) -> TunnelLifecycleStatus {

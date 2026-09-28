@@ -102,7 +102,7 @@ const en = {
       prefer_ipv6: 'Prefer IPv6',
       prefer_tcp: 'Prefer TCP',
       prefer_ipv6_hint: 'Recommended when both devices have IPv6 connectivity. This may improve direct connection stability.',
-      prefer_tcp_hint: 'Try when both devices are in the same city or on the same provider. Upload speed and stability may improve, but punching may succeed less often than UDP. TCP requires easy NAT on at least one side.',
+      prefer_tcp_hint: 'Try if your provider limits UDP upload speed. Public TCP punching requires easy NAT on at least one side and may succeed less often than UDP; failed attempts fall back to UDP. LAN always uses UDP4.',
       connection_scope: 'Saved automatically. Applies to the next connection initiated by this device. Other eligible methods are tried if the preferred method fails.',
       discard_lan: 'LAN access changes are not saved. Close and discard them?',
       tcp_failure_hint: 'TCP preference is enabled. Try disabling it and reconnecting.',

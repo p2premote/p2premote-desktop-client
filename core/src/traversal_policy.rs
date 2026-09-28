@@ -42,6 +42,11 @@ pub fn network_order(preferences: Preferences) -> [&'static str; 4] {
 }
 
 pub fn eligible(network: &str, local: &[NatEvidence], remote: &[NatEvidence]) -> bool {
+    // Both v2 implementations support these UDP transports. A failed STUN
+    // preflight is not evidence that the library cannot punch with them.
+    if matches!(network, "udp4" | "udp6") {
+        return true;
+    }
     let valid = |value: &&NatEvidence| {
         value.network == network && matches!(value.nat_type.as_str(), "easy" | "hard" | "symm")
     };
@@ -50,10 +55,9 @@ pub fn eligible(network: &str, local: &[NatEvidence], remote: &[NatEvidence]) ->
     if left.is_empty() || right.is_empty() {
         return false;
     }
-    network.starts_with("udp")
-        || (matches!(network, "tcp4" | "tcp6")
+    matches!(network, "tcp4" | "tcp6")
             && (left.iter().any(|v| v.nat_type == "easy")
-                || right.iter().any(|v| v.nat_type == "easy")))
+                || right.iter().any(|v| v.nat_type == "easy"))
 }
 
 pub fn build_plan(preferences: Preferences, local: &[NatEvidence], remote: &[NatEvidence]) -> Vec<String> {
@@ -104,6 +108,15 @@ mod tests {
         }
         let hard = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "hard"));
         assert_eq!(build_plan(Preferences { prefer_ipv6: true, prefer_tcp: true }, &hard, &hard), ["udp6", "udp4"]);
-        assert!(build_plan(Preferences::default(), &[], &all).is_empty());
+        assert_eq!(build_plan(Preferences::default(), &[], &all), ["udp4", "udp6"]);
+    }
+    #[test]
+    fn failed_nat_preflight_keeps_udp_fallback_but_never_grants_tcp() {
+        let unknown = [nat("tcp4", "unknown"), nat("tcp6", "unknown")];
+        let all = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "easy"));
+        let preferences = Preferences { prefer_ipv6: true, prefer_tcp: true };
+        assert_eq!(build_plan(preferences, &[], &[]), ["udp6", "udp4"]);
+        assert_eq!(build_plan(preferences, &unknown, &all), ["udp6", "udp4"]);
+        assert_eq!(build_plan(preferences, &all, &unknown), ["udp6", "udp4"]);
     }
 }
