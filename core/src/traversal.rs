@@ -154,15 +154,25 @@ impl Session {
         let networks = traversal_policy::build_plan_with_family(self.negotiation.preferences, &evidence, &remote,
             if remote_gate { ipv6_available } else { None }, if remote_gate { remote_ipv6 } else { None });
         if self.active {
+            tracing::info!(peer = self.peer, networks = ?networks, "traversal plan proposed to peer");
             self.send(Frame::Plan { networks: networks.clone() }).await?;
-            match self.wait(0, 2).await? {
-                Frame::PlanAck { networks: accepted } if accepted == networks => {},
+            let accepted = match self.wait(0, 2).await? {
+                Frame::PlanAck { networks } => networks,
                 _ => return Err(anyhow!("traversal_plan_mismatch")),
+            };
+            tracing::info!(peer = self.peer, networks = ?accepted, "traversal plan selection acknowledged by peer");
+            if accepted != networks {
+                return Err(anyhow!("traversal_plan_mismatch"));
             }
         } else {
-            match self.wait(0, 1).await? {
-                Frame::Plan { networks: offered } if offered == networks => {},
+            let offered = match self.wait(0, 1).await? {
+                Frame::Plan { networks } => networks,
                 _ => return Err(anyhow!("traversal_plan_mismatch")),
+            };
+            tracing::info!(peer = self.peer, proposed = ?offered, selected = ?networks,
+                "traversal plan received from initiator; responding with independently recomputed selection");
+            if offered != networks {
+                return Err(anyhow!("traversal_plan_mismatch"));
             }
             self.send(Frame::PlanAck { networks: networks.clone() }).await?;
         }
