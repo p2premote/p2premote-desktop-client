@@ -113,11 +113,11 @@
             </Transition>
           </div>
           <div class="header-actions no-drag">
-            <el-popover placement="bottom-end" :width="300" trigger="click" transition="settings-popover">
-              <template #reference>
-                <el-button class="header-btn" :icon="Setting" text :aria-label="$t('app.settings.open_aria')" />
-              </template>
+            <el-button class="header-btn" :icon="Setting" text :aria-label="$t('app.settings.open_aria')" @click="settingsVisible = true" />
+            <el-dialog v-model="settingsVisible" :title="$t('app.settings.title')" width="720px" class="client-settings-dialog" destroy-on-close :close-on-click-modal="false" :before-close="closeSettings">
               <div class="settings-panel">
+                <el-tabs tab-position="left">
+                <el-tab-pane :label="$t('app.settings.group_preferences')">
                 <section class="settings-group">
                   <div class="settings-group-title">{{ $t('app.settings.group_preferences') }}</div>
                   <div class="settings-item">
@@ -147,7 +147,15 @@
                     </el-select>
                   </div>
                 </section>
-                <section v-if="authStore.isLoggedIn" class="settings-group">
+                </el-tab-pane>
+                <el-tab-pane :label="$t('app.settings.group_connection')">
+                  <NetworkSettings ref="connectionSettings" section="connection" />
+                </el-tab-pane>
+                <el-tab-pane :label="$t('devices.detail.lan_access.section')">
+                  <NetworkSettings ref="lanSettings" section="lan" />
+                </el-tab-pane>
+                <el-tab-pane v-if="authStore.isLoggedIn" :label="$t('app.settings.group_account')">
+                <section class="settings-group">
                   <div class="settings-group-title">{{ $t('app.settings.group_account') }}</div>
                   <button type="button" class="settings-item clickable" @click="handleShowInviteDialog">
                     <span>{{ $t('app.settings.invite_friend') }}</span><el-icon><LinkIcon /></el-icon>
@@ -156,7 +164,9 @@
                     <span>{{ $t('app.settings.subscribe') }}</span><el-icon><LinkIcon /></el-icon>
                   </button>
                 </section>
-                <section v-if="!isTauriRuntime()" class="settings-group">
+                </el-tab-pane>
+                <el-tab-pane v-if="!isTauriRuntime()" :label="$t('app.web_admin.group')">
+                <section class="settings-group">
                   <div class="settings-group-title">{{ $t('app.web_admin.group') }}</div>
                   <button type="button" class="settings-item clickable" @click="openWebSecurityCodeDialog">
                     <span>{{ $t('app.web_admin.change_security_code') }}</span>
@@ -165,6 +175,8 @@
                     <span>{{ $t('app.web_admin.access_control') }}</span>
                   </button>
                 </section>
+                </el-tab-pane>
+                <el-tab-pane :label="$t('app.settings.group_support')">
                 <section class="settings-group">
                   <div class="settings-group-title">{{ $t('app.settings.group_support') }}</div>
                   <button type="button" class="settings-item clickable" @click="handleCheckUpdate">
@@ -177,8 +189,10 @@
                     <span>{{ $t('app.web_auth.logout') }}</span>
                   </button>
                 </section>
+                </el-tab-pane>
+                </el-tabs>
               </div>
-            </el-popover>
+            </el-dialog>
 
             <el-dropdown v-if="authStore.isLoggedIn" @command="handleUserAction">
               <span class="user-info">
@@ -456,6 +470,16 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import { useDeviceStore } from './stores/device'
 import AppLogo from './components/AppLogo.vue'
+import NetworkSettings from './components/NetworkSettings.vue'
+
+const settingsVisible = ref(false)
+const connectionSettings = ref<InstanceType<typeof NetworkSettings>>()
+const lanSettings = ref<InstanceType<typeof NetworkSettings>>()
+async function closeSettings(done: () => void) {
+  if (await connectionSettings.value?.confirmClose() === false) return
+  if (await lanSettings.value?.confirmClose() === false) return
+  done()
+}
 import { useLocale } from './composables/useLocale'
 import { SUPPORTED_LOCALES } from './i18n'
 
@@ -2399,6 +2423,17 @@ watch(
 /* ===== 设置面板 ===== */
 .settings-panel {
   padding: 2px;
+  min-height: 300px;
+}
+
+:deep(.client-settings-dialog) { max-width: calc(100vw - 32px); }
+:deep(.client-settings-dialog .el-tabs__content) { padding-left: 16px; }
+@media (max-width: 540px) {
+  :deep(.client-settings-dialog .el-tabs--left) { display: flex; flex-direction: column; }
+  :deep(.client-settings-dialog .el-tabs__header) { float: none; margin: 0 0 12px; }
+  :deep(.client-settings-dialog .el-tabs__nav) { display: flex; flex-wrap: wrap; float: none; }
+  :deep(.client-settings-dialog .el-tabs__active-bar) { display: none; }
+  :deep(.client-settings-dialog .el-tabs__content) { padding-left: 0; }
 }
 
 .settings-group + .settings-group {

@@ -84,6 +84,7 @@ fn skip_userspace_cleanup_on_legacy_windows() -> bool {
 /// wgvpn 会话句柄（停止时用）。扩展字段支持多 peer 按 pubkey 精确增删。
 #[derive(Debug, Clone, Default)]
 pub struct WgVpnSession {
+    pub network: String,
     pub target_device_id: i64,
     pub tunnel_name: String, // WireGuard 隧道名（多 peer 模式下永远 "wg0"）
     pub virtual_ip: String,  // 本端虚拟 IP
@@ -582,6 +583,7 @@ pub async fn start_active_wgvpn(
         peer_virtual_ip: peer_ip.clone(),
         peer_health_port,
         gonc_handle_id: udp_tunnel.handle_id.clone(),
+        network: udp_tunnel.network.clone(),
         local_forward_port: udp_tunnel.local_forward_port,
         is_active: true,
         exposed_lan_cidrs: peer_exposed_lan_cidrs.clone(),
@@ -882,6 +884,7 @@ pub async fn start_passive_wgvpn(
         peer_virtual_ip: peer_ip.clone(),
         peer_health_port,
         gonc_handle_id: udp_tunnel.handle_id.clone(),
+        network: udp_tunnel.network.clone(),
         local_forward_port: udp_tunnel.local_forward_port,
         is_active: false,
         exposed_lan_cidrs: passive_exposed_lan_cidrs.clone(),

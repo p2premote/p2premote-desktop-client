@@ -20,6 +20,7 @@ import { ElProgress } from 'element-plus/es/components/progress/index.mjs'
 import { ElRadio, ElRadioGroup } from 'element-plus/es/components/radio/index.mjs'
 import { ElSwitch } from 'element-plus/es/components/switch/index.mjs'
 import { ElTag } from 'element-plus/es/components/tag/index.mjs'
+import { ElTabs, ElTabPane } from 'element-plus/es/components/tabs/index.mjs'
 import { ElTooltip } from 'element-plus/es/components/tooltip/index.mjs'
 import 'element-plus/dist/index.css'
 // Fluent 主题必须在 element-plus css 之后引入，确保 CSS 变量覆盖生效
@@ -59,6 +60,8 @@ for (const component of [
   ElSelect,
   ElSwitch,
   ElTag,
+  ElTabs,
+  ElTabPane,
   ElTooltip,
 ]) {
   app.use(component)

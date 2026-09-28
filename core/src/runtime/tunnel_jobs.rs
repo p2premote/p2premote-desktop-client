@@ -187,6 +187,7 @@ pub(super) fn spawn_wgvpn_job_task(
 
             // 超时或取消：先等 detached attempt 完全结束，再清理它可能已建的资源。
             if timed_out || cancelled {
+                crate::traversal::cancel_token(&token);
                 let _ = attempt_handle.await;
                 if !is_current_wgvpn_job(&shared, peer_device_id, generation) {
                     return;
@@ -553,6 +554,7 @@ pub(super) async fn stop_wgvpn_job(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
 ) -> Option<Data> {
+    crate::traversal::cancel_peer(peer_device_id);
     {
         let mut state = shared.lock();
         state.passive_p2p_attempts.remove(&peer_device_id);
@@ -1189,6 +1191,7 @@ pub(super) fn refresh_wgvpn_sessions_locked(state: &mut SharedRuntimeState) {
                 .copied()
                 .unwrap_or_default();
             WgvpnSessionStatus {
+                network: s.network.clone(),
                 peer_device_id: s.peer_device_id,
                 is_active: s.is_active,
                 virtual_ip: s.virtual_ip,

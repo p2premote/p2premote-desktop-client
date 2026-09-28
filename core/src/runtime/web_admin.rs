@@ -1363,6 +1363,14 @@ async fn handle_web_command(
             .await?;
             Ok(serde_json::Value::Null)
         }
+        "get_connection_preferences" => command_data(dispatch_web_data(Data::GetConnectionPreferences, state).await?),
+        "save_connection_preferences" => {
+            let prefer_ipv6 = arg_bool(&args, &["preferIpv6", "prefer_ipv6"])
+                .ok_or_else(|| "missing prefer_ipv6".to_string())?;
+            let prefer_tcp = arg_bool(&args, &["preferTcp", "prefer_tcp"])
+                .ok_or_else(|| "missing prefer_tcp".to_string())?;
+            command_data(dispatch_web_data(Data::SaveConnectionPreferences { prefer_ipv6, prefer_tcp }, state).await?)
+        }
         "get_wgvpn_lan_access_config" => {
             let resp = dispatch_web_data(Data::GetWgvpnLanAccessConfig, state).await?;
             command_data(resp)

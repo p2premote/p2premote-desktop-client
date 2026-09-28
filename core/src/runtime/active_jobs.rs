@@ -222,6 +222,7 @@ pub(super) fn spawn_active_tunnel_job_task(
             update_active_tunnel_job_status(
                 &shared_for_task,
                 ActiveTunnelJobStatus {
+            tcp_retry_recommended: false,
                     target_device_id,
                     target_device_uuid: target_uuid_for_task.clone(),
                     state: ActiveTunnelJobState::Running,
@@ -359,6 +360,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     update_active_tunnel_job_status(
                         &shared_for_task,
                         ActiveTunnelJobStatus {
+            tcp_retry_recommended: false,
                             target_device_id,
                             target_device_uuid: target_uuid_for_task.clone(),
                             state: ActiveTunnelJobState::Succeeded,
@@ -441,6 +443,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                 update_active_tunnel_job_status(
                     &shared_for_task,
                     ActiveTunnelJobStatus {
+            tcp_retry_recommended: config.prefer_tcp && last_message.contains("punch_exhausted"),
                         target_device_id,
                         target_device_uuid: target_uuid_for_task.clone(),
                         state: ActiveTunnelJobState::Waiting,
@@ -478,10 +481,11 @@ pub(super) fn spawn_active_tunnel_job_task(
         update_active_tunnel_job_status(
             &shared_for_task,
             ActiveTunnelJobStatus {
+            tcp_retry_recommended: config.prefer_tcp && last_message.contains("punch_exhausted"),
                 target_device_id,
                 target_device_uuid: target_uuid_for_task,
-                state: ActiveTunnelJobState::Failed,
-                attempt: last_attempt,
+            state: ActiveTunnelJobState::Failed,
+            attempt: last_attempt,
                 max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                 message: if last_message.is_empty() {
                     localized_message(
@@ -752,6 +756,7 @@ pub(super) fn publish_active_tunnel_job_failed(
     update_active_tunnel_job_status(
         shared,
         ActiveTunnelJobStatus {
+            tcp_retry_recommended: false,
             target_device_id,
             target_device_uuid,
             state: ActiveTunnelJobState::Failed,
@@ -773,6 +778,7 @@ pub(super) fn publish_active_tunnel_job_cancelled(
     update_active_tunnel_job_status(
         shared,
         ActiveTunnelJobStatus {
+            tcp_retry_recommended: false,
             target_device_id,
             target_device_uuid,
             state: ActiveTunnelJobState::Cancelled,

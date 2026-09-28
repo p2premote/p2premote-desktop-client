@@ -95,42 +95,7 @@
           </div>
 
           <div class="detail-grid">
-            <div v-if="isCurrentDevice(selectedDevice.device_uuid)" class="detail-section action-section">
-              <div class="section-title-row lan-access-heading">
-                <div class="section-title">{{ $t('devices.detail.lan_access.section') }}</div>
-                <el-switch v-model="lanAccessForm.enabled" />
-              </div>
-              <div class="lan-access-card">
-                <div v-if="lanAccessForm.enabled" class="lan-cidr-editor">
-                  <div class="lan-cidr-content">
-                    <div class="lan-cidr-input">
-                      <div class="lan-cidr-label">
-                        <span>{{ $t('devices.detail.lan_access.cidr_label') }}</span>
-                        <el-tooltip
-                          :content="$t('devices.detail.lan_access.cidr_hint')"
-                          placement="top-start"
-                          popper-class="lan-cidr-hint-popper"
-                        >
-                          <span class="action-help lan-cidr-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
-                        </el-tooltip>
-                      </div>
-                      <el-input
-                        v-model="lanAccessForm.cidrsText"
-                        type="textarea"
-                        :rows="4"
-                        resize="none"
-                        :placeholder="$t('devices.detail.lan_access.cidr_placeholder')"
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div v-if="lanAccessDirty" class="lan-access-actions">
-                  <el-button type="primary" :loading="lanAccessForm.saving" @click="saveLanAccessConfig">{{ $t('common.save') }}</el-button>
-                </div>
-              </div>
-            </div>
-
-            <div v-else class="detail-section action-section">
+            <div v-if="!isCurrentDevice(selectedDevice.device_uuid)" class="detail-section action-section">
               <div class="section-title">{{ $t('devices.detail.connection.section') }}</div>
               <div
                 class="tunnel-lifecycle-strip"
@@ -143,11 +108,16 @@
                 <div>
                   <strong>{{ tunnelLifecycleTitle(selectedDevice) }}</strong>
                   <p>{{ tunnelLifecycleDescription(selectedDevice) }}</p>
+                  <p v-if="tunnelStatusMap[selectedDevice.device_id]?.network">{{ tunnelStatusMap[selectedDevice.device_id]?.network?.toUpperCase() }}</p>
                   <p v-if="tunnelLanCidrs(selectedDevice).length">
                     {{ $t('devices.lifecycle.desc_connected_with_lan', { cidrs: tunnelLanCidrs(selectedDevice).join(', ') }) }}
                   </p>
                 </div>
               </div>
+
+              <el-alert v-if="activeTunnelJobMap[selectedDevice.device_id]?.tcp_retry_recommended" type="warning" :closable="false" :title="$t('app.settings.tcp_failure_hint')">
+                <el-button :loading="preparingTunnelIds.has(selectedDevice.device_id)" @click="disableTcpAndRetry(selectedDevice)">{{ $t('app.settings.disable_tcp_retry') }}</el-button>
+              </el-alert>
 			  <div class="action-groups">
 				<div class="action-group">
 				  <div class="action-group-label">{{ $t('devices.detail.connection.tunnel_group') }}</div>
@@ -394,6 +364,7 @@ interface TunnelSpeedTestResult {
 }
 
 interface TunnelInfo {
+  network?: string
   local_port: number
   rdp_address: string
   remote_address?: string
@@ -405,6 +376,7 @@ interface TunnelInfo {
 }
 
 interface ActiveTunnelJobStatus {
+  tcp_retry_recommended?: boolean
   target_device_id: number
   target_device_uuid: string
   state: 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
@@ -430,11 +402,6 @@ interface WgvpnJobStatus {
   max_attempts: number
   message: string
   updated_at: number
-}
-
-interface WgvpnLanAccessConfig {
-  enabled: boolean
-  cidrs: string[]
 }
 
 interface TunnelLifecycleStatus {
@@ -466,15 +433,6 @@ const tunnelLifecycleMap = ref<Record<number, TunnelLifecycleStatus>>({})
 const preparingTunnelIds = ref(new Set<number>())
 const disconnectingIds = ref(new Set<number>())
 const wakingIds = reactive(new Set<number>())
-const lanAccessForm = reactive({
-  enabled: false,
-  cidrsText: '',
-  saving: false,
-})
-const savedLanAccessConfig = reactive({
-  enabled: false,
-  cidrsText: '',
-})
 
 const aliasForm = reactive({ alias: '', loading: false })
 const FOREGROUND_REFRESH_THROTTLE_MS = 10_000
@@ -483,10 +441,6 @@ let lastForegroundRefreshAt = 0
 let unlistenServiceStatus: UnlistenFn | null = null
 
 const onlineDeviceCount = computed(() => deviceStore.devices.filter(device => device.status === 'online').length)
-const lanAccessDirty = computed(() => (
-  lanAccessForm.enabled !== savedLanAccessConfig.enabled
-  || lanAccessForm.cidrsText !== savedLanAccessConfig.cidrsText
-))
 const selectedDisconnecting = computed(() => (
   selectedDevice.value ? disconnectingIds.value.has(selectedDevice.value.device_id) : false
 ))
@@ -530,7 +484,6 @@ onMounted(async () => {
     // 页面首次展示时必须从 service 重新同步设备状态。客户端重启期间，
     // store 里可能仍是 WebSocket 建连前取得的离线快照。
     await refreshDevices({ force: true })
-    await loadLanAccessConfig()
   } catch (e) {
     console.error('获取设备列表失败:', e)
   }
@@ -576,54 +529,6 @@ function deviceSystemSummary(device: DeviceInfo): string {
     .replace(/\s+/g, ' ')
     .trim()
   return system || t('common.unknown_system')
-}
-
-function parseLanCidrs(value: string): string[] {
-  const items = value
-    .split(/[\n,]/)
-    .map(item => item.trim())
-    .filter(Boolean)
-  return [...new Set(items)]
-}
-
-async function loadLanAccessConfig() {
-  try {
-    const config = await invoke<WgvpnLanAccessConfig>('get_wgvpn_lan_access_config')
-    lanAccessForm.enabled = Boolean(config.enabled)
-    lanAccessForm.cidrsText = Array.isArray(config.cidrs) ? config.cidrs.join('\n') : ''
-    savedLanAccessConfig.enabled = lanAccessForm.enabled
-    savedLanAccessConfig.cidrsText = lanAccessForm.cidrsText
-  } catch (error) {
-    console.warn('[Devices] load LAN access config failed:', error)
-  }
-}
-
-async function saveLanAccessConfig() {
-  const cidrs = parseLanCidrs(lanAccessForm.cidrsText)
-  if (lanAccessForm.enabled) {
-    if (cidrs.length === 0) {
-      ElMessage.warning(t('devices.message.lan_access_required'))
-      return
-    }
-  }
-
-  lanAccessForm.saving = true
-  try {
-    const saved = await invoke<WgvpnLanAccessConfig>('save_wgvpn_lan_access_config', {
-      enabled: lanAccessForm.enabled,
-      cidrs,
-    })
-    lanAccessForm.enabled = Boolean(saved.enabled)
-    lanAccessForm.cidrsText = Array.isArray(saved.cidrs) ? saved.cidrs.join('\n') : ''
-    savedLanAccessConfig.enabled = lanAccessForm.enabled
-    savedLanAccessConfig.cidrsText = lanAccessForm.cidrsText
-    ElMessage.success(t('devices.message.lan_saved'))
-  } catch (error) {
-    const message = typeof error === 'string' ? error : (error as any)?.message || t('devices.message.lan_save_failed_fallback')
-    ElMessage.error(t('devices.message.lan_save_failed', { error: message }))
-  } finally {
-    lanAccessForm.saving = false
-  }
 }
 
 function hasTunnel(device: DeviceInfo | null): boolean {
@@ -1007,6 +912,7 @@ function applyTunnelRuntimeStatus(runtime: any) {
         liveRoleMap.set(session.peer_device_id, role)
         const existing = newMap[session.peer_device_id]
         newMap[session.peer_device_id] = {
+          network: session.network || '',
           local_port: existing?.local_port || session.local_forward_port || 0,
           rdp_address: existing?.rdp_address || (session.peer_virtual_ip ? `${session.peer_virtual_ip}:3389` : ''),
           virtual_ip: session.peer_virtual_ip || '',
@@ -1097,6 +1003,16 @@ async function handleRetryTunnel(device: DeviceInfo) {
   preparingTunnelIds.value = preparing
   try {
     await invoke('stop_service_active_tunnel', { targetDeviceId: device.device_id })
+    // A native punch call may still be draining. Starting early would reuse
+    // the old job rather than the newly saved machine preferences.
+    const deadline = Date.now() + 150_000
+    while (true) {
+      const status = await invoke<any>('get_service_status')
+      const job = status.runtime?.active_tunnel_jobs?.find((item: ActiveTunnelJobStatus) => item.target_device_id === device.device_id)
+      if (!job || !['running', 'waiting'].includes(job.state)) break
+      if (Date.now() >= deadline) throw new Error(t('app.settings.draining'))
+      await new Promise(resolve => window.setTimeout(resolve, 500))
+    }
     await invoke<string>('start_service_active_tunnel', {
       targetDeviceId: device.device_id,
       targetDeviceUuid: device.device_uuid,
@@ -1115,6 +1031,14 @@ async function handleRetryTunnel(device: DeviceInfo) {
     latest.delete(device.device_id)
     preparingTunnelIds.value = latest
   }
+}
+
+async function disableTcpAndRetry(device: DeviceInfo) {
+  try {
+    const preferences = await invoke<{ prefer_ipv6: boolean; prefer_tcp: boolean }>('get_connection_preferences')
+    await invoke('save_connection_preferences', { preferIpv6: preferences.prefer_ipv6, preferTcp: false })
+    await handleRetryTunnel(device)
+  } catch (error) { ElMessage.error(String(error)) }
 }
 
 async function startTunnelSilently(device: DeviceInfo) {
@@ -1223,14 +1147,6 @@ async function launchWindowsRdp(device: DeviceInfo) {
 }
 
 async function launchP2pRemoteDesktop(device: DeviceInfo) {
-  if (!isLocalWindows) {
-    await ElMessageBox.alert(
-      t('devices.message.desktop_platform_unsupported_body'),
-      t('devices.message.desktop_platform_unsupported_title'),
-      { confirmButtonText: t('common.got_it'), type: 'info' },
-    ).catch(() => {})
-    return
-  }
   if (!hasCapability(device, 'rustdesk_tiny')) {
     ElMessage.error(t('devices.message.desktop_capability_missing'))
     return

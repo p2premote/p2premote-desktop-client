@@ -1359,6 +1359,7 @@ mod tests {
         let mut status = RuntimeStatus {
             locale: Some("zh-CN".to_string()),
             active_tunnel_jobs: vec![ActiveTunnelJobStatus {
+                tcp_retry_recommended: false,
                 target_device_id: 29,
                 target_device_uuid: "peer-29".to_string(),
                 state: ActiveTunnelJobState::Waiting,

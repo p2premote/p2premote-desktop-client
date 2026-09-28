@@ -14,6 +14,9 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
     const state = {
       serviceAvailable: true,
       tunnelRuntime: null as unknown,
+      preferences: { prefer_ipv6: false, prefer_tcp: false },
+      lan: { enabled: false, cidrs: [] as string[] },
+      failPreferences: false,
     }
 
     const localDevice = {
@@ -83,6 +86,15 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
         if (cmd === 'plugin:window|close') return null
 
         switch (cmd) {
+          case 'get_connection_preferences': return { ...state.preferences }
+          case 'save_connection_preferences':
+            if (state.failPreferences) throw new Error('mock save failed')
+            state.preferences = { prefer_ipv6: Boolean(args?.preferIpv6), prefer_tcp: Boolean(args?.preferTcp) }
+            return { ...state.preferences }
+          case 'get_wgvpn_lan_access_config': return { ...state.lan }
+          case 'save_wgvpn_lan_access_config':
+            state.lan = { enabled: Boolean(args?.enabled), cidrs: args?.cidrs as string[] || [] }
+            return { ...state.lan }
           case 'check_update':
             return { mode: 'none', current: '1.0.10', latest: '1.0.10', min_supported: '1.0.0' }
           case 'try_auto_login':
@@ -201,6 +213,17 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
         }
       },
     }
+    // The project uses Tauri 1; adapt the mock's async dispatcher to its IPC.
+    ;(window as any).__TAURI_METADATA__ = { __windows: [{ label: 'main' }], __currentWindow: { label: 'main' } }
+    ;(window as any).__TAURI_IPC__ = (message: any) => {
+      let promise: Promise<unknown>
+      if (message.cmd === 'tauri') {
+        const command = message.message?.cmd
+        promise = Promise.resolve(command === 'listen' ? 1 : command === 'isMaximized' ? false : null)
+      } else promise = (window as any).__TAURI_INTERNALS__.invoke(message.cmd, message)
+      promise.then(value => (window as any)[`_${message.callback}`]?.(value))
+        .catch(error => (window as any)[`_${message.error}`]?.(String(error)))
+    }
   }, { initialLocale: locale, includeRemoteDevice })
 }
 
@@ -217,6 +240,28 @@ async function openRemoteAssistance(page: Page, locale = 'zh-CN') {
 function mockCalls(page: Page): Promise<MockCall[]> {
   return page.evaluate(() => (window as any).__p2premoteMockCalls)
 }
+
+test('连接偏好保存失败回滚，LAN 配置在设置窗口保存', async ({ page }) => {
+  await installTauriMock(page)
+  await page.goto('/')
+  await page.getByRole('button', { name: '打开设置', exact: true }).click()
+  const settings = page.getByRole('dialog', { name: '设置', exact: true })
+  await expect(settings).toBeVisible()
+  await settings.getByRole('tab', { name: '连接', exact: true }).click()
+  const tcp = settings.getByRole('switch', { name: 'TCP 优先', exact: true })
+  await expect(tcp).toHaveAttribute('aria-checked', 'false')
+  await tcp.locator('..').click()
+  await expect(tcp).toHaveAttribute('aria-checked', 'true')
+  await page.evaluate(() => { (window as any).__p2premoteMockState.failPreferences = true })
+  await tcp.locator('..').click()
+  await expect(tcp).toHaveAttribute('aria-checked', 'true')
+  await settings.getByRole('tab', { name: '局域网访问', exact: true }).click()
+  await settings.locator('#lan-enabled').locator('..').click()
+  await settings.locator('#lan-cidrs').fill('192.168.1.0/24')
+  await settings.getByRole('button', { name: '保存', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (window as any).__p2premoteMockState.lan.cidrs)).toEqual(['192.168.1.0/24'])
+  await expect(settings.getByRole('button', { name: '保存', exact: true })).not.toBeVisible()
+})
 
 async function setServiceAvailable(page: Page, available: boolean) {
   await page.evaluate((nextAvailable) => {
@@ -330,6 +375,7 @@ test.describe('远程协助', () => {
     await page.locator('.header-btn').click()
     await page.locator('.settings-panel .language-select').click()
     await page.getByRole('option', { name: 'English' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: /Close this dialog|关闭此对话框/ }).click()
 
     await expect(page.getByRole('heading', { name: 'Connect to a remote computer' })).toBeVisible()
     await page.locator('.connect-card').getByRole('button', { name: /Establish remote connection/ }).click()

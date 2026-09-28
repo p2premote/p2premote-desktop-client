@@ -71,8 +71,20 @@ pub fn register(token: String, attempt_id: String, connection_id: String, peer: 
 
 pub fn lookup(token: &str) -> Option<Arc<Session>> { SESSIONS.lock().get(token).cloned() }
 pub fn remove(token: &str) { SESSIONS.lock().remove(token); }
+pub fn cancel_token(token: &str) {
+    if let Some(session) = lookup(token) {
+        session.cancelled.store(true, Ordering::Release);
+        session.wake.notify_one();
+    }
+}
 pub fn cancel(attempt: &str) {
     for session in SESSIONS.lock().values().filter(|s| s.attempt_id == attempt) {
+        session.cancelled.store(true, Ordering::Release);
+        session.wake.notify_one();
+    }
+}
+pub fn cancel_peer(peer: i64) {
+    for session in SESSIONS.lock().values().filter(|s| s.peer == peer) {
         session.cancelled.store(true, Ordering::Release);
         session.wake.notify_one();
     }
@@ -106,8 +118,11 @@ impl Session {
             .await.map_err(|e| anyhow!("traversal_signal_failed: {e}"))
     }
     async fn wait(&self, round: u8, stage: u8) -> Result<Frame> {
+        self.wait_for(round, stage, 12).await
+    }
+    async fn wait_for(&self, round: u8, stage: u8, seconds: u64) -> Result<Frame> {
         let mut rx = self.rx.lock().await;
-        tokio::time::timeout(Duration::from_secs(12), async {
+        tokio::time::timeout(Duration::from_secs(seconds), async {
             loop {
                 self.check()?;
                 let frame = tokio::select! {
@@ -166,10 +181,12 @@ impl Session {
             }
             // Never abandon this call: cancellation must drain a late handle.
             let result = gonc_ffi::start_udp_tunnel_native(&req).await;
+            tracing::info!(peer = self.peer, round, network = %req.network, mode = %req.traversal_mode,
+                success = result.is_ok(), "application traversal round completed");
             let mut owned = PendingTunnel(result.ok());
             self.check()?;
             self.send(Frame::Result { round, ok: owned.0.is_some() }).await?;
-            let peer_ok = match self.wait(round, 5).await? {
+            let peer_ok = match self.wait_for(round, 5, timeout_secs + 12).await? {
                 Frame::Result { ok, .. } => ok,
                 _ => return Err(anyhow!("invalid_traversal_result")),
             };

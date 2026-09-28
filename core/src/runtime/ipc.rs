@@ -326,6 +326,8 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::SetLocale { .. } => "SetLocale",
         Data::GetLocale => "GetLocale",
         Data::GetWgvpnLanAccessConfig => "GetWgvpnLanAccessConfig",
+        Data::GetConnectionPreferences => "GetConnectionPreferences",
+        Data::SaveConnectionPreferences { .. } => "SaveConnectionPreferences",
         Data::SaveWgvpnLanAccessConfig { .. } => "SaveWgvpnLanAccessConfig",
         Data::CommandResponse { .. } => "CommandResponse",
         Data::StatusChanged(_) => "StatusChanged",
@@ -956,6 +958,20 @@ pub(super) async fn handle_data(
                 serde_json::json!({ "locale": locale }),
             ))
         }
+        Data::GetConnectionPreferences => {
+            let config = match load_config_or_err() { Ok(c) => c, Err(resp) => return Some(resp) };
+            Some(cmd_response_with_data(true, "ok", None, serde_json::json!({
+                "prefer_ipv6": config.prefer_ipv6, "prefer_tcp": config.prefer_tcp,
+            })))
+        }
+        Data::SaveConnectionPreferences { prefer_ipv6, prefer_tcp } => {
+            let mut config = match load_config_or_err() { Ok(c) => c, Err(resp) => return Some(resp) };
+            config.prefer_ipv6 = prefer_ipv6;
+            config.prefer_tcp = prefer_tcp;
+            Some(response_from_result(save_machine_config(&config), |_| serde_json::json!({
+                "prefer_ipv6": prefer_ipv6, "prefer_tcp": prefer_tcp,
+            })))
+        }
         Data::GetWgvpnLanAccessConfig => {
             let config = match load_config_or_err() {
                 Ok(c) => c,
@@ -1036,7 +1052,11 @@ pub(super) async fn handle_data(
         }
         Data::StopTunnel { source_device_id } => stop_wgvpn_job(shared, source_device_id).await,
         Data::StopActiveTunnel { target_device_id } => {
-            clear_active_tunnel_job_status(shared, target_device_id);
+            if shared.lock().active_tunnel_job_cancels.contains_key(&target_device_id) {
+                stop_active_tunnel_job(shared, target_device_id);
+            } else {
+                clear_active_tunnel_job_status(shared, target_device_id);
+            }
             stop_wgvpn_job(shared, target_device_id).await
         }
         Data::TestTunnelSpeed { peer_device_id } => {

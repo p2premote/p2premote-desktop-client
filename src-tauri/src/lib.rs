@@ -129,7 +129,7 @@ use commands::{
     },
     config::{
         check_update, exit_application, get_settings, get_wgvpn_lan_access_config,
-        save_wgvpn_lan_access_config, set_auto_start, set_locale,
+        save_wgvpn_lan_access_config, get_connection_preferences, save_connection_preferences, set_auto_start, set_locale,
     },
     device::{
         delete_device, generate_connect_code, get_device_list, mark_current_device_offline,
@@ -288,6 +288,8 @@ pub fn run() {
             get_settings,
             get_wgvpn_lan_access_config,
             save_wgvpn_lan_access_config,
+            get_connection_preferences,
+            save_connection_preferences,
             set_auto_start,
             set_locale,
             exit_application,

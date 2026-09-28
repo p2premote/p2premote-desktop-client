@@ -184,6 +184,11 @@ pub enum Data {
     GetLocale,
     /// 读取本机 wgvpn LAN 访问配置。
     GetWgvpnLanAccessConfig,
+    GetConnectionPreferences,
+    SaveConnectionPreferences {
+        prefer_ipv6: bool,
+        prefer_tcp: bool,
+    },
     /// 保存本机 wgvpn LAN 访问配置。
     SaveWgvpnLanAccessConfig {
         enabled: bool,
@@ -344,6 +349,8 @@ pub struct TunnelLifecycleStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveTunnelJobStatus {
+    #[serde(default)]
+    pub tcp_retry_recommended: bool,
     pub target_device_id: i64,
     pub target_device_uuid: String,
     pub state: ActiveTunnelJobState,
@@ -378,6 +385,8 @@ pub enum WgvpnHealthState {
 /// wgvpn 已建立会话的状态快照（推送给 UI / CLI status）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WgvpnSessionStatus {
+    #[serde(default)]
+    pub network: String,
     pub peer_device_id: i64,
     pub is_active: bool,
     pub virtual_ip: String,
