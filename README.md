@@ -32,6 +32,34 @@ p2pRemote 桌面客户端是 p2pRemote P2P 远程访问产品中功能最完整�
 | Linux 桌面 | DEB / AppImage(x86_64) |
 | Linux 无头服务器 | tar.gz / DEB / RPM / Docker 镜像(x86_64 / aarch64) |
 
+## 端口与网络
+
+### 本机监听端口
+
+| 端口 | 协议 | 默认绑定 | 用途 |
+| --- | --- | --- | --- |
+| 48083 | TCP | `127.0.0.1`;配置了远程访问 IP 白名单或首次使用信任(TOFU)待初始化时绑 `0.0.0.0` | 浏览器 Web 管理端,可用环境变量 `P2PREMOTE_WEB_ADMIN_ADDR` 覆盖 |
+| 41119 | TCP | `0.0.0.0` | 隧道健康/控制面,对端经隧道虚拟 IP 访问(隧道内流量) |
+| 48082 | TCP | `0.0.0.0` | 旧版本客户端的健康口兼容监听,与新端口同时开启 |
+| 48084 | TCP | `0.0.0.0` | 内置测速(riperf3 协议)服务端,仅在测速进行期间监听 |
+| 41118 | UDP | Windows 用户态引擎绑 `127.0.0.1`(loopback),由打洞外层隧道投递;Linux 内核 WireGuard 用作 `ListenPort` | WireGuard 数据面端口,建链时与对端交换(旧版本为 51820) |
+| 21121 | TCP | — | 内置远程桌面 RustDeskTiny 自有的直连监听;发起控制时连接的是对端虚拟 IP 的该端口 |
+| 动态 | UDP | — | NAT 打洞的外层加密隧道与各轮探测 socket,使用操作系统分配的临时端口 |
+
+GUI 与后台服务之间的通信走 Windows named pipe / Unix domain socket,不占用网络端口。
+
+### 对外连接(出站)
+
+| 目标 | 端口 | 用途 |
+| --- | --- | --- |
+| `cli.p2premote.top` | 443/TCP | 账号认证、设备管理、连接信令等服务端 API |
+| `www.p2premote.top` | 443/TCP | 版本更新检查、官网跳转 |
+| 公共 MQTT broker(hivemq / emqx / mosquitto / `mqtt.gonc.cc`) | 1883/TCP | 建链时在加密通道中与对端交换 WireGuard 公钥与隧道参数,可用 `P2PREMOTE_MQTT_BROKERS` 覆盖 |
+| STUN 服务器(`stun.gonc.cc`、`stun.hitv.com`、Cloudflare、Google、Twilio) | UDP 3478 / 19302,TCP 80,UDP 53 | NAT 类型探测与公网地址发现,可用 `P2PREMOTE_STUN_SERVERS` 覆盖 |
+| 对端公网地址 | 动态 UDP(兜底 TCP) | 打洞成功后的 AES 加密外层隧道数据面 |
+
+隧道建立后,本机还可主动访问对端虚拟 IP(`100.99.71.0/24` 网段)上的服务:健康面 41119、测速 48084、远程桌面 21121,以及用户自行开放的 RDP、SSH 等 TCP 服务。远程流量全部在 P2P 隧道内直连,不经过服务端。
+
 ## 仓库结构
 
 ```text
@@ -81,5 +109,9 @@ p2pRemote is a P2P remote-access product; this desktop client can both initiate 
 **Features**: UDP hole punching with TCP fallback · WireGuard virtual LAN with virtual IPs · embedded remote desktop (RustDeskTiny) · invite codes / one-time device passwords · LAN subnet exposure · TCP service forwarding · browser-based web admin · iperf3-based speed test · system service, CLI and notifier · bilingual (简体中文 / English) UI with dark theme.
 
 **Platforms**: Windows 10/11 (plus a Win7 build), macOS universal DMG, Linux desktop (DEB / AppImage), headless Linux (tar.gz / DEB / RPM / Docker, x86_64 & aarch64).
+
+**Ports (inbound)**: 48083/TCP web admin (loopback by default, 0.0.0.0 when remote access is allowed) · 41119/TCP + 48082/TCP tunnel health/control (legacy compat) · 48084/TCP speed-test server (during tests only) · 41118/UDP WireGuard data plane (loopback userspace engine on Windows) · 21121/TCP is RustDeskTiny's own listener. GUI↔service IPC uses named pipes / Unix sockets.
+
+**Outbound**: 443/TCP to `cli.p2premote.top` (API/signaling) and `www.p2premote.top` (updates) · 1883/TCP public MQTT brokers for the encrypted key exchange · STUN probes (UDP 3478/19302, TCP 80, UDP 53) · dynamic UDP (TCP fallback) to the peer for the encrypted data plane. See the 端口与网络 section above for details.
 
 **Build**: see [BUILD.md](BUILD.md). Requires Node.js, Rust, Tauri CLI and sibling checkouts `../p2premote-punch-rs` and `../p2premote-wg-ffi`.
