@@ -206,6 +206,7 @@ enum P2PAttemptEvent {
     Ready {
         rdp_port: u16,
         approval_required: bool,
+        traversal_negotiation: Option<crate::traversal_policy::Negotiation>,
     },
     ApprovalRequired,
     ApprovalGranted,
@@ -238,6 +239,8 @@ enum P2PAttemptMessage {
         source_device_name: String,
         #[serde(default)]
         source_device_alias: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        traversal_negotiation: Option<crate::traversal_policy::Negotiation>,
     },
     AttemptReady {
         protocol_version: u8,
@@ -247,6 +250,12 @@ enum P2PAttemptMessage {
         rdp_port: u16,
         #[serde(default)]
         approval_required: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        traversal_negotiation: Option<crate::traversal_policy::Negotiation>,
+    },
+    Traversal {
+        attempt_id: String,
+        frame: crate::traversal::Frame,
     },
     ApprovalRequired {
         protocol_version: u8,
@@ -1264,6 +1273,7 @@ mod tests {
             source_email: "alice@example.com".to_string(),
             source_device_name: "Living Room PC".to_string(),
             source_device_alias: "客厅电脑".to_string(),
+            traversal_negotiation: None,
         };
 
         let encoded = serde_json::to_string(&message).expect("serialize attempt start");

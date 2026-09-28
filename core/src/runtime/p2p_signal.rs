@@ -114,8 +114,10 @@ pub(super) async fn handle_p2p_notify(
             source_email,
             source_device_name,
             source_device_alias,
+            traversal_negotiation,
             ..
         } => {
+            if let Some(negotiation) = &traversal_negotiation { negotiation.validate()?; }
             info!(
                 "[ServiceRuntime] passive attempt start: source_device_id={}, attempt={}/{}, attempt_id={}, source_user_id={}, source_username_present={}, source_email_present={}",
                 source_device_id,
@@ -304,6 +306,10 @@ pub(super) async fn handle_p2p_notify(
                 }
                 drop(state);
             }
+            if let Some(negotiation) = &traversal_negotiation {
+                crate::traversal::register(punch_token.clone(), attempt_id.clone(), connection_id.clone(),
+                    source_device_id, access_grant.clone(), ws_client.clone(), false, negotiation.clone())?;
+            }
             let start_result = start_wgvpn_job(
                 shared,
                 source_device_id,
@@ -358,6 +364,7 @@ pub(super) async fn handle_p2p_notify(
                     rdp_enabled: is_rdp_enabled(),
                     rdp_port: get_rdp_port_from_registry(),
                     approval_required,
+                    traversal_negotiation,
                 },
             )
             .await
@@ -392,12 +399,14 @@ pub(super) async fn handle_p2p_notify(
             attempt_id,
             rdp_port,
             approval_required,
+            traversal_negotiation,
             ..
         } => {
             if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
                 let _ = waiter.send(P2PAttemptEvent::Ready {
                     rdp_port,
                     approval_required,
+                    traversal_negotiation,
                 });
             }
         }
@@ -454,6 +463,7 @@ pub(super) async fn handle_p2p_notify(
                 })
                 .unwrap_or(false);
             if is_current_passive_attempt {
+                crate::traversal::cancel(&attempt_id);
                 {
                     let mut state = shared.lock();
                     state.passive_p2p_attempts.remove(&source_device_id);
@@ -475,8 +485,12 @@ pub(super) async fn handle_p2p_notify(
                 );
             }
             if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
+                crate::traversal::cancel(&attempt_id);
                 let _ = waiter.send(P2PAttemptEvent::Cancelled);
             }
+        }
+        P2PAttemptMessage::Traversal { attempt_id, frame } => {
+            crate::traversal::deliver(&connection_id, source_device_id, &attempt_id, frame)?;
         }
     }
     Ok(())

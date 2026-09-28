@@ -276,6 +276,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     Err(err) => Err(anyhow!("active attempt task failed: {}", err)),
                 }),
                 _ = tokio::time::sleep(Duration::from_secs(ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS)) => {
+                    crate::traversal::cancel(&attempt_id);
                     let _ = send_p2p_attempt_message(
                         &ws_client,
                         opened.connection_id.clone(),
@@ -301,6 +302,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                 }
                 _ = cancel_rx.changed() => {
                     if *cancel_rx.borrow() {
+                        crate::traversal::cancel(&attempt_id);
                         let _ = send_p2p_attempt_message(
                             &ws_client,
                             opened.connection_id.clone(),
@@ -552,6 +554,10 @@ pub(super) async fn start_wgvpn_active_with_notify(
         source_device_alias: source_device
             .and_then(|device| device.device_alias)
             .unwrap_or_default(),
+        traversal_negotiation: Some(crate::traversal_policy::Negotiation {
+            version: crate::traversal_policy::VERSION,
+            preferences: crate::traversal_policy::Preferences { prefer_ipv6: config.prefer_ipv6, prefer_tcp: config.prefer_tcp },
+        }),
     };
     if let Err(err) = send_p2p_attempt_message(
         ws_client,
@@ -567,11 +573,12 @@ pub(super) async fn start_wgvpn_active_with_notify(
     }
 
     let ready = tokio::time::timeout(Duration::from_secs(30), event_rx.recv()).await;
-    let (rdp_port, approval_required) = match ready {
+    let (rdp_port, approval_required, traversal_negotiation) = match ready {
         Ok(Some(P2PAttemptEvent::Ready {
             rdp_port,
             approval_required,
-        })) => (rdp_port, approval_required),
+            traversal_negotiation,
+        })) => (rdp_port, approval_required, traversal_negotiation),
         Ok(Some(P2PAttemptEvent::Failed {
             error_code,
             message,
@@ -601,6 +608,14 @@ pub(super) async fn start_wgvpn_active_with_notify(
         }
     };
 
+    if let Some(negotiation) = traversal_negotiation {
+        negotiation.validate()?;
+        if negotiation.preferences != (crate::traversal_policy::Preferences { prefer_ipv6: config.prefer_ipv6, prefer_tcp: config.prefer_tcp }) {
+            return Err(anyhow!("traversal_preference_mismatch"));
+        }
+        crate::traversal::register(punch_token.clone(), attempt_id.clone(), opened.connection_id.clone(),
+            target_device_id, opened.access_grant.clone(), ws_client.clone(), true, negotiation)?;
+    }
     let blocking_config = config.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let mut start_handle = tokio::task::spawn_blocking(move || {

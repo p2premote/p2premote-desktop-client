@@ -36,6 +36,10 @@ pub struct MachineConfig {
     pub log_level: String,
     #[serde(default)]
     pub auto_start: bool,
+    #[serde(default)]
+    pub prefer_ipv6: bool,
+    #[serde(default)]
+    pub prefer_tcp: bool,
     /// 是否允许保留 refresh token 供后续手动或自动恢复会话。
     #[serde(default)]
     pub remember_me: bool,
@@ -115,6 +119,8 @@ impl Default for MachineConfig {
             p2p_punch_path: default_p2p_punch_path().to_string_lossy().to_string(),
             log_level: default_log_level(),
             auto_start: false,
+            prefer_ipv6: false,
+            prefer_tcp: false,
             remember_me: false,
             auto_login: false,
             wgvpn_lan_access_enabled: false,

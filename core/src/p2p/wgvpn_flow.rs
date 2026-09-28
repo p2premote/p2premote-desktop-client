@@ -359,6 +359,7 @@ pub async fn start_active_wgvpn(
     punch_token: String,
     lan_cidrs: Vec<String>,
 ) -> Result<WgVpnStartResult> {
+    let _registration = crate::traversal::Registration(punch_token.clone());
     ensure_wgvpn_role_allowed(true)?;
     if !lan_cidrs.is_empty() {
         return Err(anyhow!("only passive wgvpn may expose LAN CIDRs"));
@@ -428,7 +429,11 @@ pub async fn start_active_wgvpn(
             udp_tunnel_request.remote_target_port,
         );
     let udp_punch_started_at = Instant::now();
-    let udp_tunnel = match gonc_ffi::start_udp_tunnel_native(&udp_tunnel_request).await {
+    let tunnel_result = match crate::traversal::lookup(&punch_token) {
+        Some(session) => session.start(&udp_tunnel_request).await,
+        None => gonc_ffi::start_udp_tunnel_native(&udp_tunnel_request).await,
+    };
+    let udp_tunnel = match tunnel_result {
         Ok(tunnel) => {
             log_gonc_udp_punch_established(
                 "active",
@@ -615,6 +620,7 @@ pub async fn start_passive_wgvpn(
     punch_token: String,
     lan_cidrs: Vec<String>,
 ) -> Result<WgVpnStartResult> {
+    let _registration = crate::traversal::Registration(punch_token.clone());
     ensure_wgvpn_role_allowed(false)?;
     let requested_lan_cidrs = wgvpn_exchange::normalize_exposed_lan_cidrs(&lan_cidrs)?;
     validate_lan_routes_basic(&requested_lan_cidrs)?;
@@ -699,7 +705,11 @@ pub async fn start_passive_wgvpn(
             udp_tunnel_request.remote_target_port,
         );
     let udp_punch_started_at = Instant::now();
-    let udp_tunnel = match gonc_ffi::start_udp_tunnel_native(&udp_tunnel_request).await {
+    let tunnel_result = match crate::traversal::lookup(&punch_token) {
+        Some(session) => session.start(&udp_tunnel_request).await,
+        None => gonc_ffi::start_udp_tunnel_native(&udp_tunnel_request).await,
+    };
+    let udp_tunnel = match tunnel_result {
         Ok(tunnel) => {
             log_gonc_udp_punch_established(
                 "passive",
