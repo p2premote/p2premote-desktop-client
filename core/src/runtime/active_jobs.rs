@@ -144,6 +144,12 @@ pub(super) fn spawn_active_tunnel_job_task(
         let mut last_message = String::new();
         let mut last_attempt = 0;
         let mut last_attempt_id = String::new();
+        // Punch diagnostics for the /api/v1/p2p/end report: last failure's
+        // NAT/network from the library diagnostic, plus task elapsed time.
+        let started_at = std::time::Instant::now();
+        let mut last_source_nat = String::new();
+        let mut last_target_nat = String::new();
+        let mut last_network = String::new();
         let config = match load_machine_config() {
             Ok(config) => config,
             Err(err) => {
@@ -213,6 +219,8 @@ pub(super) fn spawn_active_tunnel_job_task(
                     &opened,
                     target_device_id,
                     &last_attempt_id,
+                    last_network.clone(),
+                    started_at.elapsed().as_secs(),
                     false,
                     "user_cancelled".to_string(),
                     "user_cancelled".to_string(),
@@ -325,7 +333,10 @@ pub(super) fn spawn_active_tunnel_job_task(
                             target_device_id,
                             target_uuid_for_task.clone(),
                         );
-                        let _ = close_active_p2p_job(&config, &opened, target_device_id, &attempt_id, false, "user_cancelled".to_string(), "user_cancelled".to_string()).await;
+                        let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, target_device_id, &attempt_id,
+                            false, last_source_nat.clone(), last_target_nat.clone(),
+                            last_network.clone(), started_at.elapsed().as_secs(),
+                            "user_cancelled".to_string(), "user_cancelled".to_string()).await;
                         return;
                     }
                     None
@@ -336,6 +347,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                 Some(Ok(result)) if result.success => {
                     let source_nat_type = result.source_nat_type.clone();
                     let target_nat_type = result.target_nat_type.clone();
+                    let success_network = result.network.clone();
                     let result_for_status = result;
                     let session_info = wgvpn_flow::snapshot_sessions()
                         .into_iter()
@@ -354,6 +366,8 @@ pub(super) fn spawn_active_tunnel_job_task(
                             &opened,
                             target_device_id,
                             &attempt_id,
+                            success_network.clone(),
+                            started_at.elapsed().as_secs(),
                             false,
                             "user_cancelled".to_string(),
                             "user_cancelled".to_string(),
@@ -418,6 +432,8 @@ pub(super) fn spawn_active_tunnel_job_task(
                         true,
                         source_nat_type,
                         target_nat_type,
+                        success_network,
+                        started_at.elapsed().as_secs(),
                         String::new(),
                         String::new(),
                     )
@@ -435,6 +451,11 @@ pub(super) fn spawn_active_tunnel_job_task(
                         ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                         err
                     );
+                    if let Some(failure) = err.downcast_ref::<crate::gonc_ffi::UdpTunnelFailure>() {
+                        last_source_nat = failure.result.local_nat_type.clone();
+                        last_target_nat = failure.result.remote_nat_type.clone();
+                        last_network = failure.result.network.clone();
+                    }
                     last_message = err.to_string();
                 }
                 None => {}
@@ -474,7 +495,10 @@ pub(super) fn spawn_active_tunnel_job_task(
                                 target_device_id,
                                 target_uuid_for_task.clone(),
                             );
-                            let _ = close_active_p2p_job(&config, &opened, target_device_id, &attempt_id, false, "user_cancelled".to_string(), "user_cancelled".to_string()).await;
+                            let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, target_device_id, &attempt_id,
+                                false, last_source_nat.clone(), last_target_nat.clone(),
+                                last_network.clone(), started_at.elapsed().as_secs(),
+                                "user_cancelled".to_string(), "user_cancelled".to_string()).await;
                             return;
                         }
                     }
@@ -514,12 +538,16 @@ pub(super) fn spawn_active_tunnel_job_task(
             .active_tunnel_job_cancels
             .remove(&target_device_id);
         let error_code = classify_tunnel_error_code(&last_message).to_string();
-        let _ = close_active_p2p_job(
+        let _ = crate::p2p::close_active_p2p_job_with_nat(
             &config,
             &opened,
             target_device_id,
             &last_attempt_id,
             false,
+            last_source_nat,
+            last_target_nat,
+            last_network,
+            started_at.elapsed().as_secs(),
             error_code,
             last_message,
         )
@@ -722,6 +750,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
         },
         remote_address,
         remote_protocol,
+        network: started.network,
         source_nat_type: started.local_nat_type,
         target_nat_type: started.remote_nat_type,
         message: started.message,

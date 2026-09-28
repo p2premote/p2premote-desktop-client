@@ -43,6 +43,8 @@ pub struct ActiveStartResult {
     #[serde(default)]
     pub remote_protocol: String,
     #[serde(default)]
+    pub network: String,
+    #[serde(default)]
     pub source_nat_type: String,
     #[serde(default)]
     pub target_nat_type: String,
@@ -147,8 +149,22 @@ struct NotifyP2PEndRequest {
     target_nat_type: String,
     traversal_plan: String,
     traversal_selection: String,
+    selected_network: String,
+    duration_seconds: u64,
     error_code: String,
     error_message: String,
+}
+
+/// Field-level fallback: keep the primary value unless it is empty.
+fn merge_nat(primary: &str, fallback: &str) -> String {
+    if primary.is_empty() { fallback.to_string() } else { primary.to_string() }
+}
+
+/// Prefer the network of the last actual punch call; when absent (failure
+/// before any native call) fall back to the first planned network.
+fn fallback_network(primary: &str, plan: &str) -> String {
+    if !primary.is_empty() { primary.to_string() }
+    else { plan.split(',').next().unwrap_or_default().to_string() }
 }
 /// token 过期前的刷新阈值（秒）
 const TOKEN_REFRESH_THRESHOLD_SECS: i64 = 300;
@@ -667,20 +683,7 @@ async fn notify_remote_tunnel_stop(source_device_id: i64, health_addr: &str) -> 
     Ok(())
 }
 
-async fn notify_p2p_end(
-    config: &MachineConfig,
-    connection_id: String,
-    log_id: i64,
-    success: bool,
-    source_device_id: i64,
-    target_device_id: i64,
-    source_nat_type: String,
-    target_nat_type: String,
-    traversal_plan: String,
-    traversal_selection: String,
-    error_code: String,
-    error_message: String,
-) -> Result<()> {
+async fn notify_p2p_end(config: &MachineConfig, request: NotifyP2PEndRequest) -> Result<()> {
     let token = config
         .auth_token
         .clone()
@@ -690,19 +693,7 @@ async fn notify_p2p_end(
     let response = client
         .post(url)
         .header("Authorization", format!("Bearer {}", token))
-        .json(&NotifyP2PEndRequest {
-            connection_id,
-            log_id,
-            success,
-            source_device_id,
-            target_device_id,
-            source_nat_type,
-            target_nat_type,
-            traversal_plan,
-            traversal_selection,
-            error_code,
-            error_message,
-        })
+        .json(&request)
         .send()
         .await
         .context("p2p end request failed")?;
@@ -713,11 +704,14 @@ async fn notify_p2p_end(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn close_active_p2p_job(
     config: &MachineConfig,
     opened: &ActiveP2POpenResult,
     target_device_id: i64,
     attempt_id: &str,
+    selected_network: String,
+    duration_secs: u64,
     success: bool,
     error_code: String,
     error_message: String,
@@ -730,12 +724,15 @@ pub async fn close_active_p2p_job(
         success,
         String::new(),
         String::new(),
+        selected_network,
+        duration_secs,
         error_code,
         error_message,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn close_active_p2p_job_with_nat(
     config: &MachineConfig,
     opened: &ActiveP2POpenResult,
@@ -744,34 +741,53 @@ pub async fn close_active_p2p_job_with_nat(
     success: bool,
     source_nat_type: String,
     target_nat_type: String,
+    selected_network: String,
+    duration_secs: u64,
     error_code: String,
     error_message: String,
 ) -> Result<()> {
     let source_device_id = config
         .device_id
         .ok_or_else(|| anyhow!("device not registered"))?;
-    let (traversal_plan, traversal_selection) = crate::traversal::take_plan(attempt_id);
-    notify_p2p_end(
-        config,
-        opened.connection_id.clone(),
-        opened.log_id,
+    let record = crate::traversal::take_plan(attempt_id);
+    let selected = fallback_network(&selected_network, &record.plan);
+    let request = NotifyP2PEndRequest {
+        connection_id: opened.connection_id.clone(),
+        log_id: opened.log_id,
         success,
         source_device_id,
         target_device_id,
-        source_nat_type,
-        target_nat_type,
-        traversal_plan,
-        traversal_selection,
+        source_nat_type: merge_nat(&source_nat_type, &record.local_nat),
+        target_nat_type: merge_nat(&target_nat_type, &record.remote_nat),
+        traversal_plan: record.plan,
+        traversal_selection: record.selection,
+        selected_network: selected,
+        duration_seconds: duration_secs,
         error_code,
         error_message,
-    )
-    .await
+    };
+    notify_p2p_end(config, request).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn nat_merge_falls_back_only_on_empty_primary() {
+        assert_eq!(merge_nat("easy", "hard"), "easy");
+        assert_eq!(merge_nat("", "hard"), "hard");
+        assert_eq!(merge_nat("", ""), "");
+    }
+
+    #[test]
+    fn network_falls_back_to_first_planned_network() {
+        assert_eq!(fallback_network("tcp4", "tcp4,udp4"), "tcp4");
+        assert_eq!(fallback_network("", "tcp4,udp4"), "tcp4");
+        assert_eq!(fallback_network("", "udp4"), "udp4");
+        assert_eq!(fallback_network("", ""), "");
+    }
 
     #[test]
     fn p2p_open_prefers_generic_vnc_capability() {

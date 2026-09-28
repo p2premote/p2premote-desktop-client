@@ -336,6 +336,7 @@ pub struct WgVpnStartResult {
     pub virtual_ip: String,
     pub peer_virtual_ip: String,
     pub peer_health_port: u16,
+    pub network: String,
     pub local_nat_type: String,
     pub remote_nat_type: String,
     pub message: String,
@@ -603,6 +604,7 @@ pub async fn start_active_wgvpn(
         virtual_ip: my_ip,
         peer_virtual_ip: peer_ip,
         peer_health_port,
+        network: udp_tunnel.network.clone(),
         local_nat_type: udp_tunnel.local_nat_type,
         remote_nat_type: udp_tunnel.remote_nat_type,
         message: format!(
@@ -958,6 +960,7 @@ pub async fn start_passive_wgvpn(
         virtual_ip: my_ip,
         peer_virtual_ip: peer_ip,
         peer_health_port,
+        network: udp_tunnel.network.clone(),
         local_nat_type: udp_tunnel.local_nat_type,
         remote_nat_type: udp_tunnel.remote_nat_type,
         message: format!(

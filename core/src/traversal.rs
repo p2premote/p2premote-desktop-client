@@ -55,7 +55,33 @@ static SESSIONS: Lazy<Mutex<HashMap<String, Arc<Session>>>> = Lazy::new(|| Mutex
 static PLANS: Lazy<Mutex<HashMap<String, PlanRecord>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Default, Clone)]
-struct PlanRecord { proposed: String, acknowledged: String }
+struct PlanRecord {
+    proposed: String,
+    acknowledged: String,
+    local_nat: String,
+    remote_nat: String,
+}
+
+/// Negotiation facts consumed by the /api/v1/p2p/end report. Empty strings
+/// mean the attempt never reached plan negotiation (legacy peer or early
+/// failure).
+#[derive(Default, Clone)]
+pub struct NegotiatedReport {
+    pub plan: String,
+    pub selection: String,
+    pub local_nat: String,
+    pub remote_nat: String,
+}
+
+/// Preliminary udp4 NAT classification from exchanged evidence; used as the
+/// fallback NAT source when the actual punch call failed before producing a
+/// diagnostic result.
+pub fn udp4_nat(evidence: &[NatEvidence]) -> String {
+    evidence.iter()
+        .find(|v| v.network == "udp4" && matches!(v.nat_type.as_str(), "easy" | "hard" | "symm"))
+        .map(|v| v.nat_type.clone())
+        .unwrap_or_default()
+}
 
 fn record_plan(attempt: &str, proposed: Option<String>, acknowledged: Option<String>) {
     let mut plans = PLANS.lock();
@@ -68,13 +94,24 @@ fn record_plan(attempt: &str, proposed: Option<String>, acknowledged: Option<Str
     if let Some(value) = acknowledged { entry.acknowledged = value; }
 }
 
-/// Take the negotiated plan (proposed by the initiator, acknowledged by the
-/// peer) for the server-side p2p/end report. Empty strings mean the attempt
-/// never reached plan negotiation (legacy peer or early failure).
-pub fn take_plan(attempt: &str) -> (String, String) {
+fn record_evidence_nat(attempt: &str, local: String, remote: String) {
+    if let Some(entry) = PLANS.lock().get_mut(attempt) {
+        entry.local_nat = local;
+        entry.remote_nat = remote;
+    }
+}
+
+/// Take the negotiated plan and evidence NAT for the server-side p2p/end
+/// report; consumes the record.
+pub fn take_plan(attempt: &str) -> NegotiatedReport {
     match PLANS.lock().remove(attempt) {
-        Some(record) => (record.proposed, record.acknowledged),
-        None => (String::new(), String::new()),
+        Some(record) => NegotiatedReport {
+            plan: record.proposed,
+            selection: record.acknowledged,
+            local_nat: record.local_nat,
+            remote_nat: record.remote_nat,
+        },
+        None => NegotiatedReport::default(),
     }
 }
 
@@ -183,6 +220,7 @@ impl Session {
         };
         let networks = traversal_policy::build_plan_with_family(self.negotiation.preferences, &evidence, &remote,
             if remote_gate { ipv6_available } else { None }, if remote_gate { remote_ipv6 } else { None });
+        record_evidence_nat(&self.attempt_id, udp4_nat(&evidence), udp4_nat(&remote));
         if self.active {
             tracing::info!(peer = self.peer, networks = ?networks, "traversal plan proposed to peer");
             record_plan(&self.attempt_id, Some(networks.join(",")), None);
@@ -297,6 +335,15 @@ mod tests {
         let s = session();
         s.cancelled.store(true, Ordering::Release);
         assert!(s.wait(1, 4).await.is_err());
+    }
+    #[test]
+    fn udp4_evidence_extraction_skips_invalid_types() {
+        use crate::traversal_policy::NatEvidence;
+        let nat = |network: &str, nat_type: &str| NatEvidence { network: network.into(), nat_type: nat_type.into() };
+        assert_eq!(udp4_nat(&[nat("udp4", "easy")]), "easy");
+        assert_eq!(udp4_nat(&[nat("udp6", "easy"), nat("udp4", "symm")]), "symm");
+        assert_eq!(udp4_nat(&[nat("udp4", "unknown")]), "");
+        assert_eq!(udp4_nat(&[]), "");
     }
     #[test]
     fn capability_address_family_is_optional_and_boolean() {
