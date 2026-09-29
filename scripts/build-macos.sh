@@ -50,7 +50,7 @@ wg_ffi_dir="${P2PREMOTE_WG_FFI_DIR:-$(cd "$repo_dir/../p2premote-wg-ffi" && pwd)
 resources_dir="$repo_dir/src-tauri/resources"
 # RustDeskTiny 使用预编译产物（与 Windows 的 RustDeskTiny-install.exe、Linux 的
 # RustDeskTiny.deb 同一模式）：两个单架构 zip 来自 RustDeskTiny GitHub Release
-# （tan00/rustdeskTiny，CI 用 ditto 归档），本地缺失时按
+# （p2premote/rustdeskTiny，CI 用 ditto 归档），本地缺失时按
 # scripts/rustdesktiny-artifacts.env 钉版自动下载；脚本解包后 lipo 合成 universal
 # app，不再依赖源码全量编译（无需 remoteDesk 检出、Xcode/Flutter/vcpkg 工具链）。
 # RUSTDESK_TINY_APP 可直接指向已合成的 universal RustDeskTiny.app 复用。

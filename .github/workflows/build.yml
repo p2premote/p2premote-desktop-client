@@ -66,7 +66,7 @@ env:
   # RustDeskTiny 预编译产物不入库（resources/ 下的安装器/deb/zip 均已 untrack），
   # CI 按此固定版本从公开 Release 下载；升级 RustDeskTiny 时同步修改
   RUSTDESK_TINY_VERSION: '1.5.1'
-  RUSTDESK_TINY_RELEASE: https://github.com/tan00/rustdeskTiny/releases/download
+  RUSTDESK_TINY_RELEASE: https://github.com/p2premote/rustdeskTiny/releases/download
   # Debian 10 编译镜像，headless 与 GUI 共用；改名时必须同步
   # build-linux.sh / build-linux-gui.sh / make_compile_image.sh 中的 builder_image
   COMPILE_IMAGE: p2premote-linux-compile:debian10-rust1.77-v1-amd64
