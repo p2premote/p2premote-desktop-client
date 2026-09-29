@@ -180,6 +180,11 @@ fi
 
 if [[ "$SKIP_HEADLESS_BUILD" -eq 0 ]]; then
   echo "==> Compiling once and creating tar.gz, deb and rpm"
+  # Pre-create the output directory as the invoking user. Inside the builder
+  # container mkdir -p runs as root; on a fresh CI workspace that would leave
+  # the directory root-owned and the later host-side `docker save` could not
+  # write its temp file (permission denied).
+  mkdir -p "$HEADLESS_DIST_DIR"
   HEADLESS_ARGS=(-v "$VERSION" --arch "$TARGET_ARCH")
   if [[ -n "$BUILDER_PROXY" ]]; then
     HEADLESS_ARGS+=(--proxy "$BUILDER_PROXY")

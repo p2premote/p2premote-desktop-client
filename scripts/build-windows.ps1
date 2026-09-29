@@ -61,9 +61,12 @@ function Update-RegexReplace {
 }
 
 function Set-ClientVersion {
-    Update-RegexReplace -Path $packageJsonPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
-    Update-RegexReplace -Path $tauriConfigPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
-    Update-RegexReplace -Path $cargoTomlPath -Pattern '(?m)^version = ".*"$' -Replacement ('version = "{0}"' -f $buildVersion)
+    # \r? tolerates CRLF checkouts: GitHub Windows runners configure
+    # core.autocrlf=true, so a plain "$" anchor never matches there and the
+    # build dies with "expected exactly one version field ... found 0".
+    Update-RegexReplace -Path $packageJsonPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)\r?$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
+    Update-RegexReplace -Path $tauriConfigPath -Pattern '(?m)^(\s*)"version":\s*".*"(,?)\r?$' -Replacement ('${1}"version": "' + $buildVersion + '"${2}')
+    Update-RegexReplace -Path $cargoTomlPath -Pattern '(?m)^version = ".*"\r?$' -Replacement ('version = "{0}"' -f $buildVersion)
 
     Write-Host "Updated client version to $buildVersion"
 }
