@@ -86,7 +86,8 @@ jobs:
         id: resolve
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" != refs/tags/* ]]; then
-            raw="$(jq -r '.version' src-tauri/tauri.conf.json)"
+            # Tauri v1 schema：版本在 .package.version（顶层无 version 字段）
+            raw="$(jq -r '.package.version' src-tauri/tauri.conf.json)"
             v="${raw%%[-+]*}"
           else
             raw="${RAW_VERSION#v}"

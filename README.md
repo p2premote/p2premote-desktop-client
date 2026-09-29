@@ -4,6 +4,13 @@ P2P remote access made simple: NAT-traversed direct connections with built-in re
 
 p2pRemote 桌面客户端:P2P 远程访问 + 远程桌面 + WireGuard 虚拟局域网,数据面端到端直连,不经过服务端。
 
+## 官方链接
+
+- 官网：<https://www.p2premote.top>
+- 下载页：<https://www.p2premote.top/#download>
+- GitHub 组织：<https://github.com/p2premote>
+  - Android 客户端：[p2premote-android-client](https://github.com/p2premote/p2premote-android-client)
+
 ## 项目简介
 
 p2pRemote 桌面客户端是 p2pRemote P2P 远程访问产品中功能最完整的端:既能发起连接,也能作为被控端接受连接(Desktop ↔ Desktop、Android → Desktop)。
