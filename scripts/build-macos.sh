@@ -88,6 +88,9 @@ merge_universal_app() {
   cp -a "$x64_app" "$out_app"
 
   local arm_file rel out_file merged=0
+  # find 必须输出绝对路径：rel 的前缀剥除依赖 $arm_app 开头，且 file/lipo
+  # 会在脚本 cwd 而非 arm_app 下解析相对路径（曾经导致 arm64 侧全部
+  # is_macho 失败、无一切片被合并）。
   while IFS= read -r -d '' arm_file; do
     rel="${arm_file#"$arm_app"/}"
     out_file="$out_app/$rel"
@@ -106,7 +109,7 @@ merge_universal_app() {
       fi
       merged=$((merged + 1))
     fi
-  done < <(cd "$arm_app" && find . -type f -print0)
+  done < <(find "$arm_app" -type f -print0)
 
   for binary in RustDeskTiny service; do
     if ! lipo "$out_app/Contents/MacOS/$binary" -verify_arch x86_64 arm64; then
