@@ -72,32 +72,35 @@ impl HealthServerHandle {
     /// 发送 stop 信号后，等待连接 task 对 TCP 执行 graceful shutdown。调用方只有
     /// 在本方法返回后才能拆除承载该连接的隧道，避免 FIN 尚未提交就先删数据面。
     ///
-    /// peer 不存在时静默（幂等，重复调用无害）。
-    pub async fn close_peer_connection(&self, peer_device_id: i64) {
-        if let Some(mut control) = self
+    /// 返回是否真的关闭了一条活跃连接；peer 不存在时静默返回 false
+    /// （幂等，重复调用无害）。
+    pub async fn close_peer_connection(&self, peer_device_id: i64) -> bool {
+        let Some(mut control) = self
             .peer_controls
             .lock()
             .ok()
             .and_then(|mut m| m.remove(&peer_device_id))
+        else {
+            return false;
+        };
+        let _ = control.stop_tx.send(true);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            control.closed_rx.changed(),
+        )
+        .await
         {
-            let _ = control.stop_tx.send(true);
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                control.closed_rx.changed(),
-            )
-            .await
-            {
-                Ok(Ok(())) if *control.closed_rx.borrow() => {}
-                Ok(_) => warn!(
-                    "[Health] peer connection closed without shutdown confirmation, peer_device_id={}",
-                    peer_device_id
-                ),
-                Err(_) => warn!(
-                    "[Health] timed out waiting for peer connection shutdown, peer_device_id={}",
-                    peer_device_id
-                ),
-            }
+            Ok(Ok(())) if *control.closed_rx.borrow() => {}
+            Ok(_) => warn!(
+                "[Health] peer connection closed without shutdown confirmation, peer_device_id={}",
+                peer_device_id
+            ),
+            Err(_) => warn!(
+                "[Health] timed out waiting for peer connection shutdown, peer_device_id={}",
+                peer_device_id
+            ),
         }
+        true
     }
 
     /// 通过主动端已经建立的健康长连接请求测速。测速执行端始终是主动端；

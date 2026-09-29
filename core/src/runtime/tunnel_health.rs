@@ -105,6 +105,8 @@ pub(super) fn spawn_wgvpn_health_monitor(
     );
 
     let event_shared = shared.clone();
+    let connection_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let closed_flag_for_handler = connection_closed.clone();
     let event_handler = Arc::new(move |event| match event {
         TunnelHealthEvent::HeartbeatSucceeded { latency_ms } => {
             record_wgvpn_health_success(&event_shared, peer_device_id, Some(generation), latency_ms)
@@ -113,6 +115,7 @@ pub(super) fn spawn_wgvpn_health_monitor(
             record_wgvpn_health_failure(event_shared.clone(), peer_device_id, Some(generation))
         }
         TunnelHealthEvent::ConnectionClosed => {
+            closed_flag_for_handler.store(true, Ordering::SeqCst);
             cleanup_wgvpn_session_async(
                 event_shared.clone(),
                 peer_device_id,
@@ -132,6 +135,17 @@ pub(super) fn spawn_wgvpn_health_monitor(
             event_handler,
         )
         .await;
+        // 对端关闭连接导致的退出：ConnectionClosed 已 spawn 带 Monitor 守卫的
+        // 清理任务，wgvpn_health_controls 表项必须留给它 claim（claim 成功后由
+        // stop_wgvpn_health_monitor 删除）。这里同步删除会让 claim 必然失败，
+        // 而 monitor 与 watchdog 均已退出，会话将失去全部清理路径而永久残留。
+        if connection_closed.load(Ordering::SeqCst) {
+            debug!(
+                "[wgvpn-health] monitor exited on connection close, cleanup delegated: peer_device_id={}",
+                peer_device_id
+            );
+            return;
+        }
         let is_current = {
             let mut state = shared.lock();
             let current = state
