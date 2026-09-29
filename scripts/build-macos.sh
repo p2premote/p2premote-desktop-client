@@ -99,13 +99,21 @@ merge_universal_app() {
       echo "Note: $rel differs between arch bundles; keeping the x86_64 copy"
     fi
     if is_macho "$out_file" && is_macho "$arm_file"; then
-      lipo -create "$out_file" "$arm_file" -output "$out_file"
+      if ! lipo -create "$out_file" "$arm_file" -output "$out_file"; then
+        echo "Error: lipo -create failed for $rel; both sides:" >&2
+        file "$out_file" "$arm_file" >&2
+        exit 1
+      fi
       merged=$((merged + 1))
     fi
   done < <(cd "$arm_app" && find . -type f -print0)
 
   for binary in RustDeskTiny service; do
-    lipo "$out_app/Contents/MacOS/$binary" -verify_arch x86_64 arm64
+    if ! lipo "$out_app/Contents/MacOS/$binary" -verify_arch x86_64 arm64; then
+      echo "Error: $binary lacks x86_64/arm64 slice after merge:" >&2
+      lipo -info "$out_app/Contents/MacOS/$binary" >&2 || true
+      exit 1
+    fi
   done
   echo "==> Merged $merged Mach-O slices into the universal RustDeskTiny.app"
 }

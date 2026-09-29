@@ -148,6 +148,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Download RustDeskTiny installer
+        # Windows runner 默认 shell 是 pwsh：$VAR 不是环境变量语法、\ 也不是
+        # 续行符，必须显式用 bash
+        shell: bash
         run: |
           curl -fL --retry 3 -o src-tauri/resources/RustDeskTiny-install.exe \
             "$RUSTDESK_TINY_RELEASE/$RUSTDESK_TINY_VERSION/RustDeskTiny-install.exe"
@@ -170,6 +173,11 @@ jobs:
     needs: resolve-version
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      # 编译镜像的 rustup 下载源从国内 rsproxy 切到官方（美国 runner 访问
+      # rsproxy.cn 经常超时）；镜像构建脚本按同名 env 转 --build-arg
+      RUSTUP_DIST_SERVER: https://static.rust-lang.org
+      RUSTUP_UPDATE_ROOT: https://static.rust-lang.org/rustup
     steps:
       - name: Checkout p2premote-desktop-client
         uses: actions/checkout@v4
@@ -211,6 +219,10 @@ jobs:
       # 宿主机只需 git + docker；前端/Go/Rust 全部在容器内完成，
       # 一次编译派生 tar.gz、deb、rpm、docker 镜像 tar 四种格式
       - name: Build all four formats
+        env:
+          # 脚本默认 /mnt/n/rust-cache 是本机 WSL 的 N 盘挂载，CI 改用 runner
+          # 临时目录（runner 上下文只能用于 step 级 env）
+          RUST_CACHE_ROOT: ${{ runner.temp }}/rust-cache
         run: ./scripts/build-linux.sh -v "${{ needs.resolve-version.outputs.version }}"
 
       - name: Save compile image for next run
@@ -229,6 +241,12 @@ jobs:
     needs: resolve-version
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      # rustup/crates 下载源从国内 rsproxy 切到官方（美国 runner 访问
+      # rsproxy.cn 经常超时）；镜像构建与容器运行脚本按同名 env 透传
+      RUSTUP_DIST_SERVER: https://static.rust-lang.org
+      RUSTUP_UPDATE_ROOT: https://static.rust-lang.org/rustup
+      CARGO_REGISTRIES_CRATES_IO_INDEX: sparse+https://index.crates.io/
     steps:
       - name: Checkout p2premote-desktop-client
         uses: actions/checkout@v4

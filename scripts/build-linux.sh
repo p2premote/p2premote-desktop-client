@@ -248,6 +248,14 @@ if [[ -n "$BUILDER_PROXY" ]]; then
     "--build-arg" "HTTPS_PROXY=$BUILDER_PROXY"
   )
 fi
+# 海外 CI 设置 RUSTUP_DIST_SERVER=https://static.rust-lang.org 切换 rustup
+# 下载源（镜像默认 rsproxy.cn 在美国 runner 上经常超时）
+if [[ -n "${RUSTUP_DIST_SERVER:-}" ]]; then
+  DOCKER_BUILD_ARGS+=(
+    "--build-arg" "RUSTUP_DIST_SERVER=$RUSTUP_DIST_SERVER"
+    "--build-arg" "RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT:-$RUSTUP_DIST_SERVER/rustup}"
+  )
+fi
 
 echo "==> Building Docker image: $DOCKER_TAG"
 docker build \

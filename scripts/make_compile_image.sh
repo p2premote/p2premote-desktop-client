@@ -52,6 +52,10 @@ if [[ -n "$proxy" ]]; then
 fi
 [[ -z "${P2PREMOTE_GO_DOWNLOAD_BASE:-}" ]] || build_args+=(--build-arg "GO_DOWNLOAD_BASE=$P2PREMOTE_GO_DOWNLOAD_BASE")
 [[ -z "${P2PREMOTE_NODE_DOWNLOAD_BASE:-}" ]] || build_args+=(--build-arg "NODE_DOWNLOAD_BASE=$P2PREMOTE_NODE_DOWNLOAD_BASE")
+# 海外 CI（GitHub Actions）访问 rsproxy.cn 经常超时：设置 RUSTUP_DIST_SERVER
+# 即切换 rustup 下载源（如 https://static.rust-lang.org），与 Dockerfile ARG 同名
+[[ -z "${RUSTUP_DIST_SERVER:-}" ]] || build_args+=(--build-arg "RUSTUP_DIST_SERVER=$RUSTUP_DIST_SERVER")
+[[ -z "${RUSTUP_UPDATE_ROOT:-}" ]] || build_args+=(--build-arg "RUSTUP_UPDATE_ROOT=$RUSTUP_UPDATE_ROOT")
 
 echo "==> Building Debian 10 compile image: $image"
 docker build --network host --platform "linux/$arch" \

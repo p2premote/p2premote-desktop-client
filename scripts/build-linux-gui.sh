@@ -66,7 +66,7 @@ docker_env=(
   -e CARGO_HTTP_MULTIPLEXING=false
   -e CARGO_NET_RETRY=10
   -e CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
-  -e CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://rsproxy.cn/index/
+  -e CARGO_REGISTRIES_CRATES_IO_INDEX="${CARGO_REGISTRIES_CRATES_IO_INDEX:-sparse+https://rsproxy.cn/index/}"
   -e P2PREMOTE_LINUX_GUI_VERSION="$version"
   -e P2PREMOTE_LINUX_GUI_ARTIFACT_VERSION="$artifact_version"
 )
