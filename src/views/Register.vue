@@ -63,18 +63,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
-import type { FormRules } from 'element-plus/es/components/form/index.mjs'
+import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { invoke } from '../runtime/bridge'
 import { errorMessage } from '../utils/errorMessage'
 import AppLogo from '../components/AppLogo.vue'
 
 const { t } = useI18n()
 const router = useRouter()
-const formRef = ref()
+const formRef = ref<FormInstance>()
 const loading = ref(false)
 const captchaCanvas = ref<HTMLCanvasElement | null>(null)
 const currentCaptcha = ref('')
@@ -203,7 +203,7 @@ const rules = computed<FormRules>(() => ({
 }))
 
 async function handleRegister() {
-  const valid = await formRef.value.validate().catch(() => false)
+  const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
 
   loading.value = true
@@ -216,7 +216,7 @@ async function handleRegister() {
       inviteCode: form.inviteCode || undefined
     })
 
-    if (response.code == 0) {
+    if (response.code === 0) {
       ElMessage.success({
         message: t('register.message.success'),
         duration: 3000
@@ -238,7 +238,7 @@ async function handleRegister() {
 }
 
 async function sendVerificationCode() {
-  const valid = await formRef.value.validateField('email').catch(() => false)
+  const valid = await formRef.value?.validateField('email').catch(() => false)
   if (!valid) return
   sendingCode.value = true
   try {
@@ -261,6 +261,10 @@ async function sendVerificationCode() {
 
 onMounted(() => {
   refreshCaptcha()
+})
+
+onBeforeUnmount(() => {
+  if (sendCountdownTimer) window.clearInterval(sendCountdownTimer)
 })
 </script>
 

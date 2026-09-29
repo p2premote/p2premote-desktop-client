@@ -538,7 +538,6 @@ export default {
       version_outdated: '当前客户端版本需要更新后才能继续使用',
       success: '登录成功',
       failed_with_error: '登录失败: {error}',
-      settings_save_mismatch: '登录偏好保存后校验不一致，请重试',
     },
   },
 

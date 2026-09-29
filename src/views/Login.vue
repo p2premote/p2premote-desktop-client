@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { invoke, openClientDownloadPage } from '../runtime/bridge'
@@ -83,7 +83,6 @@ const authStore = useAuthStore()
 
 const loginFormRef = ref<FormInstance>()
 const loading = ref(false)
-const alive = ref(true)
 const hasSavedCredential = ref(false)
 const SAVED_PASSWORD_SENTINEL = '●'.repeat(12)
 
@@ -214,39 +213,24 @@ async function handleLogin() {
 
     }
 
-    // 勾选状态已即时保存；只有服务端确认登录或会话恢复成功后，才把账号
-    // 标识与本次设置关联。密码不会传给登录设置保存命令。
+    // 勾选状态已由 watch 即时保存；这里只在登录确认成功后把账号标识与
+    // 设置关联（identifier 为空时后端保留已有标识）。密码不会传入。
     await invoke('save_login_settings', {
       identifier: loginSettings.identifier,
       rememberMe: loginSettings.rememberMe,
       autoLogin: loginSettings.autoLogin
     })
-    const saved = await invoke<{ remember_me: boolean; auto_login: boolean }>('get_settings')
-    if (saved.remember_me !== loginSettings.rememberMe || saved.auto_login !== loginSettings.autoLogin) {
-      throw new Error(t('login.message.settings_save_mismatch'))
-    }
-    if (alive.value) {
-      ElMessage.success(t('login.message.success'))
-      router.push('/')
-    }
+    ElMessage.success(t('login.message.success'))
+    router.push('/')
   } catch (error) {
-    if (alive.value) {
-      ElMessage.error(t('login.message.failed_with_error', { error }))
-    }
+    ElMessage.error(t('login.message.failed_with_error', { error }))
   } finally {
-    if (alive.value) {
-      loading.value = false
-    }
+    loading.value = false
   }
 }
 
 onMounted(() => {
-  alive.value = true
   loadSavedLogin()
-})
-
-onBeforeUnmount(() => {
-  alive.value = false
 })
 </script>
 

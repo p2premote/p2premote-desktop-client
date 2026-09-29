@@ -16,7 +16,6 @@ export type AppLocale = (typeof SUPPORTED_LOCALES)[number]['value']
 /// 探测系统语言并映射到支持的语言代码。
 /// 中文系（zh-*）→ zh-CN；其余 → en。
 export function detectSystemLocale(): AppLocale {
-  if (typeof navigator === 'undefined') return 'zh-CN'
   const lang = (navigator.language || 'zh-CN').toLowerCase()
   if (lang.startsWith('zh')) return 'zh-CN'
   return 'en'

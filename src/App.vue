@@ -481,6 +481,13 @@ async function closeSettings(done: () => void) {
   done()
 }
 import { useLocale } from './composables/useLocale'
+import { errorMessage } from './utils/errorMessage'
+import type {
+  ActiveTunnelJobStatus,
+  BackgroundServiceStatus,
+  InboundApprovalStatus,
+  WsEventPayload,
+} from './types/api'
 import { SUPPORTED_LOCALES } from './i18n'
 
 // 工作区只在登录后按需载入，避免把三个功能页都放进启动包。
@@ -686,7 +693,7 @@ async function openWebAccessDialog() {
     webCurrentSourceIp.value = settings.source_ip
     webAccessDialogVisible.value = true
   } catch (error) {
-    ElMessage.error(t('app.web_admin.load_failed', { error: normalizeError(error) }))
+    ElMessage.error(t('app.web_admin.load_failed', { error: errorMessage(error, t('common.unknown_error')) }))
   }
 }
 
@@ -850,65 +857,9 @@ async function copyContextSelection() {
   }
 }
 
-interface WsEventPayload {
-  msg_type: string
-  data: Record<string, any>
-}
-
 interface InviteInfo {
   invite_code: string
   invite_link: string
-}
-
-interface BackgroundServiceStatus {
-  service: {
-    installed: boolean
-    running: boolean
-    enabled: boolean
-    raw_state: string
-  }
-  runtime?: {
-    service_session_id?: string
-    logged_in: boolean
-    device_id?: number | null
-    device_uuid?: string | null
-    ws_connected: boolean
-    last_heartbeat_at?: number | null
-    last_error?: string | null
-    public_ip?: string | null
-    wgvpn_sessions?: Array<{
-      peer_device_id: number
-      is_active: boolean
-      approval_pending?: boolean
-      virtual_ip: string
-      peer_virtual_ip: string
-      tunnel_name: string
-    }>
-    tunnel_lifecycles?: Array<{
-      peer_device_id: number
-      role: 'active' | 'passive'
-      source_username?: string
-      peer_device_name?: string
-      peer_device_alias?: string
-    }>
-    pending_inbound_approvals?: InboundApprovalStatus[]
-    active_tunnel_jobs?: ActiveTunnelJobStatus[]
-  } | null
-  machine_logged_in: boolean
-  config_path: string
-  log_dir: string
-}
-
-interface InboundApprovalStatus {
-  attempt_id: string
-  source_user_id: number
-  source_username?: string
-  source_email?: string
-  source_device_id: number
-  source_device_name?: string
-  source_device_alias?: string
-  requested_at: number
-  expires_at: number
 }
 
 const pendingInboundApprovals = ref<InboundApprovalStatus[]>([])
@@ -947,7 +898,7 @@ async function resolveInboundApproval(allow: boolean) {
       item => item.attempt_id !== approval.attempt_id,
     )
   } catch (error) {
-    ElMessage.error(normalizeError(error))
+    ElMessage.error(errorMessage(error, t('common.unknown_error')))
   } finally {
     inboundApprovalSubmitting.value = false
   }
@@ -955,26 +906,6 @@ async function resolveInboundApproval(allow: boolean) {
 
 function approveInboundApproval() { void resolveInboundApproval(true) }
 function rejectInboundApproval() { void resolveInboundApproval(false) }
-
-interface ActiveTunnelJobStatus {
-  target_device_id: number
-  target_device_uuid: string
-  state: 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
-  attempt: number
-  max_attempts: number
-  message: string
-  updated_at: number
-  result?: {
-    success: boolean
-    reused: boolean
-    local_port: number
-    rdp_address: string
-    remote_address?: string
-    remote_protocol?: string
-    message: string
-    warning?: string | null
-  } | null
-}
 
 interface ActiveTunnelJobNotification {
   key: string
@@ -1064,16 +995,6 @@ const memberLevelLabel = computed(() => {
   }
   return t('app.user.member_free')
 })
-
-function normalizeError(error: unknown): string {
-  if (typeof error === 'string') {
-    return error
-  }
-  if (error instanceof Error) {
-    return error.message
-  }
-  return String(error || t('common.unknown_error'))
-}
 
 function isServiceReady(status: BackgroundServiceStatus | null): boolean {
   return Boolean(status?.service?.running || status?.runtime)
@@ -1170,7 +1091,7 @@ async function runStartupPreflight(): Promise<boolean> {
     await setStartupStep(t('app.startup_status.ready'), 90)
     return true
   } catch (error) {
-    const message = normalizeError(error)
+    const message = errorMessage(error, t('common.unknown_error'))
     showStartupPreflight.value = true
     startupError.value = message
     await setStartupStep(t('app.startup_status.failed'))
@@ -1193,6 +1114,7 @@ async function ensureServiceRealtimeOwnership() {
 }
 
 /// 收到 service-status-changed 推送时，直接更新本地状态，避免再调 get_service_status
+/// pendingInboundApprovals 由上方 watch 从 runtime 统一派生（含新审批闪烁提示）。
 function updateServiceStatusFromEvent(runtime: any) {
   if (backgroundServiceStatus.value) {
     backgroundServiceStatus.value = {
@@ -1204,9 +1126,6 @@ function updateServiceStatusFromEvent(runtime: any) {
       },
     }
   }
-  pendingInboundApprovals.value = Array.isArray(runtime?.pending_inbound_approvals)
-    ? runtime.pending_inbound_approvals
-    : []
   void handleActiveTunnelJobStatuses(runtime?.active_tunnel_jobs)
   void handlePassiveWgvpnSessions(runtime)
 }
@@ -1330,7 +1249,6 @@ async function handleActiveTunnelJobStatuses(jobs?: ActiveTunnelJobStatus[]) {
   }
 
   for (const job of jobs) {
-    window.dispatchEvent(new CustomEvent('p2p-active-tunnel-job-updated', { detail: job }))
     if (job.state !== 'succeeded' && job.state !== 'failed' && job.state !== 'cancelled') {
       continue
     }
@@ -1353,7 +1271,6 @@ async function handleActiveTunnelJobStatuses(jobs?: ActiveTunnelJobStatus[]) {
     if (job.state === 'succeeded') {
       // 通知文案只显示对端虚拟 IP，端口属于后续 RDP 连接细节，由远程协助页单独处理。
       const address = (job.result?.remote_address || job.result?.rdp_address || '').replace(/:\d+$/, '')
-      window.dispatchEvent(new CustomEvent('p2p-active-tunnel-job-completed', { detail: job }))
       await notifyActiveTunnelJobResult({
         key,
         title: t('app.notification.tunnel_built_title'),
@@ -1398,7 +1315,7 @@ async function handleAutoStartChange(val: boolean) {
     } catch (e) {
       console.warn('[App] 开启自启前查询登录偏好失败:', e)
       autoStart.value = false
-      ElMessage.error(t('app.auto_login.settings_query_failed', { error: normalizeError(e) }))
+      ElMessage.error(t('app.auto_login.settings_query_failed', { error: errorMessage(e, t('common.unknown_error')) }))
       return
     }
 
@@ -1605,12 +1522,11 @@ async function refreshUserInfo() {
   await authStore.fetchUserInfo()
 }
 
-async function restoreServiceSession(token: string, source: string) {
+async function restoreServiceSession(token: string) {
   authStore.setToken(token)
   await refreshUserInfo()
   await ensureServiceRealtimeOwnership()
   await deviceStore.fetchDevices({ force: true })
-  console.log(`[App] 已从 ${source} 恢复 service 会话`)
 }
 
 async function checkForUpdates(manual = false) {
@@ -1734,7 +1650,6 @@ async function bootstrapApp() {
       device_identity_rebuilt?: boolean
       device_identity_message?: string | null
     }>('service-status-changed', (event) => {
-      console.log('[App] service status changed:', event.payload)
       // StatusChanged 推送已携带完整状态，直接更新，无需再调 get_service_status
       if (event.payload) {
         updateServiceStatusFromEvent(event.payload)
@@ -1797,9 +1712,9 @@ async function bootstrapApp() {
     )
     if (token) {
       try {
-        await restoreServiceSession(token, '自动登录')
+        await restoreServiceSession(token)
       } catch (e) {
-        throw new Error(`自动登录后恢复前端会话失败: ${normalizeError(e)}`)
+        throw new Error(`自动登录后恢复前端会话失败: ${errorMessage(e, t('common.unknown_error'))}`)
       }
     } else {
       const serviceLoggedIn = await invoke<boolean>('is_logged_in')
@@ -1807,9 +1722,9 @@ async function bootstrapApp() {
       // 保存但未启用自动登录的 refresh token 只能在登录页由用户手动恢复。
       if (serviceLoggedIn) {
         try {
-          await restoreServiceSession('__service_session__', '后台 service 已登录状态')
+          await restoreServiceSession('__service_session__')
         } catch (e) {
-          throw new Error(`后台 service 会话恢复失败: ${normalizeError(e)}`)
+          throw new Error(`后台 service 会话恢复失败: ${errorMessage(e, t('common.unknown_error'))}`)
         }
       }
     }
@@ -1825,7 +1740,7 @@ async function bootstrapApp() {
   } catch (e) {
     console.error('[App] 启动检查失败:', e)
     showStartupPreflight.value = true
-    startupError.value = normalizeError(e)
+    startupError.value = errorMessage(e, t('common.unknown_error'))
     await setStartupStep(t('app.startup_status.failed'))
   }
 

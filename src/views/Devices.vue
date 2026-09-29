@@ -148,8 +148,8 @@
 				  <div class="action-group-label">{{ $t('devices.detail.connection.remote_group') }}</div>
 				  <div class="action-grid">
                 <el-tooltip
-                  v-if="supportsBuiltInDesktop(selectedDevice)"
-                  :content="remoteAccessTooltip(selectedDevice)"
+                  v-if="isWindowsDevice(selectedDevice)"
+                  :content="$t('devices.detail.connection.remote_desktop_tooltip')"
                   placement="top"
                 >
                   <div class="action-tile-wrap">
@@ -157,11 +157,11 @@
                       type="button"
                       class="action-tile"
                       :disabled="!isTunnelConnected(selectedDevice)"
-                      :aria-label="`${remoteAccessActionLabel(selectedDevice)}. ${remoteAccessTooltip(selectedDevice)}`"
+                      :aria-label="`${$t('devices.detail.connection.remote_desktop')}. ${$t('devices.detail.connection.remote_desktop_tooltip')}`"
                       @click="copyRemoteDesktopAddress(selectedDevice!)"
                     >
                       <el-icon><CopyDocument /></el-icon>
-                      <span>{{ remoteAccessActionLabel(selectedDevice) }}</span>
+                      <span>{{ $t('devices.detail.connection.remote_desktop') }}</span>
                       <span class="action-help" aria-hidden="true"><el-icon><InfoFilled /></el-icon></span>
                     </button>
                   </div>
@@ -188,7 +188,7 @@
                 </el-tooltip>
 
                 <el-tooltip
-                  v-if="showNativeDesktopAction()"
+                  v-if="showLocalProcessActions"
                   :content="$t('devices.detail.connection.p2premote_desktop_tooltip')"
                   placement="top"
                 >
@@ -354,6 +354,8 @@ import {
 import mstscIcon from '../assets/icons/mstsc.png'
 import rustdeskTinyIcon from '../assets/icons/rustdesk-tiny.png'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
+import { errorMessage } from '../utils/errorMessage'
+import type { ActiveTunnelJobStatus, TunnelLifecycleStatus } from '../types/api'
 import { useAuthStore } from '../stores/auth'
 import DevicePlatformIcon from '../components/DevicePlatformIcon.vue'
 import { useConnectingDots } from '../composables/useConnectingDots'
@@ -374,21 +376,6 @@ interface TunnelInfo {
   latency_ms?: number | null
 }
 
-interface ActiveTunnelJobStatus {
-  tcp_retry_recommended?: boolean
-  target_device_id: number
-  target_device_uuid: string
-  state: 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
-  attempt: number
-  max_attempts: number
-  message: string
-  result?: {
-    success: boolean
-    warning?: string | null
-  } | null
-  updated_at: number
-}
-
 interface WgvpnJobStatus {
   peer_device_id: number
   is_active: boolean
@@ -397,20 +384,6 @@ interface WgvpnJobStatus {
   max_attempts: number
   message: string
   updated_at: number
-}
-
-interface TunnelLifecycleStatus {
-  peer_device_id: number
-  role: 'active' | 'passive'
-  state: 'not_established' | 'connecting' | 'awaiting_approval' | 'connected' | 'recovering'
-  attempt: number
-  max_attempts: number
-  stage?: string | null
-  last_result: 'none' | 'user_disconnected' | 'peer_disconnected' | 'attempt_failed' | 'health_grace_expired' | 'cancelled'
-  error_code?: string | null
-  message?: string | null
-  virtual_ip?: string | null
-  peer_virtual_ip?: string | null
 }
 
 const deviceStore = useDeviceStore()
@@ -489,8 +462,6 @@ onMounted(async () => {
 
   window.addEventListener('focus', handleForegroundResume)
   document.addEventListener('visibilitychange', handleForegroundResume)
-  window.addEventListener('p2p-active-tunnel-job-updated', handleActiveTunnelJobUpdated)
-  window.addEventListener('p2p-active-tunnel-job-completed', handleActiveTunnelJobCompleted)
   listen<any>('service-status-changed', (event) => {
     applyCurrentDeviceUUIDFromRuntime(event.payload)
     applyTunnelRuntimeStatus(event.payload)
@@ -508,8 +479,6 @@ onUnmounted(() => {
   }
   window.removeEventListener('focus', handleForegroundResume)
   document.removeEventListener('visibilitychange', handleForegroundResume)
-  window.removeEventListener('p2p-active-tunnel-job-updated', handleActiveTunnelJobUpdated)
-  window.removeEventListener('p2p-active-tunnel-job-completed', handleActiveTunnelJobCompleted)
   unlistenServiceStatus?.()
   unlistenServiceStatus = null
 })
@@ -569,6 +538,7 @@ function deviceTunnelLifecycle(device: DeviceInfo | null): TunnelLifecycleStatus
       max_attempts: 30,
       last_result: 'none',
       peer_virtual_ip: tunnel.virtual_ip,
+      updated_at: 0,
     }
   }
   const job = activeTunnelJob(device)
@@ -580,6 +550,7 @@ function deviceTunnelLifecycle(device: DeviceInfo | null): TunnelLifecycleStatus
     max_attempts: job?.max_attempts || 30,
     last_result: job?.state === 'failed' ? 'attempt_failed' : job?.state === 'cancelled' ? 'cancelled' : 'none',
     message: job?.message,
+    updated_at: job?.updated_at || 0,
   }
 }
 
@@ -627,9 +598,9 @@ function tunnelLifecycleDots(device: DeviceInfo | null): string {
 function tunnelLifecycleDescription(device: DeviceInfo | null): string {
   const lifecycle = deviceTunnelLifecycle(device)
   if (lifecycle.state === 'connecting') {
-    const attempt = lifecycle.attempt || 1
+    const attempt = lifecycle.attempt
     const suffix = lifecycle.message ? ` · ${lifecycle.message}` : ''
-    return t('devices.lifecycle.desc_connecting', { attempt, max: lifecycle.max_attempts || 30, suffix })
+    return t('devices.lifecycle.desc_connecting', { attempt, max: lifecycle.max_attempts, suffix })
   }
   if (lifecycle.state === 'connected') {
     const ip = lifecycle.peer_virtual_ip || tunnelVirtualIp(device)
@@ -681,20 +652,6 @@ function warnIfWindowsRdpUnavailable(device: DeviceInfo): boolean {
   return true
 }
 
-function isMacOSDevice(device: DeviceInfo | null): boolean {
-  if (!device) return false
-  const text = `${device.device_type || ''} ${device.system_version || ''}`.toLocaleLowerCase()
-  return text.includes('macos') || text.includes('mac os') || text.includes('darwin')
-}
-
-function supportsBuiltInDesktop(device: DeviceInfo | null): boolean {
-  return isWindowsDevice(device)
-}
-
-function showNativeDesktopAction(): boolean {
-  return showLocalProcessActions
-}
-
 function deviceCapabilities(device: DeviceInfo | null): string[] {
   return Array.isArray(device?.capabilities) ? device.capabilities : []
 }
@@ -709,20 +666,11 @@ function capabilityLabel(capability: string): string {
     : capability
 }
 
+/// 远程访问协议只认后端显式上报的 remote_access.protocol；
+/// 缺失时不按 device_type 猜测，相关操作按钮保持隐藏以暴露契约变化。
 function remoteAccessProtocol(device: DeviceInfo | null): string {
   if (!device) return ''
-  const explicitProtocol = device.remote_access?.protocol?.trim().toLowerCase()
-  if (explicitProtocol) return explicitProtocol
-  if (isMacOSDevice(device)) return 'vnc'
-  return isWindowsDevice(device) ? 'rdp' : ''
-}
-
-function remoteAccessActionLabel(_device: DeviceInfo | null): string {
-  return t('devices.detail.connection.remote_desktop')
-}
-
-function remoteAccessTooltip(_device: DeviceInfo | null): string {
-  return t('devices.detail.connection.remote_desktop_tooltip')
+  return device.remote_access?.protocol?.trim().toLowerCase() || ''
 }
 
 function remoteAccessPortLabel(device: DeviceInfo | null): string {
@@ -835,7 +783,7 @@ async function alignCurrentDeviceUUIDFromService() {
 }
 
 function applyCurrentDeviceUUIDFromRuntime(runtime: any) {
-  const serviceUUID = runtime?.current_device?.device_uuid || runtime?.device_uuid
+  const serviceUUID = runtime?.current_device?.device_uuid
   currentDeviceUUID.value = typeof serviceUUID === 'string' ? serviceUUID.trim() : ''
 }
 
@@ -863,20 +811,12 @@ async function handleForegroundResume() {
   await autoRefreshDevicesInForeground()
 }
 
-async function handleActiveTunnelJobCompleted() {
-  await refreshTunnelStatusMap()
-}
-
-async function handleActiveTunnelJobUpdated() {
-  await refreshTunnelStatusMap()
-}
-
 async function refreshTunnelStatusMap() {
   try {
     const serviceStatus = await invoke<any>('get_service_status').catch(() => null)
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
   } catch (e) {
-    console.log('[Devices] 刷新隧道状态失败:', e)
+    console.error('[Devices] 刷新隧道状态失败:', e)
   }
 }
 
@@ -992,7 +932,7 @@ async function handleCancelRecoveringTunnel(device: DeviceInfo) {
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
     ElMessage.success(t('devices.message.auto_tunnel_cancelled'))
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as any)?.message || t('common.unknown_error')
+    const message = errorMessage(error, t('common.unknown_error'))
     ElMessage.error(t('devices.message.auto_tunnel_cancel_failed', { error: message }))
   } finally {
     const latest = new Set(disconnectingIds.value)
@@ -1027,7 +967,7 @@ async function handleRetryTunnel(device: DeviceInfo) {
     ElMessage.success(t('devices.message.reconnect_started'))
     await refreshTunnelStatusMap()
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as any)?.message || t('common.unknown_error')
+    const message = errorMessage(error, t('common.unknown_error'))
     ElMessage.error(t('devices.message.reconnect_failed', { error: message }))
     await refreshTunnelStatusMap()
   } finally {
@@ -1059,7 +999,7 @@ async function startTunnelSilently(device: DeviceInfo) {
     })
     ElMessage.success(t('devices.message.auto_tunnel_started'))
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as any)?.message || t('common.unknown_error')
+    const message = errorMessage(error, t('common.unknown_error'))
     await ElMessageBox.alert(
       t('devices.message.preflight_failed_body', { error: message }),
       t('devices.message.preflight_failed_title'),
@@ -1112,7 +1052,7 @@ async function handleDisconnectTunnel(device: DeviceInfo) {
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
     ElMessage.success(t('devices.message.tunnel_disconnected'))
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as any)?.message || t('common.unknown_error')
+    const message = errorMessage(error, t('common.unknown_error'))
     ElMessage.error(t('devices.message.disconnect_failed', { error: message }))
   } finally {
     const latest = new Set(disconnectingIds.value)
@@ -1177,7 +1117,7 @@ async function launchP2pRemoteDesktop(device: DeviceInfo) {
     if (addressCopied) {
       ElMessage.warning(t('devices.message.desktop_address_copied', { address }))
     } else {
-      const msg = typeof e === 'string' ? e : (e as any)?.message || t('common.unknown_error')
+      const msg = errorMessage(e, t('common.unknown_error'))
       ElMessage.error(t('devices.message.connect_failed', { error: msg }))
     }
   }

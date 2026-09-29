@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '../runtime/bridge'
 import { useDeviceStore } from './device'
+import type { DeviceInfo } from '../types/api'
 import i18n from '../i18n'
 
 export interface UserInfo {
@@ -15,30 +16,6 @@ export interface UserInfo {
   trial_used?: boolean
   trial_remaining_days?: number
   is_pro?: boolean
-}
-
-export interface DeviceInfo {
-  device_id: number
-  device_uuid: string
-  device_name: string
-  device_alias?: string
-  device_type: string
-  status: string
-  lan_ip?: string
-  rdp_enabled: boolean
-  rdp_port: number
-  remote_access?: {
-    protocol: 'rdp' | 'vnc' | 'custom' | string
-    enabled: boolean
-    port: number
-  }
-  public_ip?: string
-  system_version: string
-  capabilities?: string[]
-  client_version?: string
-  service_port: number
-  connect_code?: string
-  created_at?: string
 }
 
 interface LoginResponse {
@@ -64,16 +41,13 @@ export const useAuthStore = defineStore('auth', () => {
       if (status?.runtime?.current_device) {
         currentDevice.value = status.runtime.current_device
       }
-      console.log('[Service] synced background service runtime config')
       return status
     } catch (e) {
-      console.error('[Service] sync runtime config failed:', e)
       throw e
     }
   }
 
   async function login(identifier: string, password: string) {
-    console.log('[AuthStore] 开始登录:', identifier)
     deviceStore.resetDevices()
 
     const response = await invoke<LoginResponse>('login', {
@@ -85,25 +59,10 @@ export const useAuthStore = defineStore('auth', () => {
     if (response.code === 0 && response.data) {
       // service 是令牌唯一管理者，UI 用占位符表示已登录，不持有真实 token
       token.value = '__service_session__'
-      userInfo.value = {
-        user_id: response.data.user.user_id,
-        username: response.data.user.username,
-        email: response.data.user.email,
-        member_level: response.data.user.member_level,
-        member_expire_time: response.data.user.member_expire_time,
-        trial_start_time: response.data.user.trial_start_time,
-        trial_expire_time: response.data.user.trial_expire_time,
-        trial_used: response.data.user.trial_used,
-        trial_remaining_days: response.data.user.trial_remaining_days,
-        is_pro: response.data.user.is_pro
-      }
-      console.log('[AuthStore] 登录成功, user:', userInfo.value.username)
+      userInfo.value = response.data.user
 
       try {
-        const status = await syncServiceRuntimeConfig()
-        if (status?.runtime?.current_device) {
-          console.log('[AuthStore] service 设备配置已同步:', JSON.stringify(status.runtime.current_device))
-        }
+        await syncServiceRuntimeConfig()
         await deviceStore.fetchDevices({ force: true })
       } catch (e) {
         console.error('[AuthStore] service 配置同步失败:', e)
@@ -111,7 +70,6 @@ export const useAuthStore = defineStore('auth', () => {
       return true
     }
 
-    console.error('[AuthStore] 登录失败:', response.msg)
     // Tauri/service 已按当前 locale 本地化；旧服务端仍由 core 回退到 msg。
     throw new Error(response.msg || i18n.global.t('errors.login_failed'))
   }

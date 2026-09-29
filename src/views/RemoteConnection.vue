@@ -205,6 +205,8 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { Close, CopyDocument, Monitor } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
+import { errorMessage } from '../utils/errorMessage'
+import type { ActiveTunnelJobStatus, BackgroundServiceStatus } from '../types/api'
 import { useConnectingDots } from '../composables/useConnectingDots'
 const { t } = useI18n()
 
@@ -212,37 +214,6 @@ interface AnonymousConnectResponse {
   success: boolean
   message: string
   device?: DeviceInfo
-}
-
-interface BackgroundServiceStatus {
-  service?: {
-    running: boolean
-  }
-  runtime?: {
-    logged_in: boolean
-    ws_connected: boolean
-    current_device?: DeviceInfo | null
-    invite_temporary_password?: string | null
-    active_tunnel_jobs?: ActiveTunnelJobStatus[]
-  } | null
-}
-
-interface ActiveTunnelJobStatus {
-  target_device_id: number
-  target_device_uuid: string
-  state: 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
-  attempt: number
-  max_attempts: number
-  message: string
-  updated_at: number
-  tcp_retry_recommended?: boolean
-  result?: {
-    success: boolean
-    local_port: number
-    rdp_address: string
-    remote_address?: string
-    remote_protocol?: string
-  }
 }
 
 const deviceStore = useDeviceStore()
@@ -358,13 +329,11 @@ onMounted(() => {
   }).catch(error => {
     console.warn('[RemoteConnection] listen service status failed:', error)
   })
-  window.addEventListener('p2p-active-tunnel-job-updated', handleActiveTunnelJobEvent)
 })
 
 onUnmounted(() => {
   unlistenServiceStatus?.()
   unlistenServiceStatus = null
-  window.removeEventListener('p2p-active-tunnel-job-updated', handleActiveTunnelJobEvent)
 })
 
 async function refreshLocalDevice() {
@@ -450,7 +419,7 @@ async function generateAndSaveTemporaryPassword(showSuccess: boolean) {
       ElMessage.success(t('remote.message.password_generated'))
     }
   } catch (error) {
-    passwordError.value = typeof error === 'string' ? error : (error as Error)?.message || t('common.unknown_error')
+    passwordError.value = errorMessage(error, t('common.unknown_error'))
     ElMessage.error(t('remote.message.password_generate_failed', { error: passwordError.value }))
   } finally {
     savingPassword.value = false
@@ -551,7 +520,7 @@ async function handleConnect() {
     updateActiveJobFromList(serviceStatus?.runtime?.active_tunnel_jobs)
     ElMessage.success(t('remote.message.auto_tunnel_started'))
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as Error)?.message || t('remote.message.remote_failed')
+    const message = errorMessage(error, t('remote.message.remote_failed'))
     ElMessage.error(message)
   } finally {
     connecting.value = false
@@ -566,21 +535,13 @@ function updateActiveJobFromList(jobs?: ActiveTunnelJobStatus[]) {
   }
 }
 
-function handleActiveTunnelJobEvent(event: Event) {
-  if (!verifiedDevice.value) return
-  const job = (event as CustomEvent<ActiveTunnelJobStatus>).detail
-  if (job?.target_device_id === verifiedDevice.value.device_id) {
-    activeJob.value = job
-  }
-}
-
 async function cancelActiveTunnelJob() {
   if (!verifiedDevice.value) return
   try {
     await invoke('stop_active_tunnel_job', { targetDeviceId: verifiedDevice.value.device_id })
     ElMessage.success(t('remote.message.auto_tunnel_cancelled'))
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as Error)?.message || t('remote.message.cancel_failed')
+    const message = errorMessage(error, t('remote.message.cancel_failed'))
     ElMessage.error(t('remote.message.auto_tunnel_cancel_failed', { error: message }))
   }
 }

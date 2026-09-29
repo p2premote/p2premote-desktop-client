@@ -51,7 +51,7 @@
                     <div v-if="shouldShowLifecycleMessage(tunnel)" class="tunnel-alert">
                       <span v-if="tunnel.lifecycle_message">{{ tunnel.lifecycle_message }}</span>
                       <span v-if="tunnel.health_state === 'degraded'">
-                        {{ $t('tunnel.info.heartbeat_failed', { count: tunnel.consecutive_failures || 12 }) }}
+                        {{ $t('tunnel.info.heartbeat_failed', { count: tunnel.consecutive_failures }) }}
                       </span>
                       <span v-if="tunnel.health_state === 'degraded' && tunnel.health_grace_deadline">
                         {{ $t('tunnel.info.grace_remaining', { remaining: formatGraceRemaining(tunnel.health_grace_deadline) }) }}
@@ -121,7 +121,9 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import { ArrowDown, CopyDocument, Monitor, Refresh } from '@element-plus/icons-vue'
 import { useDeviceStore } from '../stores/device'
-const { t } = useI18n()
+import type { TunnelLifecycleStatus } from '../types/api'
+import { errorMessage } from '../utils/errorMessage'
+const { t, locale } = useI18n()
 
 interface TunnelItem {
   role: 'active' | 'passive'
@@ -162,28 +164,6 @@ interface WgvpnSessionStatus {
   latency_ms?: number | null
   received_bytes?: number
   transmitted_bytes?: number
-}
-
-interface TunnelLifecycleStatus {
-  peer_device_id: number
-  source_user_id?: number
-  source_username?: string
-  source_email?: string
-  peer_device_name?: string
-  peer_device_alias?: string
-  peer_public_ip?: string
-  role: 'active' | 'passive'
-  state: 'not_established' | 'connecting' | 'awaiting_approval' | 'connected' | 'recovering'
-  attempt: number
-  max_attempts: number
-  message?: string | null
-  last_result: string
-  virtual_ip?: string | null
-  peer_virtual_ip?: string | null
-  health_failures?: number
-  health_grace_deadline?: number | null
-  connected_at?: number | null
-  updated_at: number
 }
 
 interface RuntimeStatus {
@@ -299,7 +279,7 @@ async function refreshStatus() {
     const status = await invoke<ServiceStatusResponse>('refresh_tunnel_status')
     runtimeStatus.value = status.runtime || null
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as Error)?.message || t('common.unknown_error')
+    const message = errorMessage(error, t('common.unknown_error'))
     ElMessage.error(t('tunnel.message.fetch_failed', { error: message }))
   } finally {
     loading.value = false
@@ -337,7 +317,7 @@ async function disconnectTunnel(tunnel: TunnelItem) {
     runtimeStatus.value = status.runtime || null
     ElMessage.success(t('tunnel.message.disconnected'))
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as Error)?.message || t('common.unknown_error')
+    const message = errorMessage(error, t('common.unknown_error'))
     ElMessage.error(t('tunnel.message.disconnect_failed', { error: message }))
   } finally {
     const latest = new Set(disconnectingIds.value)
@@ -370,7 +350,7 @@ async function retryTunnel(tunnel: TunnelItem) {
     ElMessage.success(t('tunnel.message.reconnect_started'))
     await refreshStatus()
   } catch (error) {
-    const message = typeof error === 'string' ? error : (error as Error)?.message || t('common.unknown_error')
+    const message = errorMessage(error, t('common.unknown_error'))
     ElMessage.error(t('tunnel.message.reconnect_failed', { error: message }))
     await refreshStatus()
   } finally {
@@ -386,7 +366,7 @@ function tunnelKey(tunnel: TunnelItem): string {
 
 function lifecycleLabel(tunnel: TunnelItem): string {
   if (tunnel.lifecycle_state === 'connecting') {
-    return t('tunnel.info.building_progress', { attempt: tunnel.attempt || 1, max: tunnel.max_attempts || 30 })
+    return t('tunnel.info.building_progress', { attempt: tunnel.attempt, max: tunnel.max_attempts })
   }
   return t(`tunnel.state.${tunnel.lifecycle_state}`)
 }
@@ -459,7 +439,7 @@ function formatTime(value?: number): string {
   if (!value) return t('common.unknown')
   const date = new Date(value * 1000)
   if (Number.isNaN(date.getTime())) return t('common.unknown')
-  return date.toLocaleString('zh-CN', { hour12: false })
+  return date.toLocaleString(locale.value, { hour12: false })
 }
 
 function formatGraceRemaining(deadline: number): string {

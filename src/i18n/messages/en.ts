@@ -515,7 +515,6 @@ const en = {
       version_outdated: 'Update the client before continuing',
       success: 'Signed in',
       failed_with_error: 'Sign-in failed: {error}',
-      settings_save_mismatch: 'The saved sign-in preferences did not match. Please try again.',
     },
   },
 
