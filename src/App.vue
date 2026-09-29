@@ -983,11 +983,6 @@ interface ActiveTunnelJobNotification {
   type: 'success' | 'error' | 'info'
 }
 
-interface RequiredClientFile {
-  name: string
-  path: string
-}
-
 const router = useRouter()
 const authStore = useAuthStore()
 const deviceStore = useDeviceStore()
@@ -1054,7 +1049,6 @@ const updateInfo = ref({
   minSupported: '',
   releaseNotes: ''
 })
-let wsReconnectTimer: ReturnType<typeof window.setInterval> | null = null
 const isMacOS = /Macintosh|Mac OS X/i.test(navigator.userAgent)
 const titlebarDragEnabled = isTauriRuntime() && !/Linux/i.test(navigator.userAgent)
 const titlebarDragAttributes = titlebarDragEnabled
@@ -1143,8 +1137,7 @@ async function runStartupPreflight(): Promise<boolean> {
   await setStartupStep(t('app.startup_status.verifying_files'), 0)
 
   try {
-    const files = await invoke<RequiredClientFile[]>('check_required_client_files')
-    void files
+    await invoke('check_required_client_files')
     await setStartupStep(t('app.startup_status.checking_service'), 25)
 
     const status = await withTimeout(
@@ -1187,17 +1180,6 @@ async function runStartupPreflight(): Promise<boolean> {
   }
 }
 
-function clearWsReconnectTimer() {
-  if (wsReconnectTimer !== null) {
-    window.clearInterval(wsReconnectTimer)
-    wsReconnectTimer = null
-  }
-}
-
-function releaseUiRealtimeOwnership() {
-  clearWsReconnectTimer()
-}
-
 async function ensureServiceRealtimeOwnership() {
   if (!authStore.isLoggedIn) {
     return
@@ -1208,7 +1190,6 @@ async function ensureServiceRealtimeOwnership() {
   } catch (_e) {
     // service 可能还没准备好，忽略
   }
-  releaseUiRealtimeOwnership()
 }
 
 /// 收到 service-status-changed 推送时，直接更新本地状态，避免再调 get_service_status
@@ -1698,14 +1679,12 @@ async function setupWsListeners() {
   wsListenersInitialized = true
   await listen<WsEventPayload>('ws-connected', async () => {
     console.log('[App] [WS] connected')
-    clearWsReconnectTimer()
     // 建连前拉取的列表可能把本机标记为离线；连接事件必须绕过普通刷新节流。
     await deviceStore.fetchDevices({ force: true })
   })
 
   await listen<WsEventPayload>('ws-disconnected', () => {
     console.log('[App] [WS] UI websocket disconnected, realtime is owned by background service')
-    clearWsReconnectTimer()
   })
 
   await listen<WsEventPayload>('ws-p2p-start', async () => {
@@ -1810,8 +1789,6 @@ async function bootstrapApp() {
       console.log('[App] service IPC reconnect stopped (logged out or app exiting)')
     })
 
-    releaseUiRealtimeOwnership()
-
     await setStartupStep(t('app.startup_status.checking_login'), 96)
     const token = await withTimeout(
       invoke<string>('try_auto_login'),
@@ -1904,7 +1881,6 @@ watch(
       pendingActiveTunnelJobNotifications.value = []
       return
     }
-    releaseUiRealtimeOwnership()
   }
 )
 </script>

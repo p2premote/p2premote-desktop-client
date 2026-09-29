@@ -367,10 +367,6 @@ interface TunnelSpeedTestResult {
 
 interface TunnelInfo {
   network?: string
-  local_port: number
-  rdp_address: string
-  remote_address?: string
-  remote_protocol?: string
   virtual_ip?: string
   exposed_lan_cidrs?: string[]
   health_state?: 'connected' | 'degraded'
@@ -388,10 +384,6 @@ interface ActiveTunnelJobStatus {
   message: string
   result?: {
     success: boolean
-    local_port: number
-    rdp_address: string
-    remote_address?: string
-    remote_protocol?: string
     warning?: string | null
   } | null
   updated_at: number
@@ -897,10 +889,6 @@ function applyTunnelRuntimeStatus(runtime: any) {
         newJobMap[job.target_device_id] = job
         if (job.state === 'succeeded' && job.result?.success) {
           newMap[job.target_device_id] = {
-            local_port: job.result.local_port || 0,
-            rdp_address: job.result.rdp_address || '',
-            remote_address: job.result.remote_address || job.result.rdp_address || '',
-            remote_protocol: job.result.remote_protocol || 'rdp',
             role: 'active',
           }
         }
@@ -928,11 +916,8 @@ function applyTunnelRuntimeStatus(runtime: any) {
       for (const session of wgvpnSessions) {
         const role: 'active' | 'passive' = session.is_active ? 'active' : 'passive'
         liveRoleMap.set(session.peer_device_id, role)
-        const existing = newMap[session.peer_device_id]
         newMap[session.peer_device_id] = {
           network: session.network || '',
-          local_port: existing?.local_port || session.local_forward_port || 0,
-          rdp_address: existing?.rdp_address || (session.peer_virtual_ip ? `${session.peer_virtual_ip}:3389` : ''),
           virtual_ip: session.peer_virtual_ip || '',
           exposed_lan_cidrs: Array.isArray(session.exposed_lan_cidrs) ? session.exposed_lan_cidrs : [],
           health_state: session.health_state || 'connected',
@@ -1889,79 +1874,6 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   color: var(--fluent-text-on-accent);
 }
 
-/* ===== LAN 访问配置 ===== */
-.lan-access-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.lan-access-heading .section-title {
-  margin-bottom: 14px;
-}
-
-.lan-cidr-content {
-  display: flex;
-  align-items: flex-start;
-  gap: 24px;
-}
-
-.lan-cidr-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.lan-cidr-editor {
-  padding: 16px 2px;
-  border-radius: 0;
-  background: transparent;
-  border: 0;
-}
-
-.lan-cidr-label {
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fluent-text);
-}
-
-.lan-cidr-help {
-  margin-left: 0;
-  font-size: 13px;
-  font-weight: 400;
-}
-
-.lan-access-actions {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 14px;
-}
-
-.service-summary h3 {
-  margin: 0 0 6px;
-  font-size: 20px;
-  color: var(--fluent-text);
-}
-
-.service-summary p {
-  margin: 0 0 18px;
-  color: var(--fluent-text-secondary);
-}
-
-.service-result {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-}
-
-.service-result .el-input {
-  flex: 1;
-}
-
 @media (max-width: 1200px) {
   .detail-grid {
     grid-template-columns: 1fr;
@@ -1992,23 +1904,10 @@ async function confirmDeleteDevice(device: DeviceInfo) {
     overflow: visible;
   }
 
-  .lan-cidr-content {
-    flex-direction: column;
-    gap: 4px;
-  }
-
   .info-grid,
   .action-grid {
     grid-template-columns: 1fr;
   }
 
-}
-</style>
-
-<style>
-/* LAN 网段提示浮层：保留换行并限制宽度（popper 挂载在 body 下，需全局样式） */
-.lan-cidr-hint-popper {
-  max-width: 360px;
-  white-space: pre-line;
 }
 </style>

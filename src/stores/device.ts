@@ -55,7 +55,6 @@ export const useDeviceStore = defineStore('device', () => {
   const FETCH_THROTTLE_MS = 10_000
   const devices = ref<DeviceInfo[]>([])
   const loading = ref(false)
-  const hasFetched = ref(false)
 
   // WS 事件监听器
   let fetchDevicesPromise: Promise<void> | null = null
@@ -82,7 +81,6 @@ export const useDeviceStore = defineStore('device', () => {
         console.log('[DeviceStore] get_device_list response:', JSON.stringify(resp))
         if (resp.code === 0) {
           devices.value = (resp.data || []).sort((a, b) => a.device_id - b.device_id)
-          hasFetched.value = true
           console.log('[DeviceStore] device list updated, count:', devices.value.length)
           devices.value.forEach(d => {
             console.log(`[DeviceStore] device ${d.device_name}: rdp_enabled=${d.rdp_enabled}, service_port=${d.service_port}, status=${d.status}, system_version=${d.system_version}`)
@@ -103,13 +101,11 @@ export const useDeviceStore = defineStore('device', () => {
 
   function setDevices(newDevices: DeviceInfo[]) {
     devices.value = newDevices.sort((a, b) => a.device_id - b.device_id)
-    hasFetched.value = true
   }
 
   function resetDevices() {
     devices.value = []
     loading.value = false
-    hasFetched.value = false
     fetchDevicesPromise = null
     lastFetchDevicesAt = 0
   }
@@ -144,7 +140,6 @@ export const useDeviceStore = defineStore('device', () => {
   return {
     devices,
     loading,
-    hasFetched,
     fetchDevices,
     setDevices,
     resetDevices,

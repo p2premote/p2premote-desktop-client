@@ -12,10 +12,8 @@ import { ElEmpty } from 'element-plus/es/components/empty/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import { ElIcon } from 'element-plus/es/components/icon/index.mjs'
 import { ElInput } from 'element-plus/es/components/input/index.mjs'
-import { ElLink } from 'element-plus/es/components/link/index.mjs'
 import { ElLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
-import { ElPopover } from 'element-plus/es/components/popover/index.mjs'
 import { ElProgress } from 'element-plus/es/components/progress/index.mjs'
 import { ElRadio, ElRadioGroup } from 'element-plus/es/components/radio/index.mjs'
 import { ElSwitch } from 'element-plus/es/components/switch/index.mjs'
@@ -50,10 +48,8 @@ for (const component of [
   ElHeader,
   ElIcon,
   ElInput,
-  ElLink,
   ElMain,
   ElOption,
-  ElPopover,
   ElProgress,
   ElRadio,
   ElRadioGroup,

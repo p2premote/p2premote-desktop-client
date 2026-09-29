@@ -126,7 +126,6 @@ const { t } = useI18n()
 interface TunnelItem {
   role: 'active' | 'passive'
   peer_device_id: number
-  source_device_id?: number
   source_user_id?: number
   source_username?: string
   source_email?: string
@@ -212,7 +211,6 @@ const tunnels = computed(() => {
     const device = deviceStore.devices.find(item => item.device_id === session.peer_device_id)
     const role = session.is_active ? 'active' : 'passive'
     merged.set(`${role}-${session.peer_device_id}`, {
-      source_device_id: session.peer_device_id,
       source_device_name: device?.device_name,
       source_device_alias: device?.device_alias,
       role,
@@ -241,7 +239,6 @@ const tunnels = computed(() => {
       ...existing,
       role: lifecycle.role,
       peer_device_id: lifecycle.peer_device_id,
-      source_device_id: lifecycle.peer_device_id,
       source_device_name: existing?.source_device_name || device?.device_name,
       source_device_alias: existing?.source_device_alias || device?.device_alias,
       peer_device_name: lifecycle.peer_device_name || existing?.peer_device_name,

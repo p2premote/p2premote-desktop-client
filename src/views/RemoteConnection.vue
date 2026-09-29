@@ -388,7 +388,7 @@ async function refreshLocalDevice() {
     }
 
     if (localDevice.value) {
-      await ensureInviteCode(false)
+      await ensureInviteCode()
       if (!inviteForm.temporaryPassword) {
         await generateAndSaveTemporaryPassword(false)
       }
@@ -401,12 +401,12 @@ async function refreshLocalDevice() {
   }
 }
 
-async function ensureInviteCode(force: boolean) {
+async function ensureInviteCode() {
   if (!localDevice.value) {
     ElMessage.warning(t('remote.message.device_missing'))
     return
   }
-  if (!force && localDevice.value.connect_code) {
+  if (localDevice.value.connect_code) {
     return
   }
 
@@ -417,9 +417,6 @@ async function ensureInviteCode(force: boolean) {
     const match = deviceStore.devices.find(device => device.device_id === localDevice.value?.device_id)
     if (match) {
       match.connect_code = code
-    }
-    if (force) {
-      ElMessage.success(t('remote.message.code_generated'))
     }
   } catch (error) {
     ElMessage.error(t('remote.message.code_generate_failed', { error }))
@@ -857,25 +854,12 @@ async function cancelActiveTunnelJob() {
   margin-bottom: 20px;
 }
 
-.eyebrow {
-  margin: 0 0 8px;
-  font-size: 13px;
-  color: var(--fluent-text-secondary);
-}
-
 .card-heading h2 {
   margin: 0;
   font-size: var(--text-card-title);
   line-height: 1.4;
   color: var(--fluent-text);
   font-weight: 600;
-}
-
-.heading-desc {
-  margin: 10px 0 0;
-  color: var(--fluent-text-secondary);
-  font-size: var(--text-body);
-  line-height: 1.6;
 }
 
 .remote-form,
@@ -900,128 +884,11 @@ async function cancelActiveTunnelJob() {
   justify-content: center;
 }
 
-/* ===== Fluent InfoBar 风格状态条（左色条 + 淡底 + 细描边） ===== */
-.verified-device {
-  margin-top: 18px;
-  padding: 12px 14px;
-  border: 1px solid var(--fluent-stroke);
-  border-left: 4px solid var(--fluent-accent);
-  border-radius: var(--fluent-radius-md);
-  background: var(--fluent-info-bg);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.device-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--fluent-success);
-  box-shadow: 0 0 0 3px var(--fluent-success-bg);
-}
-
-.verified-device strong {
-  display: block;
-  color: var(--fluent-text);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.verified-device p {
-  margin: 4px 0 0;
-  color: var(--fluent-text-secondary);
-  font-size: 12px;
-}
-
-.job-status-card {
-  margin-top: 14px;
-  padding: 14px 16px;
-  border: 1px solid var(--fluent-stroke);
-  border-left: 4px solid var(--fluent-accent);
-  border-radius: var(--fluent-radius-md);
-  background: var(--fluent-info-bg);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.job-status-card strong {
-  display: block;
-  color: var(--fluent-text);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.job-status-card p {
-  margin: 4px 0 0;
-  color: var(--fluent-text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.job-succeeded {
-  border-left-color: var(--fluent-success);
-  background: var(--fluent-success-bg);
-}
-
-.job-failed {
-  border-left-color: var(--fluent-danger);
-  background: var(--fluent-danger-bg);
-}
-
-.job-cancelled {
-  border-left-color: var(--fluent-text-tertiary);
-  background: var(--fluent-layer-hover);
-}
-
-.tunnel-result-card {
-  margin-top: 14px;
-  padding: 16px;
-  border: 1px solid var(--fluent-stroke);
-  border-left: 4px solid var(--fluent-success);
-  border-radius: var(--fluent-radius-md);
-  background: var(--fluent-success-bg);
-}
-
-.result-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.result-label {
-  display: block;
-  margin-bottom: 8px;
-  color: var(--fluent-success);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.result-header code {
-  display: block;
-  max-width: 100%;
-  padding: 10px 12px;
-  overflow-wrap: anywhere;
-  color: var(--fluent-text);
-  background: var(--fluent-layer);
-  border: 1px solid var(--fluent-stroke);
-  border-radius: var(--fluent-radius-md);
-  font-size: 13px;
-}
-
-.result-header p,
 .result-hint {
-  margin: 0;
+  margin: 10px 0 0;
   color: var(--fluent-text-secondary);
   font-size: 12px;
   line-height: 1.6;
-}
-
-.result-hint {
-  margin-top: 10px;
 }
 
 .result-hint strong {
@@ -1081,10 +948,6 @@ async function cancelActiveTunnelJob() {
 
   .share-value-row {
     grid-template-columns: 1fr;
-  }
-
-  .result-header {
-    flex-direction: column;
   }
 
   .detail-header-card {

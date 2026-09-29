@@ -473,10 +473,6 @@ body,
     .action-tile { transform: none !important; }
     .device-status-dot.connecting,
     .device-avatar.connecting { animation: none !important; }
-    .settings-popover-enter-active,
-    .settings-popover-leave-active { transition: opacity 120ms ease-out !important; }
-    .settings-popover-enter-from,
-    .settings-popover-leave-to { transform: none !important; filter: none !important; }
     body,
     .app-titlebar,
     .function-sidebar,
@@ -489,13 +485,6 @@ body,
     :root {
         --fluent-stroke: currentColor;
         --fluent-stroke-strong: currentColor;
-    }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-    .el-popover.el-popper {
-        background: var(--color-bg-elevated) !important;
-        backdrop-filter: none;
     }
 }
 
@@ -563,42 +552,6 @@ body,
 .el-dropdown-menu__item.is-danger:not(.is-disabled):hover {
     background: var(--fluent-danger-bg);
     color: var(--fluent-danger);
-}
-
-/* ===== Win11 弹出层（el-popover / 设置面板） ===== */
-
-.el-popover.el-popper {
-    padding: 8px;
-    border-radius: var(--fluent-radius-lg) !important;
-    border: 1px solid var(--fluent-stroke) !important;
-    background: color-mix(in srgb, var(--color-bg-elevated) 88%, transparent) !important;
-    backdrop-filter: blur(20px) saturate(150%);
-    box-shadow: var(--fluent-shadow-flyout) !important;
-    transition: opacity var(--motion-fast) var(--ease-out),
-        transform var(--motion-fast) var(--ease-out),
-        filter var(--motion-fast) var(--ease-out);
-    transform: scale(1);
-}
-
-.el-popover.el-popper[data-popper-placement^="bottom"] { transform-origin: top right; }
-.el-popover.el-popper[data-popper-placement^="top"] { transform-origin: bottom right; }
-
-.settings-popover-enter-active,
-.settings-popover-leave-active {
-    transition: opacity var(--motion-fast) var(--ease-out),
-        transform var(--motion-fast) var(--ease-out),
-        filter var(--motion-fast) var(--ease-out) !important;
-}
-
-.settings-popover-enter-from,
-.settings-popover-leave-to {
-    opacity: 0;
-    transform: scale(0.97) !important;
-    filter: blur(1px);
-}
-
-.el-popover.el-popper .el-popper__arrow {
-    display: none !important;
 }
 
 /* ===== Win11 下拉选择（el-select 弹层） ===== */
@@ -772,18 +725,4 @@ body,
     font-size: 12px;
     height: 22px;
     line-height: 20px;
-}
-
-/* Keep this final so it wins over component transition declarations above. */
-@media (prefers-reduced-motion: reduce) {
-    .settings-popover-enter-active,
-    .settings-popover-leave-active {
-        transition: opacity 120ms ease-out !important;
-    }
-
-    .settings-popover-enter-from,
-    .settings-popover-leave-to {
-        transform: none !important;
-        filter: none !important;
-    }
 }

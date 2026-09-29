@@ -171,7 +171,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     token,
-    user: userInfo,
     userInfo,
     currentDevice,
     isLoggedIn,
