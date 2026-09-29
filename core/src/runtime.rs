@@ -22,12 +22,9 @@ use crate::device::{
     anonymous_connect, collect_device_status_report, delete_device, generate_connect_code,
     get_device_list, get_public_network_info, get_rdp_port_from_registry, is_rdp_enabled,
     mark_current_device_offline, register_current_device_auto, send_device_status_report,
-    set_connect_password, set_device_password, update_device_alias, update_device_info,
-    DeviceStatusReport,
+    set_connect_password, set_device_password, update_device_alias, DeviceStatusReport,
 };
-use crate::device_identity::{
-    detect_clone, ensure_device_uuid, rebuild_device_identity, CloneDetectionResult,
-};
+use crate::device_identity::{detect_clone, ensure_device_uuid, CloneDetectionResult};
 use crate::gonc_ffi;
 use crate::health::{
     spawn_health_server, HealthDisconnectHandler, HealthServerHandle, PassiveHealthEvent,
@@ -1225,7 +1222,6 @@ fn is_non_retryable_wgvpn_error(message: &str) -> bool {
         "invalid ipv4 cidr",
         "invalid exposed lan cidr",
         "exposed lan cidr overlaps",
-        "mobile wgvpn only supports",
         "subnet router backend is not implemented",
         "approval_denied",
         "approval_timeout",

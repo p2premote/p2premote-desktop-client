@@ -232,18 +232,17 @@ impl WebSecurityState {
         })
     }
 
-    /// 引导窗口是否打开：开关开启、未配置安全码、未配置白名单。
-    fn first_trust_bootstrap_pending_with(&self, enabled: bool) -> bool {
-        enabled
-            && self.allowed_remote_ip.lock().is_none()
-            && self.security_code_hash.lock().is_none()
+    /// 引导窗口是否打开：未配置安全码且未配置白名单。
+    fn first_trust_bootstrap_window_open(&self) -> bool {
+        self.allowed_remote_ip.lock().is_none() && self.security_code_hash.lock().is_none()
     }
 
     fn first_trust_bootstrap_pending(&self) -> bool {
-        Self::first_trust_bootstrap_enabled() && self.first_trust_bootstrap_pending_with(true)
+        Self::first_trust_bootstrap_enabled() && self.first_trust_bootstrap_window_open()
     }
 
     /// 只有明确调用认领接口的客户端能占用引导名额；闲置后允许其他客户端接手。
+    /// `enabled` 参数供单测注入开关状态。
     fn claim_first_trust_bootstrap_with(&self, ip: IpAddr, enabled: bool) -> bool {
         if !enabled {
             return false;
@@ -253,7 +252,7 @@ impl WebSecurityState {
         if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
             return false;
         }
-        if !self.first_trust_bootstrap_pending_with(enabled) {
+        if !self.first_trust_bootstrap_window_open() {
             return false;
         }
         let mut slot = self.bootstrap_trusted_ip.lock();
@@ -1919,7 +1918,7 @@ mod tests {
         assert!(fresh.security_code_hash.lock().is_none());
         // 认领后引导窗口仍保持打开（部署依旧无码无白名单），但信任只属于
         // 首个来源：其他远程来源被拒，认领者继续放行。
-        assert!(fresh.first_trust_bootstrap_pending_with(true));
+        assert!(fresh.first_trust_bootstrap_window_open());
         assert!(!fresh.claim_first_trust_bootstrap_with(other, true));
         assert!(fresh.claim_first_trust_bootstrap_with(remote, true));
 

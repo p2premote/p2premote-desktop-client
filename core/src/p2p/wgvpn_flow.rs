@@ -362,7 +362,6 @@ pub async fn start_active_wgvpn(
     lan_cidrs: Vec<String>,
 ) -> Result<WgVpnStartResult> {
     let _registration = crate::traversal::Registration(punch_token.clone());
-    ensure_wgvpn_role_allowed(true)?;
     if !lan_cidrs.is_empty() {
         return Err(anyhow!("only passive wgvpn may expose LAN CIDRs"));
     }
@@ -626,7 +625,6 @@ pub async fn start_passive_wgvpn(
     lan_cidrs: Vec<String>,
 ) -> Result<WgVpnStartResult> {
     let _registration = crate::traversal::Registration(punch_token.clone());
-    ensure_wgvpn_role_allowed(false)?;
     let requested_lan_cidrs = wgvpn_exchange::normalize_exposed_lan_cidrs(&lan_cidrs)?;
     validate_lan_routes_basic(&requested_lan_cidrs)?;
     // Each passive peer has a distinct virtual source IP, so multiple
@@ -1300,18 +1298,6 @@ fn validate_peer_virtual_ip(target_device_id: i64, peer_ip: &str) -> Result<()> 
             "peer virtual IP {} is already used by another session",
             peer_ip
         ));
-    }
-    Ok(())
-}
-
-fn ensure_wgvpn_role_allowed(is_active: bool) -> Result<()> {
-    if cfg!(any(target_os = "android", target_os = "ios")) {
-        if !is_active {
-            return Err(anyhow!("mobile wgvpn only supports active mode"));
-        }
-        if !WGVPN_SESSIONS.lock().is_empty() {
-            return Err(anyhow!("mobile wgvpn only supports one peer"));
-        }
     }
     Ok(())
 }

@@ -741,8 +741,6 @@ pub(super) async fn start_wgvpn_active_with_notify(
     let remote_address = format!("{}:{}", started.peer_virtual_ip, target_remote_port);
     Ok(ActiveStartResult {
         success: started.success,
-        reused: false,
-        local_port: 0,
         rdp_address: if remote_protocol == "rdp" {
             remote_address.clone()
         } else {

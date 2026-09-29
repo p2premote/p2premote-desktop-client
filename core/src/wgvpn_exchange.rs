@@ -186,25 +186,6 @@ impl ExchangePayload {
         }
     }
 
-    /// 构造被动端→主动端的载荷。
-    pub fn for_passive(
-        pubkey: impl Into<String>,
-        device_id: i64,
-        assigned_ip: u32,
-        my_ip: u32,
-        exposed_lan_cidrs: Vec<String>,
-    ) -> Self {
-        Self {
-            pubkey: pubkey.into(),
-            device_id,
-            assigned_ip,
-            my_ip,
-            exposed_lan_cidrs,
-            warning: None,
-            ..Default::default()
-        }
-    }
-
     /// 序列化为 JSON 文本（作为 FFI Exchange 的 send_data）。
     pub fn render(&self) -> Result<String> {
         serde_json::to_string(self).context("serialize ExchangePayload")
@@ -300,13 +281,17 @@ mod payload_tests {
 
     #[test]
     fn payload_roundtrip_passive() {
-        let mut p = ExchangePayload::for_passive(
-            "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
-            67890,
-            0x64634705,
-            0x64634701,
-            vec!["192.168.10.0/24".to_string()],
-        );
+        // 与生产被动端一致：直接用结构体字面量构造（wgvpn_flow.rs 的
+        // local_payload_template），assigned_ip/my_ip 在协商回调后填充。
+        let mut p = ExchangePayload {
+            pubkey: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=".to_string(),
+            device_id: 67890,
+            assigned_ip: 0x64634705,
+            my_ip: 0x64634701,
+            exposed_lan_cidrs: vec!["192.168.10.0/24".to_string()],
+            warning: None,
+            ..Default::default()
+        };
         p.warning = Some("LAN访问功能已被其他隧道占用，本隧道不支持LAN访问".to_string());
         let text = p.render().unwrap();
         let p2 = ExchangePayload::parse(&text).unwrap();

@@ -35,7 +35,8 @@ fn active_config_contains_required_fields() {
 
 #[test]
 fn passive_config_omits_endpoint_and_keepalive() {
-    // 被动端不配 Endpoint（从握手包学习），不配 PersistentKeepalive
+    // 渲染能力测试：endpoint/keepalive 为 None 时不输出对应行
+    // （生产被动端 peer 均带显式 Endpoint，见 passive_side_peers_carry_explicit_endpoints）
     let cfg = wgvpn::WgConfigBuilder::new()
         .private_key("priv-bbb")
         .address(ACTIVE_IP_CIDR)
@@ -116,29 +117,33 @@ fn multi_peer_config_renders_all_peers() {
 }
 
 #[test]
-fn multi_peer_mixed_active_passive() {
-    // 场景：同一个 wg 接口里既有主动连的 peer（含 Endpoint），
-    // 也有被动等连的 peer（无 Endpoint）
-    let pubkey_active = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-    let pubkey_passive = "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP=";
+fn passive_side_peers_carry_explicit_endpoints() {
+    // 生产现实：被动端的每个 peer 也用 PeerConfig::active 构造——对端是
+    // gonc 本地转发端口，需要显式 Endpoint 才能发起/保持连接
+    // （wgvpn_flow.rs 被动路径与主动路径同样走 active）。
+    let pubkey_first = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let pubkey_second = "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP=";
 
     let cfg = wgvpn::WgConfigBuilder::new()
-        .private_key("priv-mixed")
-        .address("100.99.71.1/24")
+        .private_key("priv-passive")
+        .address(PASSIVE_IP_CIDR)
         .listen_port(51820)
         .add_peer(wgvpn::PeerConfig::active(
-            pubkey_active,
-            "127.0.0.1:51821",
+            pubkey_first,
+            "127.0.0.1:32000",
             "100.99.71.2",
         ))
-        .add_peer(wgvpn::PeerConfig::passive(pubkey_passive, "100.99.71.5"))
+        .add_peer(wgvpn::PeerConfig::active(
+            pubkey_second,
+            "127.0.0.1:32001",
+            "100.99.71.5",
+        ))
         .build_active();
 
     let text = cfg.render().unwrap();
-    // 两个 [Peer] 段
+    // 被动端两个 [Peer] 段，每个都带 Endpoint 与 Keepalive
     assert_eq!(text.matches("[Peer]").count(), 2);
-    // 主动 peer 有 Endpoint，被动 peer 无
-    assert!(text.contains("Endpoint = 127.0.0.1:51821"));
-    // 确认被动 peer 的 pubkey 在场，且它后面没有紧跟 Endpoint
-    assert!(text.contains(&format!("PublicKey = {}", pubkey_passive)));
+    assert!(text.contains("Endpoint = 127.0.0.1:32000"));
+    assert!(text.contains("Endpoint = 127.0.0.1:32001"));
+    assert_eq!(text.matches("PersistentKeepalive = 25").count(), 2);
 }

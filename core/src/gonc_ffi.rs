@@ -769,21 +769,6 @@ fn native_subnet_router_result(
     Ok(mapped)
 }
 
-pub fn parse_udp_tunnel_result(raw: &str) -> Result<UdpTunnelResult> {
-    let result: UdpTunnelResult = serde_json::from_str(raw)
-        .with_context(|| format!("invalid udp tunnel result json: {}", raw))?;
-    if !result.ok {
-        return Err(anyhow::Error::new(UdpTunnelFailure { result }));
-    }
-    if result.handle_id.is_empty() {
-        return Err(anyhow!("udp tunnel result missing handle_id"));
-    }
-    if result.local_forward_port == 0 {
-        return Err(anyhow!("udp tunnel result missing local_forward_port"));
-    }
-    Ok(result)
-}
-
 pub fn parse_subnet_router_result(raw: &str, op: &str) -> Result<SubnetRouterResult> {
     let result: SubnetRouterResult = serde_json::from_str(raw)
         .with_context(|| format!("invalid subnet router result json: {}", raw))?;
@@ -862,55 +847,6 @@ pub async fn exchange_payload_native(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_udp_tunnel_success_result() {
-        let raw = r#"{
-            "ok": true,
-            "handle_id": "udp-1",
-            "local_forward_addr": "127.0.0.1:32000",
-            "local_forward_port": 32000,
-            "peer_endpoint": "203.0.113.10:40000",
-            "local_nat_type": "easy",
-            "remote_nat_type": "hard",
-            "network": "udp4",
-            "selected_traversal": "lan",
-            "transport_mode": "plain",
-            "local_lan_addr": "192.168.1.10:32001",
-            "local_nat_addr": "198.51.100.20:41000",
-            "remote_lan_addr": "192.168.2.10:32002",
-            "remote_nat_addr": "203.0.113.10:40000",
-            "is_client": true
-        }"#;
-        let parsed = parse_udp_tunnel_result(raw).unwrap();
-        assert_eq!(parsed.handle_id, "udp-1");
-        assert_eq!(parsed.local_forward_port, 32000);
-        assert_eq!(parsed.selected_traversal, "lan");
-        assert_eq!(parsed.transport_mode, "plain");
-    }
-
-    #[test]
-    fn rejects_failure_result() {
-        let err = parse_udp_tunnel_result(
-            r#"{
-                "ok": false,
-                "attempts": 5,
-                "network": "udp4",
-                "local_nat_type": "hard",
-                "remote_nat_type": "symm",
-                "local_nat_addr": "198.51.100.20:41000",
-                "remote_nat_addr": "203.0.113.10:40000",
-                "error": "timeout"
-            }"#,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("timeout"));
-        let failure = err.downcast_ref::<UdpTunnelFailure>().unwrap();
-        assert_eq!(failure.result.attempts, 5);
-        assert_eq!(failure.result.local_nat_type, "hard");
-        assert_eq!(failure.result.remote_nat_type, "symm");
-        assert_eq!(failure.result.local_nat_addr, "198.51.100.20:41000");
-    }
 
     #[test]
     fn request_defaults_to_wgvpn_udp4_without_relay() {

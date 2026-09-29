@@ -83,9 +83,7 @@ pub enum Data {
     ReloadConfig,
     UpdateAuth,
     Logout,
-    RebuildDeviceIdentity,
     AcknowledgeDeviceIdentityNotification,
-    Reconnect,
     StopTunnel {
         source_device_id: i64,
     },
@@ -108,12 +106,6 @@ pub enum Data {
     },
     WakeDevice {
         device_id: i64,
-    },
-    UpdateDeviceInfo {
-        device_id: i64,
-        lan_ip: String,
-        public_ip: String,
-        service_port: i64,
     },
     SetDevicePassword {
         device_id: i64,
@@ -180,8 +172,6 @@ pub enum Data {
     SetLocale {
         locale: String,
     },
-    /// 读取当前 UI 语言（从 RuntimeStatus.locale 返回，未设置时为 None）。
-    GetLocale,
     /// 读取本机 wgvpn LAN 访问配置。
     GetWgvpnLanAccessConfig,
     GetConnectionPreferences,
@@ -201,9 +191,6 @@ pub enum Data {
         message: String,
         #[serde(default)]
         status: Option<RuntimeStatus>,
-        /// 持久连接上匹配请求-响应的 ID（短连接可忽略）
-        #[serde(default)]
-        request_id: Option<u64>,
         /// 结构化响应数据（如设备列表 JSON）。
         /// #[serde(default)] 保证旧版本互通不受影响。
         #[serde(default)]
@@ -777,7 +764,6 @@ pub async fn accept_ipc_client() -> Result<IpcStream> {
                         ok: false,
                         message,
                         status: None,
-                        request_id: None,
                         data: None,
                     })
                     .await;
@@ -1016,7 +1002,6 @@ mod tests {
                 pending_inbound_approvals: vec![],
                 locale: Some("zh-CN".to_string()),
             }),
-            request_id: None,
             data: None,
         });
     }
@@ -1064,7 +1049,6 @@ mod tests {
                 ok: true,
                 message: "pong".to_string(),
                 status: None,
-                request_id: None,
                 data: None,
             })
             .await

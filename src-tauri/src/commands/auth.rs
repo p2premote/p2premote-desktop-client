@@ -222,15 +222,6 @@ pub async fn resume_saved_session(auto_login: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Tauri 命令：获取用户信息
-#[tauri::command]
-pub async fn get_user_info() -> Result<Option<UserInfo>, String> {
-    if !is_logged_in().await? {
-        return Ok(None);
-    }
-    fetch_user_profile().await
-}
-
 #[tauri::command]
 pub async fn fetch_user_profile() -> Result<Option<UserInfo>, String> {
     debug!("[Profile] 通过 service 获取用户资料");

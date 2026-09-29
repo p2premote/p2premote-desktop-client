@@ -566,10 +566,6 @@ mod win_impl {
     }
 
     pub fn query_service_status() -> Result<ServiceStatus> {
-        query_named_service_status(SERVICE_NAME)
-    }
-
-    pub fn query_named_service_status(service_name: &str) -> Result<ServiceStatus> {
         let not_installed = ServiceStatus {
             installed: false,
             running: false,
@@ -586,7 +582,7 @@ mod win_impl {
             }
         };
 
-        let service = manager.open_service(service_name, ServiceAccess::QUERY_STATUS);
+        let service = manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS);
 
         let service = match service {
             Ok(s) => s,
@@ -600,7 +596,7 @@ mod win_impl {
         };
 
         let enabled = manager
-            .open_service(service_name, ServiceAccess::QUERY_CONFIG)
+            .open_service(SERVICE_NAME, ServiceAccess::QUERY_CONFIG)
             .ok()
             .and_then(|service| service.query_config().ok())
             .map(|c| c.start_type == ServiceStartType::AutoStart)
@@ -652,15 +648,6 @@ pub mod direct {
         try_connect_and_install as install_service, try_connect_and_start as start_service,
         try_connect_and_stop as stop_service, try_connect_and_uninstall as uninstall_service,
     };
-}
-
-/// 直接尝试 install + enable + start（不提权），全部成功才返回 Ok
-#[cfg(windows)]
-pub fn try_setup_direct(service_exe: &Path) -> Result<()> {
-    direct::install_service(service_exe)?;
-    direct::enable_service()?;
-    direct::start_service()?;
-    Ok(())
 }
 
 /// 单次 UAC 提权执行复合操作（如 setup），传入 service exe 路径

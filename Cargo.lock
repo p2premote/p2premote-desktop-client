@@ -3336,10 +3336,8 @@ version = "2.0.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
- "futures",
  "hmac",
  "if-addrs",
- "libc",
  "md-5",
  "p256",
  "rand 0.8.8",

@@ -222,15 +222,6 @@ struct UpdateAliasRequest {
 }
 
 #[derive(Serialize)]
-struct UpdateDeviceInfoRequest {
-    lan_ip: String,
-    public_ip: String,
-    public_ip_location: String,
-    service_port: i64,
-    client_version: String,
-}
-
-#[derive(Serialize)]
 struct OfflineRequest {
     device_id: i64,
 }
@@ -521,39 +512,6 @@ pub async fn delete_device(config: &mut MachineConfig, device_id: i64) -> Result
         client
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
-    })
-    .await?;
-    let parsed = parse_basic(resp)?;
-    if parsed.code != 0 {
-        return Err(anyhow!(
-            parsed.localized_error_message(config.locale.as_deref())
-        ));
-    }
-    Ok(())
-}
-
-/// 更新设备的网络信息（lan_ip / public_ip / service_port）。
-pub async fn update_device_info(
-    config: &mut MachineConfig,
-    device_id: i64,
-    lan_ip: String,
-    public_ip: String,
-    service_port: i64,
-) -> Result<()> {
-    let url = server_url(config, &format!("/api/v1/devices/{}/info", device_id));
-    let request = UpdateDeviceInfoRequest {
-        lan_ip,
-        public_ip,
-        public_ip_location: config.cached_public_ip_location.clone().unwrap_or_default(),
-        service_port,
-        client_version: current_client_version(),
-    };
-    let client = shared_client();
-    let resp = send_authed(config, |token| {
-        client
-            .put(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&request)
     })
     .await?;
     let parsed = parse_basic(resp)?;

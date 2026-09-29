@@ -264,11 +264,6 @@ impl WgConfigBuilder {
         self.listen_port = Some(p);
         self
     }
-    /// 设置 peers 列表（覆盖式）。调用后 render() 走多 peer 路径。
-    pub fn peers(mut self, peers: Vec<PeerConfig>) -> Self {
-        self.peers = peers;
-        self
-    }
 
     /// 链式追加单个 peer。
     pub fn add_peer(mut self, peer: PeerConfig) -> Self {
@@ -836,6 +831,9 @@ pub struct PeerConfig {
 
 impl PeerConfig {
     /// 构造主动端 peer（含 Endpoint + Keepalive 25s）。
+    ///
+    /// 生产上主动端与被动端都用此构造：被动端的对端是 gonc 本地转发端口，
+    /// 同样需要显式 Endpoint 才能发起/保持连接。
     pub fn active(
         public_key: impl Into<String>,
         endpoint: impl Into<String>,
@@ -846,16 +844,6 @@ impl PeerConfig {
             endpoint: Some(endpoint.into()),
             allowed_ips: vec![format!("{}/32", peer_ip)],
             keepalive: Some(25),
-        }
-    }
-
-    /// 构造被动端 peer（无 Endpoint、无 Keepalive，等对端连入）。
-    pub fn passive(public_key: impl Into<String>, peer_ip: &str) -> Self {
-        Self {
-            public_key: public_key.into(),
-            endpoint: None,
-            allowed_ips: vec![format!("{}/32", peer_ip)],
-            keepalive: None,
         }
     }
 }

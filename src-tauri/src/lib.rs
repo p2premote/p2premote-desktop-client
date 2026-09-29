@@ -122,8 +122,8 @@ mod rdp_tests {
 // 导入所有命令
 use commands::{
     auth::{
-        fetch_user_profile, get_invite_info, get_saved_login, get_user_info, is_logged_in, login,
-        logout, register_by_email_code, reset_password_by_email_code, resume_saved_session,
+        fetch_user_profile, get_invite_info, get_saved_login, is_logged_in, login, logout,
+        register_by_email_code, reset_password_by_email_code, resume_saved_session,
         save_login_settings, send_registration_verification_code,
         send_reset_password_verification_code, try_auto_login,
     },
@@ -141,9 +141,8 @@ use commands::{
         launch_rustdesk_tiny, listen_service_events, refresh_service_network_info,
         refresh_tunnel_status, reject_inbound_tunnel, set_background_service_enabled,
         start_service_active_tunnel, start_service_anonymous_active_tunnel,
-        start_service_desktop_session, stop_active_tunnel_job, stop_service_active_tunnel,
-        stop_service_desktop_session, stop_service_tunnel, sync_service_runtime_config,
-        test_tunnel_speed,
+        stop_active_tunnel_job, stop_service_active_tunnel, stop_service_tunnel,
+        sync_service_runtime_config, test_tunnel_speed,
     },
 };
 
@@ -270,7 +269,6 @@ pub fn run() {
             send_reset_password_verification_code,
             reset_password_by_email_code,
             is_logged_in,
-            get_user_info,
             fetch_user_profile,
             get_invite_info,
             get_saved_login,
@@ -303,9 +301,7 @@ pub fn run() {
             sync_service_runtime_config,
             start_service_active_tunnel,
             start_service_anonymous_active_tunnel,
-            start_service_desktop_session,
             launch_rustdesk_tiny,
-            stop_service_desktop_session,
             stop_active_tunnel_job,
             approve_inbound_tunnel,
             reject_inbound_tunnel,

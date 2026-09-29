@@ -84,10 +84,6 @@ pub fn eligible(network: &str, local: &[NatEvidence], remote: &[NatEvidence]) ->
                 || right.iter().any(|v| v.nat_type == "easy"))
 }
 
-pub fn build_plan(preferences: Preferences, local: &[NatEvidence], remote: &[NatEvidence]) -> Vec<String> {
-    build_plan_with_family(preferences, local, remote, None, None)
-}
-
 pub fn build_plan_with_family(preferences: Preferences, local: &[NatEvidence], remote: &[NatEvidence],
     local_ipv6: Option<bool>, remote_ipv6: Option<bool>) -> Vec<String> {
     network_order(preferences).into_iter()
@@ -134,21 +130,21 @@ mod tests {
         for prefer_ipv6 in [false, true] {
             for prefer_tcp in [false, true] {
                 let p = Preferences { prefer_ipv6, prefer_tcp };
-                assert_eq!(build_plan(p, &all, &all), network_order(p));
+                assert_eq!(build_plan_with_family(p, &all, &all, None, None), network_order(p));
             }
         }
         let hard = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "hard"));
-        assert_eq!(build_plan(Preferences { prefer_ipv6: true, prefer_tcp: true }, &hard, &hard), ["udp6", "udp4"]);
-        assert_eq!(build_plan(Preferences::default(), &[], &all), ["udp4", "udp6"]);
+        assert_eq!(build_plan_with_family(Preferences { prefer_ipv6: true, prefer_tcp: true }, &hard, &hard, None, None), ["udp6", "udp4"]);
+        assert_eq!(build_plan_with_family(Preferences::default(), &[], &all, None, None), ["udp4", "udp6"]);
     }
     #[test]
     fn failed_nat_preflight_keeps_udp_fallback_but_never_grants_tcp() {
         let unknown = [nat("tcp4", "unknown"), nat("tcp6", "unknown")];
         let all = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "easy"));
         let preferences = Preferences { prefer_ipv6: true, prefer_tcp: true };
-        assert_eq!(build_plan(preferences, &[], &[]), ["udp6", "udp4"]);
-        assert_eq!(build_plan(preferences, &unknown, &all), ["udp6", "udp4"]);
-        assert_eq!(build_plan(preferences, &all, &unknown), ["udp6", "udp4"]);
+        assert_eq!(build_plan_with_family(preferences, &[], &[], None, None), ["udp6", "udp4"]);
+        assert_eq!(build_plan_with_family(preferences, &unknown, &all, None, None), ["udp6", "udp4"]);
+        assert_eq!(build_plan_with_family(preferences, &all, &unknown, None, None), ["udp6", "udp4"]);
     }
     #[test]
     fn either_endpoint_without_ipv6_excludes_both_ipv6_transports() {

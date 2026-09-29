@@ -76,16 +76,6 @@ pub fn detect_clone(config: &mut MachineConfig) -> CloneDetectionResult {
     detect_clone_with(config, collect_clone_fingerprint())
 }
 
-pub fn rebuild_device_identity(config: &mut MachineConfig) {
-    config.device_id = None;
-    config.device_uuid = Some(new_device_uuid());
-    if let Ok(Some(fingerprint)) = collect_clone_fingerprint() {
-        config.device_fingerprint = Some(fingerprint.value);
-        config.device_fingerprint_platform = Some(fingerprint.platform.to_string());
-        config.device_fingerprint_version = DEVICE_FINGERPRINT_VERSION;
-    }
-}
-
 #[cfg(windows)]
 fn collect_clone_fingerprint() -> Result<Option<DeviceFingerprint>, String> {
     let value = read_windows_smbios_uuid()?;

@@ -72,7 +72,6 @@ pub(super) async fn handle_client(
             ok: false,
             message: "unauthorized".to_string(),
             status: None,
-            request_id: None,
             data: None,
         })
         .await
@@ -86,7 +85,6 @@ pub(super) async fn handle_client(
         ok: true,
         message: "ok".to_string(),
         status: None,
-        request_id: None,
         data: None,
     })
     .await
@@ -183,7 +181,6 @@ pub(super) fn cmd_response(ok: bool, message: &str, status: Option<RuntimeStatus
         ok,
         message: message.to_string(),
         status,
-        request_id: None,
         data: None,
     }
 }
@@ -199,7 +196,6 @@ pub(super) fn cmd_response_with_data(
         ok,
         message: message.to_string(),
         status,
-        request_id: None,
         data: Some(data),
     }
 }
@@ -295,9 +291,7 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::ReloadConfig => "ReloadConfig",
         Data::UpdateAuth => "UpdateAuth",
         Data::Logout => "Logout",
-        Data::RebuildDeviceIdentity => "RebuildDeviceIdentity",
         Data::AcknowledgeDeviceIdentityNotification => "AcknowledgeDeviceIdentityNotification",
-        Data::Reconnect => "Reconnect",
         Data::StopTunnel { .. } => "StopTunnel",
         Data::StopActiveTunnel { .. } => "StopActiveTunnel",
         Data::TestTunnelSpeed { .. } => "TestTunnelSpeed",
@@ -306,7 +300,6 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::UpdateDeviceAlias { .. } => "UpdateDeviceAlias",
         Data::DeleteDevice { .. } => "DeleteDevice",
         Data::WakeDevice { .. } => "WakeDevice",
-        Data::UpdateDeviceInfo { .. } => "UpdateDeviceInfo",
         Data::SetDevicePassword { .. } => "SetDevicePassword",
         Data::GenerateConnectCode { .. } => "GenerateConnectCode",
         Data::MarkCurrentDeviceOffline => "MarkCurrentDeviceOffline",
@@ -324,7 +317,6 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::GetLoginPreferences => "GetLoginPreferences",
         Data::SetAutoStartConfig { .. } => "SetAutoStartConfig",
         Data::SetLocale { .. } => "SetLocale",
-        Data::GetLocale => "GetLocale",
         Data::GetWgvpnLanAccessConfig => "GetWgvpnLanAccessConfig",
         Data::GetConnectionPreferences => "GetConnectionPreferences",
         Data::SaveConnectionPreferences { .. } => "SaveConnectionPreferences",
@@ -555,21 +547,6 @@ pub(super) async fn handle_data(
             Some(response_from_result(
                 crate::device::wake_device(&mut config, device_id).await,
                 |status| serde_json::json!({"status":status}),
-            ))
-        }
-        Data::UpdateDeviceInfo {
-            device_id,
-            lan_ip,
-            public_ip,
-            service_port,
-        } => {
-            let mut config = match load_config_or_err() {
-                Ok(c) => c,
-                Err(resp) => return Some(resp),
-            };
-            Some(response_from_result(
-                update_device_info(&mut config, device_id, lan_ip, public_ip, service_port).await,
-                |_| serde_json::Value::Null,
             ))
         }
         Data::SetDevicePassword {
@@ -949,15 +926,6 @@ pub(super) async fn handle_data(
                 Err(err) => Some(cmd_response(false, &err.to_string(), None)),
             }
         }
-        Data::GetLocale => {
-            let locale = shared.lock().status.locale.clone();
-            Some(cmd_response_with_data(
-                true,
-                "ok",
-                None,
-                serde_json::json!({ "locale": locale }),
-            ))
-        }
         Data::GetConnectionPreferences => {
             let config = match load_config_or_err() { Ok(c) => c, Err(resp) => return Some(resp) };
             Some(cmd_response_with_data(true, "ok", None, serde_json::json!({
@@ -1042,7 +1010,7 @@ pub(super) async fn handle_data(
                 Some(shared.lock().status.clone()),
             ))
         }
-        Data::UpdateAuth | Data::Reconnect => {
+        Data::UpdateAuth => {
             shared.lock().reconnect_requested = true;
             Some(cmd_response(
                 true,
@@ -1156,30 +1124,6 @@ pub(super) async fn handle_data(
             Some(cmd_response(
                 true,
                 "logged out",
-                Some(shared.lock().status.clone()),
-            ))
-        }
-        Data::RebuildDeviceIdentity => {
-            cancel_all_active_tunnel_jobs(shared);
-            cancel_all_wgvpn_jobs(shared).await;
-            let mut config = load_machine_config().ok()?;
-            rebuild_device_identity(&mut config);
-            save_machine_config(&config).ok()?;
-            {
-                let mut state = shared.lock();
-                state.reconnect_requested = true;
-                state.status.device_id = None;
-                state.status.device_uuid = config.device_uuid.clone();
-                state.status.device_identity_rebuilt = true;
-                state.status.device_identity_message = Some(localized_message(
-                    state.status.locale.as_deref(),
-                    "device_identity.manual_rebuilding",
-                    &[],
-                ));
-            }
-            Some(cmd_response(
-                true,
-                "device identity rebuilt",
                 Some(shared.lock().status.clone()),
             ))
         }

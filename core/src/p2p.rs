@@ -35,8 +35,6 @@ pub struct PassivePeerInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveStartResult {
     pub success: bool,
-    pub reused: bool,
-    pub local_port: u16,
     pub rdp_address: String,
     #[serde(default)]
     pub remote_address: String,

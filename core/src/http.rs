@@ -108,23 +108,6 @@ impl<T> ApiResponse<T> {
         self.code == 0
     }
 
-    /// 若成功返回 data 的引用，否则返回 msg 作为错误描述。
-    pub fn into_data(self) -> Result<T, String> {
-        if self.is_ok() {
-            Ok(self.data)
-        } else {
-            Err(self.into_api_error().to_string())
-        }
-    }
-
-    pub fn into_data_structured(self) -> Result<T, ApiError> {
-        if self.is_ok() {
-            Ok(self.data)
-        } else {
-            Err(self.into_api_error())
-        }
-    }
-
     pub fn localized_error_message(&self, locale: Option<&str>) -> String {
         ApiError {
             code: self.code,
@@ -134,16 +117,6 @@ impl<T> ApiResponse<T> {
             trace_id: self.trace_id.clone(),
         }
         .localized_message(locale)
-    }
-
-    fn into_api_error(self) -> ApiError {
-        ApiError {
-            code: self.code,
-            message_key: self.message_key,
-            message_params: self.message_params,
-            fallback_message: self.msg,
-            trace_id: self.trace_id,
-        }
     }
 }
 
@@ -169,7 +142,18 @@ mod tests {
         let json = r#"{"code":1001,"msg":"参数错误","data":null}"#;
         let resp: ApiResponse<Option<Payload>> = serde_json::from_str(json).unwrap();
         assert!(!resp.is_ok());
-        assert_eq!(resp.into_data().unwrap_err(), "参数错误");
+        // Display 语义：优先 fallback_message（服务端 msg）
+        assert_eq!(
+            ApiError {
+                code: resp.code,
+                message_key: resp.message_key.clone(),
+                message_params: resp.message_params.clone(),
+                fallback_message: resp.msg.clone(),
+                trace_id: None,
+            }
+            .to_string(),
+            "参数错误"
+        );
     }
 
     #[test]
@@ -189,11 +173,16 @@ mod tests {
     }
 
     #[test]
-    fn api_response_into_data_error_without_msg() {
-        let json = r#"{"code":500,"data":null}"#;
-        let resp: ApiResponse<Option<serde_json::Value>> = serde_json::from_str(json).unwrap();
-        // msg 缺失（默认空串），错误描述回退到 code
-        assert_eq!(resp.into_data().unwrap_err(), "business error code: 500");
+    fn api_error_display_falls_back_to_code_without_msg() {
+        // msg 缺失（默认空串）时，错误描述回退到 code
+        let error = ApiError {
+            code: 500,
+            message_key: None,
+            message_params: BTreeMap::new(),
+            fallback_message: String::new(),
+            trace_id: None,
+        };
+        assert_eq!(error.to_string(), "business error code: 500");
     }
 
     #[test]
@@ -211,8 +200,7 @@ mod tests {
             resp.localized_error_message(Some("en")),
             "Free users can register up to 3 devices. Upgrade to Pro for up to 10."
         );
-        let error = resp.into_data_structured().unwrap_err();
-        assert_eq!(error.trace_id.as_deref(), Some("trace-123"));
+        assert_eq!(resp.trace_id.as_deref(), Some("trace-123"));
     }
 
     #[test]
