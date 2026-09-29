@@ -380,9 +380,18 @@ fn session_cookie_value(token: &str, max_age: u64) -> String {
     )
 }
 
-pub(super) fn spawn_web_admin_server(shared: Arc<Mutex<SharedRuntimeState>>, wake: Arc<Notify>) {
+pub(super) fn spawn_web_admin_server(
+    shared: Arc<Mutex<SharedRuntimeState>>,
+    wake: Arc<Notify>,
+    startup_config: Option<crate::config::MachineConfig>,
+) {
     tokio::spawn(async move {
-        if !load_machine_config().unwrap_or_default().webui_enabled {
+        // 读失败（None）时沿用 MachineConfig::default 的 webui_enabled=true 语义。
+        if !startup_config
+            .as_ref()
+            .map(|config| config.webui_enabled)
+            .unwrap_or(true)
+        {
             info!("[WebAdmin] listener disabled by webui_enabled=false");
             return;
         }
@@ -507,20 +516,23 @@ fn web_admin_addr(remote_enabled: bool) -> Result<SocketAddr> {
         .with_context(|| format!("invalid web admin listen addr: {}", configured))
 }
 
-pub(super) fn web_admin_addr_for_log() -> String {
-    if !load_machine_config().unwrap_or_default().webui_enabled {
+/// 启动日志用的 Web Admin 监听地址（复用启动路径已加载的 config，避免双读）。
+pub(super) fn web_admin_addr_for_log(config: Option<&crate::config::MachineConfig>) -> String {
+    // 读失败（None）时沿用 MachineConfig::default 的 webui_enabled=true 语义。
+    if !config
+        .map(|config| config.webui_enabled)
+        .unwrap_or(true)
+    {
         return "disabled".to_string();
     }
-    let security = load_machine_config()
+    let security = config.and_then(|config| {
+        WebSecurityState::from_values(
+            config.web_admin_allowed_ip.as_deref(),
+            config.web_admin_security_code.as_deref(),
+            config.web_admin_security_code_must_change,
+        )
         .ok()
-        .map(|config| {
-            WebSecurityState::from_values(
-                config.web_admin_allowed_ip.as_deref(),
-                config.web_admin_security_code.as_deref(),
-                config.web_admin_security_code_must_change,
-            )
-        })
-        .and_then(|result| result.ok());
+    });
     let remote_enabled = security
         .as_ref()
         .is_some_and(|security| security.allowed_remote_ip.lock().is_some())

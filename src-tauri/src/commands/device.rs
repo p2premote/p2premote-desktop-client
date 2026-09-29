@@ -2,8 +2,6 @@
 //!
 //! 所有需要服务器令牌的设备类命令统一通过 IPC 委托后台 service 处理
 //! （service 持有令牌、负责续期）。本模块只做命令转发。
-//!
-//! 本地能力（系统信息）见 local_diagnostics.rs。
 
 use tracing::{debug, error, info};
 

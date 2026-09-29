@@ -284,9 +284,19 @@ impl ServiceWsClient {
                                     }
                                 }
                             }
-                            WsSendType::WOLResult { request_id, success, code } => {
-                                let ws_msg=WsMessage::WOLResult{request_id,success,code};
-                                if let Ok(json)=serde_json::to_string(&ws_msg){let _=write.send(Message::Text(json.into())).await;}
+                            WsSendType::WOLResult {
+                                request_id,
+                                success,
+                                code,
+                            } => {
+                                let ws_msg = WsMessage::WOLResult {
+                                    request_id,
+                                    success,
+                                    code,
+                                };
+                                if let Ok(json) = serde_json::to_string(&ws_msg) {
+                                    let _ = write.send(Message::Text(json.into())).await;
+                                }
                             }
                         }
                     }

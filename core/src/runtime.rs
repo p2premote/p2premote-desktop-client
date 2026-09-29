@@ -459,31 +459,36 @@ pub async fn run_service_foreground() -> Result<()> {
         );
     }
     runtime_trace("public network cache cleared");
-    let startup_locale = crate::config::load_machine_config()
-        .ok()
-        .and_then(|config| config.locale);
+    // 启动路径只加载一次 machine config：locale 恢复、wgvpn 残留清理、
+    // 登录会话判定与 Web Admin 启动/日志共用，避免同一文件重复读 4-6 次。
+    // 读失败时各消费点沿用原先的默认值语义（default / false / 跳过恢复）。
+    let startup_config = match crate::config::load_machine_config() {
+        Ok(config) => Some(config),
+        Err(err) => {
+            info!(
+                "[ServiceRuntime] config load failed during startup; using defaults: {}",
+                err
+            );
+            None
+        }
+    };
+    let startup_locale = startup_config
+        .as_ref()
+        .and_then(|config| config.locale.clone());
     crate::device::initialize_public_network_group(startup_locale.as_deref());
     runtime_trace("public network group initialized");
 
     // WGVPN 数据面属于 service 进程，重启后不可恢复；这里只清理崩溃残留。
-    let cleanup_config = match crate::config::load_machine_config() {
-        Ok(config) => config,
-        Err(err) => {
-            info!(
-                "[ServiceRuntime] config load failed during wgvpn stale cleanup; using defaults: {}",
-                err
-            );
-            crate::config::MachineConfig::default()
-        }
-    };
+    let cleanup_config = startup_config.clone().unwrap_or_default();
     runtime_trace("cleanup config loaded");
     runtime_trace("before stale wgvpn cleanup");
     wgvpn_flow::cleanup_stale_sessions(&cleanup_config)
         .context("failed to clear stale wgvpn state before service startup")?;
     runtime_trace("stale wgvpn sessions cleaned");
 
-    let startup_login_enabled = crate::config::load_machine_config()
-        .map(|config| persistent_login_enabled(&config))
+    let startup_login_enabled = startup_config
+        .as_ref()
+        .map(persistent_login_enabled)
         .unwrap_or(false);
     let (status_tx, _) = tokio::sync::broadcast::channel(STATUS_BROADCAST_CAPACITY);
     let shared = Arc::new(Mutex::new(SharedRuntimeState {
@@ -497,13 +502,14 @@ pub async fn run_service_foreground() -> Result<()> {
     }));
     // 从持久化配置恢复 locale 到内存缓存，保证 service 重启后
     // 第一批 message（批次4）能按正确语言选词，避免短暂显示默认语言。
-    if let Ok(config) = crate::config::load_machine_config() {
-        if let Some(locale) = config.locale {
+    if let Some(config) = startup_config.as_ref() {
+        if let Some(locale) = config.locale.clone() {
             shared.lock().status.locale = Some(locale);
         }
         // 恢复邀请临时密码，邀请页挂载时优先复用而不是重新生成覆盖。
         if let Some(password) = config
             .invite_temporary_password
+            .clone()
             .filter(|value| !value.is_empty())
         {
             shared.lock().status.invite_temporary_password = Some(password);
@@ -513,11 +519,11 @@ pub async fn run_service_foreground() -> Result<()> {
     spawn_control_server(shared.clone(), wake.clone());
     runtime_trace("control server spawned");
     info!("[ServiceRuntime] IPC control server started");
-    web_admin::spawn_web_admin_server(shared.clone(), wake.clone());
+    web_admin::spawn_web_admin_server(shared.clone(), wake.clone(), startup_config.clone());
     runtime_trace("web admin server spawned");
     info!(
         "[ServiceRuntime] web admin server scheduled on {}",
-        web_admin::web_admin_addr_for_log()
+        web_admin::web_admin_addr_for_log(startup_config.as_ref())
     );
 
     let health_shared = shared.clone();
@@ -793,8 +799,25 @@ pub async fn run_service_foreground() -> Result<()> {
                                 set_last_error(&shared, err.to_string());
                             }
                         }
-                        WsEvent::WOLRequest { request_id, macs, target_ipv4, prefix_len } => {
-                            let client=ws_client.clone(); tokio::spawn(async move { let result=crate::wol::send_magic_packets(&macs,&target_ipv4,prefix_len).await; let success=result.is_ok(); let code=if success{"sent".to_string()}else{"send_failed".to_string()}; let _=client.send_wol_result(request_id,success,code).await; });
+                        WsEvent::WOLRequest {
+                            request_id,
+                            macs,
+                            target_ipv4,
+                            prefix_len,
+                        } => {
+                            let client = ws_client.clone();
+                            tokio::spawn(async move {
+                                let result =
+                                    crate::wol::send_magic_packets(&macs, &target_ipv4, prefix_len)
+                                        .await;
+                                let success = result.is_ok();
+                                let code = if success {
+                                    "sent".to_string()
+                                } else {
+                                    "send_failed".to_string()
+                                };
+                                let _ = client.send_wol_result(request_id, success, code).await;
+                            });
                         }
                     }
                 }

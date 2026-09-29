@@ -598,7 +598,6 @@ fn is_ipc_authorization_error(message: &str) -> bool {
 async fn ensure_background_service_session_inner(
     _app: &AppHandle,
 ) -> Result<ServiceStatusResponse, String> {
-    debug!("[service] === ensure_background_service_session begin ===");
     let _guard = get_service_session_lock().lock().await;
     debug!("[service] acquired session lock");
 
@@ -611,10 +610,6 @@ async fn ensure_background_service_session_inner(
             // 会在缺少 device_id 时注册设备。把 RegisterDevice 放在这里会让正常 IPC
             // 因外网延迟被误报为“后台服务检查超时”。
             let result = collect_service_status().await;
-            debug!(
-                "[service] === ensure_background_service_session end (already running), running={} ===",
-                result.as_ref().map(|r| r.service.running).unwrap_or(false)
-            );
             return result;
         }
         Err(e) => {
@@ -708,17 +703,10 @@ async fn ensure_background_service_session_inner(
         );
     }
 
-    let result = collect_service_status().await;
-    debug!(
-        "[service] === ensure_background_service_session end, running={} ===",
-        result.as_ref().map(|r| r.service.running).unwrap_or(false)
-    );
-    result
+    collect_service_status().await
 }
 
 pub fn cleanup_background_service_on_app_exit() {
-    debug!("[service] === cleanup on app exit begin ===");
-
     let shutdown_sent =
         tauri::async_runtime::block_on(send_command(Data::ShutdownGracefully)).is_ok();
     debug!("[service] shutdown sent: {}", shutdown_sent);
@@ -767,10 +755,8 @@ pub fn cleanup_background_service_on_app_exit() {
             "[service] service state on exit: installed={}, running={}",
             status.installed, status.running
         ),
-        Err(err) => warn!("[service] query SCM service on app exit failed: {}", err),
+        Err(err) => warn!("[service] query SCM service on exit failed: {}", err),
     }
-
-    debug!("[service] === cleanup on app exit done ===");
 }
 
 /// 通过持久连接发送命令（带响应）。连接异常直接返回，由 UI 明确提示。

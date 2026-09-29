@@ -630,9 +630,9 @@ pub(super) async fn handle_data(
             verification_code,
             invite_code,
         } => {
-            let config = match load_machine_config() {
-                Ok(config) => config,
-                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
             };
             match register_by_email_code(
                 &config.server_url,
@@ -665,9 +665,9 @@ pub(super) async fn handle_data(
             }
         }
         Data::SendVerificationCode { email, purpose } => {
-            let config = match load_machine_config() {
-                Ok(config) => config,
-                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
             };
             match send_verification_code(&config.server_url, &email, &purpose).await {
                 Ok(response) if response.code == 0 => Some(cmd_response_with_data(
@@ -689,9 +689,9 @@ pub(super) async fn handle_data(
             verification_code,
             new_password,
         } => {
-            let config = match load_machine_config() {
-                Ok(config) => config,
-                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
             };
             match reset_password_by_email_code(
                 &config.server_url,
@@ -716,9 +716,9 @@ pub(super) async fn handle_data(
             }
         }
         Data::CheckUpdate { current_version } => {
-            let config = match load_machine_config() {
-                Ok(config) => config,
-                Err(err) => return Some(cmd_response(false, &err.to_string(), None)),
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
             };
             match crate::update::fetch_version_policy(&config.server_url).await {
                 Ok(data) => {
