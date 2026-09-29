@@ -395,8 +395,7 @@ pub async fn start_active_wgvpn(
     local_payload.my_ip = choose_passive_ip_for_peer(&wg_cli, target_device_id, ip_start, ip_end)?;
     local_payload.wg_port = WGVPN_LISTEN_PORT;
     local_payload.health_port = HEALTH_PORT;
-    let peer_payload = wgvpn_exchange::exchange_as_active_platform(
-        Path::new(&punch_lib),
+    let peer_payload = wgvpn_exchange::exchange_as_active(
         &punch_token,
         &local_payload,
         Duration::from_secs(60),
@@ -461,15 +460,15 @@ pub async fn start_active_wgvpn(
     // data plane is ready, then replace it immediately before adding the peer.
     // Embedded WireGuard permits each public key only once per interface.
     if let Err(err) = stop_conflicting_sessions(config, target_device_id, &peer_pubkey).await {
-        let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+        let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
         return Err(err);
     }
     if let Err(err) = validate_new_lan_routes(&peer_exposed_lan_cidrs) {
-        let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+        let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
         return Err(err);
     }
     if let Err(err) = validate_peer_virtual_ip(target_device_id, &peer_ip) {
-        let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+        let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
         return Err(err);
     }
 
@@ -478,7 +477,7 @@ pub async fn start_active_wgvpn(
     let tunnel_existed = !uses_userspace_wg() && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
     if !uses_userspace_wg() && !tunnel_existed {
         if let Err(err) = ensure_wg_listen_port_available(WGVPN_LISTEN_PORT) {
-            let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+            let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
             return Err(err);
         }
     }
@@ -570,7 +569,7 @@ pub async fn start_active_wgvpn(
                 local_endpoint,
                 err
             );
-            let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+            let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
             return Err(err);
         }
     };
@@ -656,8 +655,7 @@ pub async fn start_passive_wgvpn(
     };
 
     // 1. 公钥 + IP 协商（FFI Exchange，被动端：收主动端范围 → 分配 → 回传）
-    let active_payload = wgvpn_exchange::exchange_as_passive_platform(
-        Path::new(&punch_lib),
+    let active_payload = wgvpn_exchange::exchange_as_passive(
         &punch_token,
         &local_payload_template,
         Duration::from_secs(120),
@@ -743,7 +741,7 @@ pub async fn start_passive_wgvpn(
     if !use_userspace_router && !tunnel_existed {
         if let Err(err) = ensure_wg_listen_port_available(WGVPN_LISTEN_PORT) {
             release_reserved_ip(reserved_peer_ip);
-            let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+            let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
             return Err(err);
         }
     }
@@ -834,7 +832,7 @@ pub async fn start_passive_wgvpn(
                 err
             );
             release_reserved_ip(reserved_peer_ip);
-            let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+            let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
             return Err(err);
         }
     };
@@ -870,7 +868,7 @@ pub async fn start_passive_wgvpn(
                     let _ = wgvpn::stop_tunnel(&resolve_wireguard_exe(), &handle.tunnel_name);
                 }
                 release_reserved_ip(reserved_peer_ip);
-                let _ = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &udp_tunnel.handle_id);
+                let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
                 return Err(err);
             }
         };
@@ -1029,7 +1027,7 @@ async fn stop_wgvpn_internal(
     }
 
     // 2. 停止该 peer 对应的 gonc UDP 数据面
-    if let Err(e) = gonc_ffi::stop_udp_tunnel(Path::new(&punch_lib), &session.gonc_handle_id) {
+    if let Err(e) = gonc_ffi::stop_udp_tunnel(&session.gonc_handle_id) {
         warn!("[wgvpn] stop gonc tunnel failed: {:#}", e);
         cleanup_errors.push(format!("stop gonc UDP tunnel: {e:#}"));
     }

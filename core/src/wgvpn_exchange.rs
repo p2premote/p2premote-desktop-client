@@ -11,7 +11,6 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
-use std::path::Path;
 use std::time::Duration;
 // ============ IPv4 <-> u32 转换（大端序，即网络字节序的十进制表示） ============
 
@@ -341,7 +340,7 @@ pub fn derive_kx_token(base_token: &str) -> String {
 /// 主动端执行交换：Mutual 模式一次调用，发出本端载荷并接收对端载荷，
 /// 返回被动端回传的载荷（含 assigned_ip / my_ip）。
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-pub async fn exchange_as_active_native(
+pub async fn exchange_as_active(
     base_token: &str,
     local_payload: &ExchangePayload,
     timeout: Duration,
@@ -363,7 +362,7 @@ pub async fn exchange_as_active_native(
 /// `allocate` 闭包接收（对端 device_id, IP 范围），返回分配的 (assigned_ip, my_ip)。
 /// 这样被动端的 IP 分配策略由 p2p.rs 决定，本模块只负责传输。
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-pub async fn exchange_as_passive_native<F>(
+pub async fn exchange_as_passive<F>(
     base_token: &str,
     local_payload_template: &ExchangePayload,
     timeout: Duration,
@@ -408,53 +407,6 @@ where
     )
     .await?;
     Ok(active_payload)
-}
-
-/// Platform-selected async exchange used by the service flow. All supported
-/// platforms (Linux/Windows/macOS) run the linked Rust Punch crate; the
-/// punch_lib argument is kept for signature compatibility.
-pub async fn exchange_as_active_platform(
-    punch_lib: &Path,
-    base_token: &str,
-    local_payload: &ExchangePayload,
-    timeout: Duration,
-) -> Result<ExchangePayload> {
-    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-    {
-        let _ = punch_lib;
-        exchange_as_active_native(base_token, local_payload, timeout).await
-    }
-    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
-    {
-        let _ = (punch_lib, base_token, local_payload, timeout);
-        Err(anyhow!(
-            "Rust Punch exchange is not available on this platform"
-        ))
-    }
-}
-
-pub async fn exchange_as_passive_platform<F>(
-    punch_lib: &Path,
-    base_token: &str,
-    local_payload: &ExchangePayload,
-    timeout: Duration,
-    allocate: F,
-) -> Result<ExchangePayload>
-where
-    F: FnOnce(i64, u32, u32, u32) -> Result<(u32, u32)>,
-{
-    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-    {
-        let _ = punch_lib;
-        exchange_as_passive_native(base_token, local_payload, timeout, allocate).await
-    }
-    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
-    {
-        let _ = (punch_lib, base_token, local_payload, timeout, allocate);
-        Err(anyhow!(
-            "Rust Punch exchange is not available on this platform"
-        ))
-    }
 }
 
 #[cfg(test)]

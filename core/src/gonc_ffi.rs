@@ -591,22 +591,62 @@ where
 
 /// Native Rust Punch path used by Linux/Windows/macOS; the punch crate is
 /// linked in-process on all three platforms.
-/// The temporary JSON conversion keeps the existing core result contract
-/// stable while the strongly typed API is migrated at call sites.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn start_udp_tunnel_native(request: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
-    let input =
-        serde_json::to_string(request).context("failed to encode native udp tunnel request")?;
-    let native: p2premote_punch::UdpTunnelInput =
-        serde_json::from_str(&input).context("failed to convert native udp tunnel request")?;
     let result = p2premote_punch::api::start_udp_tunnel(
-        native,
+        request.into(),
         Duration::from_secs(request.timeout_secs.saturating_add(10)),
     )
     .await
     .map_err(|error| anyhow!(error))?;
-    serde_json::from_value(serde_json::to_value(result)?)
-        .context("failed to convert native udp tunnel result")
+    native_udp_tunnel_result(result)
+}
+
+/// 字段级转换（与原 JSON round-trip 等价：两侧均 snake_case 无 rename，
+/// UdpTunnelRequest 恒序列化全部字段，punch 侧的 serde default 不会触发）。
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+impl From<&UdpTunnelRequest> for p2premote_punch::UdpTunnelInput {
+    fn from(request: &UdpTunnelRequest) -> Self {
+        Self {
+            token: request.token.clone(),
+            role_hint: request.role_hint.clone(),
+            traversal_mode: request.traversal_mode.clone(),
+            network: request.network.clone(),
+            timeout_secs: i32::try_from(request.timeout_secs).unwrap_or(i32::MAX),
+            bind_ip: request.bind_ip.clone(),
+            local_listen_ip: request.local_listen_ip.clone(),
+            local_listen_port: i32::from(request.local_listen_port),
+            remote_target_ip: request.remote_target_ip.clone(),
+            remote_target_port: i32::from(request.remote_target_port),
+            allow_relay: request.allow_relay,
+        }
+    }
+}
+
+/// punch 结果 → core 结果。端口号/尝试次数由 i32 收窄为 u16/u32，
+/// 溢出按错误处理（原 JSON 反序列化遇到越界同样失败）。
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn native_udp_tunnel_result(result: p2premote_punch::UdpTunnelResult) -> Result<UdpTunnelResult> {
+    Ok(UdpTunnelResult {
+        ok: result.ok,
+        handle_id: result.handle_id,
+        local_forward_addr: result.local_forward_addr,
+        local_forward_port: u16::try_from(result.local_forward_port)
+            .context("udp tunnel local_forward_port out of range")?,
+        peer_endpoint: result.peer_endpoint,
+        local_nat_type: result.local_nat_type,
+        remote_nat_type: result.remote_nat_type,
+        network: result.network,
+        selected_traversal: result.selected_traversal,
+        transport_mode: result.transport_mode,
+        local_lan_addr: result.local_lan_addr,
+        local_nat_addr: result.local_nat_addr,
+        remote_lan_addr: result.remote_lan_addr,
+        remote_nat_addr: result.remote_nat_addr,
+        is_client: result.is_client,
+        attempts: u32::try_from(result.attempts).context("udp tunnel attempts out of range")?,
+        error: result.error,
+    })
 }
 
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
@@ -619,10 +659,8 @@ pub fn stop_udp_tunnel_native(handle_id: &str) {
     p2premote_punch::api::stop_udp_tunnel(handle_id);
 }
 
-pub fn stop_udp_tunnel(library_path: &Path, handle_id: &str) -> Result<()> {
-    // All supported platforms stop tunnels through the linked Rust Punch
-    // crate; the library path is kept for signature compatibility.
-    let _ = library_path;
+pub fn stop_udp_tunnel(handle_id: &str) -> Result<()> {
+    // All supported platforms stop tunnels through the linked Rust Punch crate.
     if handle_id.is_empty() {
         return Ok(());
     }
