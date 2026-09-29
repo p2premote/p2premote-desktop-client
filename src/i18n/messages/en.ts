@@ -316,6 +316,7 @@ const en = {
       recovering: 'Network issue, reconnecting',
       desc_connecting: 'Attempt {attempt}/{max}{suffix}',
       desc_connected_with_ip: 'Virtual IP: {ip}',
+      desc_connected_latency: 'Latency: {latency} ms',
       desc_connected_network: 'Tunnel transport protocol: {network}',
       desc_connected_with_lan: 'LAN subnets: {cidrs}',
       desc_connected_plain: 'Tunnel is healthy',

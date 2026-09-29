@@ -334,6 +334,7 @@ export default {
       recovering: '网络异常重连中',
       desc_connecting: '第 {attempt}/{max} 次尝试{suffix}',
       desc_connected_with_ip: '虚拟 IP：{ip}',
+      desc_connected_latency: '延迟：{latency} ms',
       desc_connected_network: '隧道传输协议：{network}',
       desc_connected_with_lan: 'LAN 网段：{cidrs}',
       desc_connected_plain: '隧道连接正常',

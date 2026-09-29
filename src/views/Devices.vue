@@ -108,6 +108,7 @@
                 <div>
                   <strong>{{ tunnelLifecycleTitle(selectedDevice) + tunnelLifecycleDots(selectedDevice) }}</strong>
                   <p>{{ tunnelLifecycleDescription(selectedDevice) }}</p>
+                  <p v-if="isTunnelConnected(selectedDevice)">{{ $t('devices.lifecycle.desc_connected_latency', { latency: tunnelLatencyText(selectedDevice) }) }}</p>
                   <p v-if="tunnelStatusMap[selectedDevice.device_id]?.network">{{ $t('devices.lifecycle.desc_connected_network', { network: tunnelStatusMap[selectedDevice.device_id]?.network?.toUpperCase() }) }}</p>
                   <p v-if="tunnelLanCidrs(selectedDevice).length">
                     {{ $t('devices.lifecycle.desc_connected_with_lan', { cidrs: tunnelLanCidrs(selectedDevice).join(', ') }) }}
@@ -374,6 +375,7 @@ interface TunnelInfo {
   exposed_lan_cidrs?: string[]
   health_state?: 'connected' | 'degraded'
   role?: 'active' | 'passive'
+  latency_ms?: number | null
 }
 
 interface ActiveTunnelJobStatus {
@@ -759,6 +761,13 @@ function tunnelVirtualIp(device: DeviceInfo | null): string {
   return tunnelStatusMap.value[device.device_id]?.virtual_ip || ''
 }
 
+/// 已连接时的心跳 RTT；心跳尚未回报时显示 —，与隧道状态页语义一致。
+function tunnelLatencyText(device: DeviceInfo | null): string {
+  if (!device) return '—'
+  const latency = tunnelStatusMap.value[device.device_id]?.latency_ms
+  return typeof latency === 'number' ? String(latency) : '—'
+}
+
 const RUSTDESK_TINY_DEFAULT_PORT = 21121
 
 function rustdeskTinyAddress(device: DeviceInfo | null): string {
@@ -928,6 +937,7 @@ function applyTunnelRuntimeStatus(runtime: any) {
           exposed_lan_cidrs: Array.isArray(session.exposed_lan_cidrs) ? session.exposed_lan_cidrs : [],
           health_state: session.health_state || 'connected',
           role,
+          latency_ms: typeof session.latency_ms === 'number' ? session.latency_ms : null,
         }
       }
     }
