@@ -212,9 +212,6 @@ jobs:
     needs: resolve-version
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    env:
-      # 脚本默认 /mnt/n/rust-cache 是本机 N 盘路径；CI 改用 runner 临时目录
-      RUST_CACHE_ROOT: ${{ runner.temp }}/rust-cache
     steps:
       - name: Checkout p2premote-desktop-client
         uses: actions/checkout@v4
@@ -253,6 +250,11 @@ jobs:
             "$RUSTDESK_TINY_RELEASE/$RUSTDESK_TINY_VERSION/RustDeskTiny-$RUSTDESK_TINY_VERSION.deb"
 
       - name: Build GUI package
+        # runner 上下文只能用于 step 级 env——放到 job 级 env 会让整个
+        # workflow 文件解析失败（Invalid workflow file）
+        env:
+          # 脚本默认 /mnt/n/rust-cache 是本机 N 盘路径；CI 改用 runner 临时目录
+          RUST_CACHE_ROOT: ${{ runner.temp }}/rust-cache
         run: ./scripts/build-linux-gui.sh -v "${{ needs.resolve-version.outputs.version }}"
 
       - name: Save compile image for next run
