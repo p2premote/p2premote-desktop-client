@@ -6,10 +6,11 @@
 #                             Punch/Exchange 三平台统一 Rust 源码集成）
 #   ../p2premote-wg-ffi     （Windows/macOS 的 userspace WireGuard 数据面：分别产出
 #                             p2premote-wg.dll / libp2premote-wg.dylib，wgonly）
-# 因此这些仓库必须推到同一个 GitHub 账号/组织下，本 workflow 用
-# actions/checkout 的 path: ../<repo> 在 runner 上还原出与本地 p2premote-all
-# 一致的目录结构（runner 的 workspace 本身就是 /.../work/<repo>/<repo>，
-# 目录名必须保持 p2premote-desktop-client，_build-linux-headless.sh 会校验）。
+# 因此这些仓库必须推到同一个 GitHub 账号/组织下，本 workflow 先把它们检出到
+# 工作区子目录再移到 ../<repo>（actions/checkout 不允许 path 越出
+# GITHUB_WORKSPACE），在 runner 上还原出与本地 p2premote-all 一致的目录结构
+# （runner 的 workspace 本身就是 /.../work/<repo>/<repo>，目录名必须保持
+# p2premote-desktop-client，_build-linux-headless.sh 会校验）。
 #
 # 触发方式：
 #   1. push 到 main：CI 构建，版本取 src-tauri/tauri.conf.json 的 X.Y.Z
@@ -110,15 +111,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/p2premote-punch-rs
-          path: ../p2premote-punch-rs
+          path: p2premote-punch-rs
           token: ${{ env.CHECKOUT_TOKEN }}
 
       - name: Checkout p2premote-wg-ffi
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/p2premote-wg-ffi
-          path: ../p2premote-wg-ffi
+          path: p2premote-wg-ffi
           token: ${{ env.CHECKOUT_TOKEN }}
+
+      # actions/checkout 不允许 path 越出 GITHUB_WORKSPACE，先检出到工作区
+      # 子目录再移到 ../<repo>，还原本地 p2premote-all 的兄弟目录布局
+      - name: Move sibling repos to ../
+        shell: bash
+        run: |
+          mv "$GITHUB_WORKSPACE/p2premote-punch-rs" "$GITHUB_WORKSPACE/../p2premote-punch-rs"
+          mv "$GITHUB_WORKSPACE/p2premote-wg-ffi" "$GITHUB_WORKSPACE/../p2premote-wg-ffi"
 
       - uses: actions/setup-node@v4
         with:
@@ -168,15 +177,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/p2premote-punch-rs
-          path: ../p2premote-punch-rs
+          path: p2premote-punch-rs
           token: ${{ env.CHECKOUT_TOKEN }}
 
       - name: Checkout p2premote-wg-ffi
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/p2premote-wg-ffi
-          path: ../p2premote-wg-ffi
+          path: p2premote-wg-ffi
           token: ${{ env.CHECKOUT_TOKEN }}
+
+      # actions/checkout 不允许 path 越出 GITHUB_WORKSPACE，先检出到工作区
+      # 子目录再移到 ../<repo>，还原本地 p2premote-all 的兄弟目录布局
+      - name: Move sibling repos to ../
+        run: |
+          mv "$GITHUB_WORKSPACE/p2premote-punch-rs" "$GITHUB_WORKSPACE/../p2premote-punch-rs"
+          mv "$GITHUB_WORKSPACE/p2premote-wg-ffi" "$GITHUB_WORKSPACE/../p2premote-wg-ffi"
 
       # 首次构建会现场创建 Debian 10 编译镜像（整套工具链下载，非常慢），
       # 用 docker save 的镜像 tar 做缓存；Dockerfile 或创建脚本变化时自动失效重建
@@ -220,15 +236,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/p2premote-punch-rs
-          path: ../p2premote-punch-rs
+          path: p2premote-punch-rs
           token: ${{ env.CHECKOUT_TOKEN }}
 
       - name: Checkout p2premote-wg-ffi
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/p2premote-wg-ffi
-          path: ../p2premote-wg-ffi
+          path: p2premote-wg-ffi
           token: ${{ env.CHECKOUT_TOKEN }}
+
+      # actions/checkout 不允许 path 越出 GITHUB_WORKSPACE，先检出到工作区
+      # 子目录再移到 ../<repo>，还原本地 p2premote-all 的兄弟目录布局
+      - name: Move sibling repos to ../
+        run: |
+          mv "$GITHUB_WORKSPACE/p2premote-punch-rs" "$GITHUB_WORKSPACE/../p2premote-punch-rs"
+          mv "$GITHUB_WORKSPACE/p2premote-wg-ffi" "$GITHUB_WORKSPACE/../p2premote-wg-ffi"
 
       # 与 linux-headless 共用同一编译镜像缓存；两个 job 并行且缓存均未命中时
       # 会各自构建一次镜像（其中一个 save 同 key 冲突仅告警，不影响构建结果）
@@ -283,15 +306,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/p2premote-punch-rs
-          path: ../p2premote-punch-rs
+          path: p2premote-punch-rs
           token: ${{ env.CHECKOUT_TOKEN }}
 
       - name: Checkout p2premote-wg-ffi
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/p2premote-wg-ffi
-          path: ../p2premote-wg-ffi
+          path: p2premote-wg-ffi
           token: ${{ env.CHECKOUT_TOKEN }}
+
+      # actions/checkout 不允许 path 越出 GITHUB_WORKSPACE，先检出到工作区
+      # 子目录再移到 ../<repo>，还原本地 p2premote-all 的兄弟目录布局
+      - name: Move sibling repos to ../
+        shell: bash
+        run: |
+          mv "$GITHUB_WORKSPACE/p2premote-punch-rs" "$GITHUB_WORKSPACE/../p2premote-punch-rs"
+          mv "$GITHUB_WORKSPACE/p2premote-wg-ffi" "$GITHUB_WORKSPACE/../p2premote-wg-ffi"
 
       - uses: actions/setup-node@v4
         with:
