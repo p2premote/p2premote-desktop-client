@@ -359,14 +359,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Download RustDeskTiny macOS archives
-        run: |
-          for arch in x86_64 aarch64; do
-            curl -fL --retry 3 -o "src-tauri/resources/RustDeskTiny-macos-$arch.zip" \
-              "$RUSTDESK_TINY_RELEASE/$RUSTDESK_TINY_VERSION/RustDeskTiny-macos-$arch.zip"
-          done
-
-      # RustDeskTiny 走预编译 zip，脚本自动解包 lipo 合并；
+      # RustDeskTiny 走预编译 zip：不在此裸下载——build-macos.sh 缺产物时
+      # 自动按 scripts/rustdesktiny-artifacts.env 钉版下载并校验 SHA-256
+      # （1.5.1 的 aarch64 Release 资产损坏，macOS 目前钉在 1.5.0）。
       # CI 无证书，只能出 --unsigned 测试包
       - name: Build unsigned DMG
         run: ./scripts/build-macos.sh -v "${{ needs.resolve-version.outputs.version }}" --no-sccache --unsigned

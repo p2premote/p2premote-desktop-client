@@ -153,6 +153,22 @@ $wgFfiSource = Join-Path $projectRoot '..\p2premote-wg-ffi'
 if (-not (Test-Path -LiteralPath $wgFfiSource -PathType Container)) { throw "p2premote-wg-ffi source directory not found: $wgFfiSource" }
 $env:P2PREMOTE_WG_FFI_DIR = (Resolve-Path -LiteralPath $wgFfiSource).Path
 
+# core 的 build.rs 在链接期要求 resources\p2premote-wg.dll 已存在,而产出它的
+# src-tauri/build.rs 因 cargo 依赖序(core 先于 src-tauri 编译)必然晚于该检查。
+# 全新环境(CI)没有历史产物可复用,必须在此预编译;src-tauri 侧随后会幂等重编。
+$wgDllPath = Join-Path $projectRoot 'src-tauri\resources\p2premote-wg.dll'
+if (-not (Test-Path -LiteralPath $wgDllPath -PathType Leaf)) {
+    Push-Location $wgFfiSource
+    try {
+        # 与 src-tauri/build.rs 的 windows 参数完全一致(GOTOOLCHAIN 钉版保 Win7 兼容)
+        $env:GOTOOLCHAIN = 'go1.20.14'
+        & go build -tags=wgonly -mod=mod -buildmode=c-shared -ldflags '-s -w' -o $wgDllPath ./punchffi
+        if ($LASTEXITCODE -ne 0) { throw "userspace WG DLL prebuild failed with exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
+}
+
 $desktopResourceBackup = $null
 $desktopResourceOriginallyExisted = Test-Path -LiteralPath $desktopResource -PathType Leaf
 if ($replaceDesktopResource) {

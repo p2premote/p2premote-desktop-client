@@ -48,13 +48,13 @@ case "$kind" in
     asset="RustDeskTiny-macos-x86_64.zip"
     release_asset="$asset"
     base_url="$RUSTDESK_TINY_BASE_URL"
-    version="$RUSTDESK_TINY_VERSION"
+    version="${RUSTDESK_TINY_MACOS_VERSION:-$RUSTDESK_TINY_VERSION}"
     sha="$RUSTDESK_TINY_MACOS_X86_64_SHA256" ;;
   macos-aarch64)
     asset="RustDeskTiny-macos-aarch64.zip"
     release_asset="$asset"
     base_url="$RUSTDESK_TINY_BASE_URL"
-    version="$RUSTDESK_TINY_VERSION"
+    version="${RUSTDESK_TINY_MACOS_VERSION:-$RUSTDESK_TINY_VERSION}"
     sha="$RUSTDESK_TINY_MACOS_AARCH64_SHA256" ;;
   *) usage ;;
 esac
