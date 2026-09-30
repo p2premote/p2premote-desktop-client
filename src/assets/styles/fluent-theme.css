@@ -693,6 +693,21 @@ body,
     border: 1px solid var(--fluent-stroke);
 }
 
+/* ===== ElMessage 消息提示条：悬浮层给实色底 ===== */
+/* 状态色 light-9 在本主题里是半透明洗色（rgba α≈0.08，供页面内联元素叠白底用）。
+ * ElMessage 悬浮在任意内容之上（可能隔着弹窗遮罩），半透明底会透出下层背景
+ * （如遮罩压暗后的灰底），文字随之难以辨认，这里改为跟随主题的不透明图层色。 */
+
+.el-message,
+.el-message--primary,
+.el-message--success,
+.el-message--info,
+.el-message--warning,
+.el-message--danger,
+.el-message--error {
+    --el-message-bg-color: var(--el-bg-color);
+}
+
 /* ===== el-input 输入框：圆角对齐 ===== */
 
 .el-input__wrapper,
