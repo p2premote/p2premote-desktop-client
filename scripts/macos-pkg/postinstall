@@ -1,0 +1,47 @@
+#!/bin/bash
+# p2pRemote pkg postinstall: runs as root.
+# 布局与 core/src/service_control.rs 的 launchctl 安装器保持一致：
+#   - 服务二进制 + wg dylib 拷到 machine resources，daemon 与 .app 位置解耦
+#   - logs 目录收敛给 admin 组（GUI 与 root 服务共写），data 目录 root-only
+#   - LaunchDaemon 直接注册并启动（不经过 SMAppService，不依赖 app 签名）
+set -euo pipefail
+
+APP="/Applications/p2pRemote.app"
+ROOT="/Library/Application Support/p2pRemote"
+LABEL="top.p2premote.service"
+PLIST="/Library/LaunchDaemons/top.p2premote.service.plist"
+
+BUNDLE_RESOURCES="$APP/Contents/Resources/resources"
+for artifact in p2premote-service libp2premote-wg.dylib; do
+  [[ -f "$BUNDLE_RESOURCES/$artifact" ]] || {
+    echo "postinstall: missing bundled artifact: $BUNDLE_RESOURCES/$artifact" >&2
+    exit 1
+  }
+done
+
+mkdir -p "$ROOT/resources" "$ROOT/run" "$ROOT/logs" "$ROOT/data"
+
+install -m 755 "$BUNDLE_RESOURCES/p2premote-service" "$ROOT/resources/p2premote-service"
+install -m 755 "$BUNDLE_RESOURCES/libp2premote-wg.dylib" "$ROOT/resources/libp2premote-wg.dylib"
+# CLI 为可选的管理工具，缺失不阻断安装
+if [[ -f "$BUNDLE_RESOURCES/p2premote-cli" ]]; then
+  install -m 755 "$BUNDLE_RESOURCES/p2premote-cli" "$ROOT/resources/p2premote-cli"
+fi
+
+# GUI 以 console 用户运行，需要能写 machine logs（服务自身的
+# ensure_machine_dirs 也会做同样的收敛，这里保证首启即就绪）。
+CONSOLE_USER="$(stat -f %Su /dev/console 2>/dev/null || true)"
+if [[ -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" && "$CONSOLE_USER" != "loginwindow" ]]; then
+  chown "$CONSOLE_USER":admin "$ROOT/logs" || true
+else
+  chgrp admin "$ROOT/logs" || true
+fi
+chmod 770 "$ROOT/logs"
+chmod 700 "$ROOT/data"
+
+# 升级场景：先摘除旧 daemon 再注册，幂等。
+/bin/launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+/bin/launchctl bootstrap system "$PLIST"
+/bin/launchctl enable "system/$LABEL"
+
+echo "postinstall: p2pRemote background service installed and started"

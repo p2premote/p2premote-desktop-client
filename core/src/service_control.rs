@@ -943,34 +943,6 @@ const MACOS_SERVICE_LABEL: &str = "top.p2premote.service";
 const MACOS_PLIST_PATH: &str = "/Library/LaunchDaemons/top.p2premote.service.plist";
 
 #[cfg(target_os = "macos")]
-fn macos_bundled_plist_path() -> Option<std::path::PathBuf> {
-    let executable = std::env::current_exe().ok()?;
-    executable.ancestors().find_map(|path| {
-        (path.file_name().and_then(|value| value.to_str()) == Some("Contents")).then(|| {
-            path.join("Library")
-                .join("LaunchDaemons")
-                .join("top.p2premote.service.plist")
-        })
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn register_bundled_macos_daemon() -> Result<()> {
-    use crate::macos_service_management::{set_daemon_registered, RegistrationStatus};
-
-    match set_daemon_registered(true)? {
-        RegistrationStatus::Enabled => Ok(()),
-        RegistrationStatus::RequiresApproval => Err(anyhow!(
-            "macOS background service is awaiting approval; enable p2pRemote in System Settings > General > Login Items"
-        )),
-        status => Err(anyhow!(
-            "macOS background service registration did not become active: {}",
-            status.as_str()
-        )),
-    }
-}
-
-#[cfg(target_os = "macos")]
 fn shell_quote(value: &Path) -> String {
     format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
 }
@@ -1041,16 +1013,10 @@ pub fn install_service(executable_path: &Path) -> Result<()> {
             executable_path.display()
         ));
     }
-    if macos_bundled_plist_path()
-        .as_ref()
-        .is_some_and(|path| path.exists())
-    {
-        return register_bundled_macos_daemon();
-    }
 
-    // Development builds do not have an application bundle. Retain a
-    // launchctl installer for local debugging; release bundles always take the
-    // ServiceManagement path above.
+    // 服务安装在 machine resources 目录并指向该副本，与 .app 的位置解耦；
+    // 正式分发由 pkg 安装器的 postinstall 执行同样的布局，此处保留
+    // launchctl 安装器供开发构建与 GUI 设置页手动启用。
     let resources_dir = crate::config::macos_resources_dir();
     let target = resources_dir.join(crate::config::default_service_binary_name());
     let install_root = crate::config::macos_install_root_dir();
@@ -1081,13 +1047,6 @@ pub fn install_service(executable_path: &Path) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn uninstall_service() -> Result<()> {
-    if macos_bundled_plist_path()
-        .as_ref()
-        .is_some_and(|path| path.exists())
-    {
-        crate::macos_service_management::set_daemon_registered(false)?;
-        return Ok(());
-    }
     let command = format!(
         "/bin/launchctl bootout system/{label} >/dev/null 2>&1 || true; /bin/rm -f {plist}",
         label = MACOS_SERVICE_LABEL,
@@ -1098,34 +1057,6 @@ pub fn uninstall_service() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn start_service() -> Result<()> {
-    let bundled = macos_bundled_plist_path()
-        .as_ref()
-        .is_some_and(|path| path.exists());
-    if bundled {
-        use crate::macos_service_management::RegistrationStatus;
-        match crate::macos_service_management::daemon_status()? {
-            RegistrationStatus::Enabled => {
-                let running = std::process::Command::new("/bin/launchctl")
-                    .args(["print", &format!("system/{MACOS_SERVICE_LABEL}")])
-                    .output()
-                    .map(|output| output.status.success())
-                    .unwrap_or(false);
-                if running {
-                    return Ok(());
-                }
-                // A deliberate stop uses bootout while keeping the user's
-                // approval. Re-register the bundled daemon to bootstrap it.
-                crate::macos_service_management::set_daemon_registered(false)?;
-                return register_bundled_macos_daemon();
-            }
-            RegistrationStatus::RequiresApproval => {
-                return Err(anyhow!(
-                    "macOS background service is awaiting approval; enable p2pRemote in System Settings > General > Login Items"
-                ))
-            }
-            _ => return register_bundled_macos_daemon(),
-        }
-    }
     if !Path::new(MACOS_PLIST_PATH).exists() {
         return Err(anyhow!("macOS background service is not installed"));
     }
@@ -1153,12 +1084,6 @@ pub fn restart_service() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn enable_service() -> Result<()> {
-    if macos_bundled_plist_path()
-        .as_ref()
-        .is_some_and(|path| path.exists())
-    {
-        return register_bundled_macos_daemon();
-    }
     run_macos_admin_script(&format!(
         "/bin/launchctl enable system/{MACOS_SERVICE_LABEL}"
     ))
@@ -1166,13 +1091,6 @@ pub fn enable_service() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn disable_service() -> Result<()> {
-    if macos_bundled_plist_path()
-        .as_ref()
-        .is_some_and(|path| path.exists())
-    {
-        crate::macos_service_management::set_daemon_registered(false)?;
-        return Ok(());
-    }
     run_macos_admin_script(&format!(
         "/bin/launchctl disable system/{MACOS_SERVICE_LABEL}"
     ))
@@ -1180,15 +1098,7 @@ pub fn disable_service() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn query_service_status() -> Result<ServiceStatus> {
-    let bundled = macos_bundled_plist_path()
-        .as_ref()
-        .is_some_and(|path| path.exists());
-    let registration = if bundled {
-        Some(crate::macos_service_management::daemon_status()?)
-    } else {
-        None
-    };
-    let installed = bundled || Path::new(MACOS_PLIST_PATH).exists();
+    let installed = Path::new(MACOS_PLIST_PATH).exists();
     if !installed {
         return Ok(ServiceStatus {
             installed: false,
@@ -1212,32 +1122,6 @@ pub fn query_service_status() -> Result<ServiceStatus> {
                 .any(|line| line.contains(MACOS_SERVICE_LABEL) && line.contains("true"))
         })
         .unwrap_or(false);
-    if let Some(registration) = registration {
-        use crate::macos_service_management::RegistrationStatus;
-        // A bundled CLI is not the main application process, so
-        // SMAppService may report NotFound even while launchd is running the
-        // daemon registered by its parent app. In that case launchd is the
-        // authoritative runtime source and the embedded plist still proves
-        // that this installation supports the service.
-        let running = status.status.success();
-        return Ok(ServiceStatus {
-            installed,
-            running,
-            enabled: matches!(registration, RegistrationStatus::Enabled)
-                || (matches!(registration, RegistrationStatus::NotFound) && running && !disabled),
-            raw_state: if matches!(registration, RegistrationStatus::RequiresApproval) {
-                "requires-approval".to_string()
-            } else if running {
-                raw.lines()
-                    .find(|line| line.trim_start().starts_with("state ="))
-                    .map(str::trim)
-                    .unwrap_or("running")
-                    .to_string()
-            } else {
-                registration.as_str().to_string()
-            },
-        });
-    }
     Ok(ServiceStatus {
         installed,
         running: status.status.success(),

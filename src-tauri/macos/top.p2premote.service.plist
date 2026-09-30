@@ -4,15 +4,24 @@
 <dict>
   <key>Label</key>
   <string>top.p2premote.service</string>
-  <key>BundleProgram</key>
-  <string>Contents/Resources/resources/p2premote-service</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Application Support/p2pRemote/resources/p2premote-service</string>
+    <string>--foreground</string>
+  </array>
   <key>GroupName</key>
   <string>staff</string>
+  <key>WorkingDirectory</key>
+  <string>/Library/Application Support/p2pRemote</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>ProcessType</key>
   <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Library/Application Support/p2pRemote/logs/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Application Support/p2pRemote/logs/launchd.stderr.log</string>
 </dict>
 </plist>

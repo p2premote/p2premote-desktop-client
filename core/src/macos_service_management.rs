@@ -1,15 +1,15 @@
-//! Thin macOS 13+ ServiceManagement bridge.
+//! Thin macOS 13+ ServiceManagement bridge for the app's Login Item
+//! (开机自启) registration.
 //!
 //! Keeping this bridge in Rust avoids shipping an unsigned script or requiring
-//! Xcode/Swift on an end-user machine. The daemon property list is embedded in
-//! the signed application bundle at `Contents/Library/LaunchDaemons`.
+//! Xcode/Swift on an end-user machine. The background daemon is NOT managed
+//! here: it ships as a classic LaunchDaemon installed by the pkg installer
+//! (see core/src/service_control.rs).
 
 #![cfg(target_os = "macos")]
 
 use anyhow::{anyhow, Result};
 use std::ffi::{c_char, c_void, CStr, CString};
-
-const DAEMON_PLIST_NAME: &str = "top.p2premote.service.plist";
 
 type ObjcId = *mut c_void;
 type ObjcSel = *mut c_void;
@@ -72,39 +72,6 @@ unsafe fn class(name: &str) -> Result<ObjcId> {
     }
 }
 
-unsafe fn ns_string(value: &str) -> Result<ObjcId> {
-    type SendString = unsafe extern "C" fn(ObjcId, ObjcSel, *const c_char) -> ObjcId;
-    let value = CString::new(value).map_err(|_| anyhow!("invalid string for ServiceManagement"))?;
-    let send: SendString = std::mem::transmute(objc_msgSend as *const ());
-    let string = send(
-        class("NSString")?,
-        selector("stringWithUTF8String:"),
-        value.as_ptr(),
-    );
-    if string.is_null() {
-        Err(anyhow!("failed to create ServiceManagement string"))
-    } else {
-        Ok(string)
-    }
-}
-
-unsafe fn daemon_service() -> Result<ObjcId> {
-    type SendObject = unsafe extern "C" fn(ObjcId, ObjcSel, ObjcId) -> ObjcId;
-    let send: SendObject = std::mem::transmute(objc_msgSend as *const ());
-    let service = send(
-        class("SMAppService")?,
-        selector("daemonServiceWithPlistName:"),
-        ns_string(DAEMON_PLIST_NAME)?,
-    );
-    if service.is_null() {
-        Err(anyhow!(
-            "failed to create macOS LaunchDaemon service object"
-        ))
-    } else {
-        Ok(service)
-    }
-}
-
 unsafe fn main_app_service() -> Result<ObjcId> {
     type SendObject = unsafe extern "C" fn(ObjcId, ObjcSel) -> ObjcId;
     let send: SendObject = std::mem::transmute(objc_msgSend as *const ());
@@ -161,31 +128,6 @@ fn with_pool<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
         objc_autoreleasePoolPop(pool);
         result
     }
-}
-
-pub fn daemon_status() -> Result<RegistrationStatus> {
-    with_pool(|| unsafe { Ok(status_for(daemon_service()?)) })
-}
-
-pub fn set_daemon_registered(enabled: bool) -> Result<RegistrationStatus> {
-    with_pool(|| unsafe {
-        let service = daemon_service()?;
-        let current = status_for(service);
-        if (enabled
-            && matches!(
-                current,
-                RegistrationStatus::Enabled | RegistrationStatus::RequiresApproval
-            ))
-            || (!enabled
-                && matches!(
-                    current,
-                    RegistrationStatus::NotRegistered | RegistrationStatus::NotFound
-                ))
-        {
-            return Ok(current);
-        }
-        set_registered(service, enabled)
-    })
 }
 
 pub fn set_main_app_login_item(enabled: bool) -> Result<RegistrationStatus> {

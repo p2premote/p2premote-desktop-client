@@ -221,9 +221,6 @@ macos_config="$build_dir/tauri.macos.conf.json"
 
 app_path="$(find "$cargo_target_dir/universal-apple-darwin/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
 [[ -n "$app_path" ]] || { echo "Universal app bundle was not produced." >&2; exit 1; }
-mkdir -p "$app_path/Contents/Library/LaunchDaemons"
-cp "$repo_dir/src-tauri/macos/top.p2premote.service.plist" \
-  "$app_path/Contents/Library/LaunchDaemons/top.p2premote.service.plist"
 if [[ "$unsigned" == 1 ]]; then
   codesign --force --deep \
     --entitlements "$repo_dir/src-tauri/Entitlements.plist" \
@@ -272,3 +269,22 @@ if [[ "$unsigned" == 0 ]]; then
 fi
 
 echo "Created $dmg_path"
+
+# ---- pkg 安装包（正式分发格式：app + LaunchDaemon，postinstall 以 root 完成
+# machine 目录/服务安装并启动；DMG 仅保留作内部测试） ----
+pkg_staging="$build_dir/pkg-root"
+rm -rf "$pkg_staging"
+mkdir -p "$pkg_staging/Applications" "$pkg_staging/Library/LaunchDaemons"
+cp -R "$app_path" "$pkg_staging/Applications/$(basename "$app_path")"
+cp "$repo_dir/src-tauri/macos/top.p2premote.service.plist" \
+  "$pkg_staging/Library/LaunchDaemons/top.p2premote.service.plist"
+pkg_path="$dist_dir/p2pRemote_${version}_macos-universal.pkg"
+rm -f "$pkg_path"
+pkgbuild \
+  --root "$pkg_staging" \
+  --identifier top.p2premote.client \
+  --version "$version" \
+  --scripts "$repo_dir/scripts/macos-pkg" \
+  "$pkg_path"
+
+echo "Created $pkg_path"

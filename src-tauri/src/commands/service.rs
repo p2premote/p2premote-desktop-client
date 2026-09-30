@@ -633,7 +633,7 @@ async fn ensure_background_service_session_inner(
     if scm_status.installed {
         #[cfg(target_os = "macos")]
         if !scm_status.enabled {
-            return Err("macOS background service is not enabled; enable it explicitly in Settings > Background Service and verify it in System Settings > General > Login Items".to_string());
+            return Err("macOS background service is disabled; re-enable it in the app settings (Background Service)".to_string());
         }
         if !scm_status.running {
             #[cfg(target_os = "linux")]
@@ -649,7 +649,15 @@ async fn ensure_background_service_session_inner(
                 }
             }
             #[cfg(target_os = "macos")]
-            debug!("[service] waiting for macOS launchd to start the registered service...");
+            {
+                // launchd 在 KeepAlive 下通常会自行拉起；这里兜底 kickstart
+                // （提权会请求管理员授权），与 Windows 的 SCM start 对齐。
+                debug!("[service] attempting launchd kickstart...");
+                match start_service() {
+                    Ok(()) => debug!("[service] launchd start returned Ok"),
+                    Err(err) => return Err(format!("failed to start background service: {err:#}")),
+                }
+            }
         } else {
             debug!("[service] SCM reports running, waiting for IPC...");
         }
@@ -696,7 +704,7 @@ async fn ensure_background_service_session_inner(
         }
     } else {
         #[cfg(target_os = "macos")]
-        return Err("macOS background service is not registered; enable it explicitly in Settings > Background Service and verify it in System Settings > General > Login Items".to_string());
+        return Err("macOS background service is not installed; reinstall the p2pRemote package (.pkg) or enable it in the app settings (Background Service)".to_string());
         #[cfg(not(target_os = "macos"))]
         return Err(
             "background service is not installed; the installation is incomplete".to_string(),
