@@ -112,15 +112,6 @@ fn validate_desktop_path(path: PathBuf) -> Result<PathBuf> {
     }
 }
 
-pub(super) async fn stop_desktop_session(
-    _shared: &Arc<Mutex<SharedRuntimeState>>,
-    _peer_device_id: i64,
-    _reason: &str,
-) -> Result<()> {
-    // RustDeskTiny owns its process and service lifecycle. Kept as an IPC compatibility no-op.
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

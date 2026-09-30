@@ -270,7 +270,6 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::StartAnonymousActiveTunnelJob { .. } => "StartAnonymousActiveTunnelJob",
         Data::StopActiveTunnelJob { .. } => "StopActiveTunnelJob",
         Data::StartDesktopSession { .. } => "StartDesktopSession",
-        Data::StopDesktopSession { .. } => "StopDesktopSession",
         Data::ApproveInboundTunnel { .. } => "ApproveInboundTunnel",
         Data::RejectInboundTunnel { .. } => "RejectInboundTunnel",
         Data::RefreshTunnelStatus => "RefreshTunnelStatus",
@@ -425,10 +424,6 @@ pub(super) async fn handle_data(
             }
             Some(response_from_result(result, |value| value))
         }
-        Data::StopDesktopSession { peer_device_id } => Some(response_from_result(
-            desktop_engine::stop_desktop_session(shared, peer_device_id, "user_requested").await,
-            |_| serde_json::json!({ "peer_device_id": peer_device_id }),
-        )),
         Data::ApproveInboundTunnel { attempt_id } => {
             resolve_inbound_approval(shared, &attempt_id, true)
         }

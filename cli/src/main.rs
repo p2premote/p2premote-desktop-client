@@ -104,7 +104,6 @@ enum TunnelCommands {
 #[derive(Subcommand)]
 enum DesktopCommands {
     Start { peer_device_id: i64 },
-    Stop { peer_device_id: i64 },
 }
 
 #[derive(Args)]
@@ -365,13 +364,6 @@ async fn main() -> Result<()> {
                     rustdesk_tiny_port: None,
                 })
                 .await?,
-            )?;
-        }
-        Commands::Desktop {
-            command: DesktopCommands::Stop { peer_device_id },
-        } => {
-            print_command_response(
-                send_service_command(Data::StopDesktopSession { peer_device_id }).await?,
             )?;
         }
         Commands::Job {

@@ -69,9 +69,6 @@ pub enum Data {
         #[serde(default)]
         rustdesk_tiny_port: Option<u16>,
     },
-    StopDesktopSession {
-        peer_device_id: i64,
-    },
     ApproveInboundTunnel {
         attempt_id: String,
     },
