@@ -309,7 +309,7 @@ async function disconnectTunnel(tunnel: TunnelItem) {
   try {
     const status = tunnel.role === 'active'
       ? await invoke<ServiceStatusResponse>('stop_service_active_tunnel', {
-          targetDeviceId: tunnel.peer_device_id,
+          peerDeviceId: tunnel.peer_device_id,
         })
       : await invoke<ServiceStatusResponse>('stop_service_tunnel', {
           sourceDeviceId: tunnel.peer_device_id,
@@ -338,10 +338,10 @@ async function retryTunnel(tunnel: TunnelItem) {
   reconnectingIds.value = next
   try {
     await invoke('stop_service_active_tunnel', {
-      targetDeviceId: tunnel.peer_device_id,
+      peerDeviceId: tunnel.peer_device_id,
     })
     await invoke<string>('start_service_active_tunnel', {
-      targetDeviceId: tunnel.peer_device_id,
+      peerDeviceId: tunnel.peer_device_id,
       peerDeviceUuid: device.device_uuid,
       connectCode: null,
       temporaryPassword: null,

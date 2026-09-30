@@ -941,7 +941,7 @@ async function handleRetryTunnel(device: DeviceInfo) {
       await new Promise(resolve => window.setTimeout(resolve, 500))
     }
     await invoke<string>('start_service_active_tunnel', {
-      targetDeviceId: device.device_id,
+      peerDeviceId: device.device_id,
       peerDeviceUuid: device.device_uuid,
       connectCode: null,
       temporaryPassword: null,
@@ -974,7 +974,7 @@ async function startTunnelSilently(device: DeviceInfo) {
   preparingTunnelIds.value = preparing
   try {
     await invoke<string>('start_service_active_tunnel', {
-      targetDeviceId: device.device_id,
+      peerDeviceId: device.device_id,
       peerDeviceUuid: device.device_uuid,
       connectCode: null,
       temporaryPassword: null,
