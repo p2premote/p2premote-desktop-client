@@ -109,7 +109,7 @@ enum DesktopCommands {
 #[derive(Args)]
 struct TunnelStopArgs {
     #[arg(long)]
-    target_device_id: Option<i64>,
+    peer_device_id: Option<i64>,
     #[arg(long)]
     source_device_id: Option<i64>,
 }
@@ -125,7 +125,7 @@ struct ConnectArgs {
 #[derive(Subcommand)]
 enum JobCommands {
     List,
-    Stop { target_device_id: i64 },
+    Stop { peer_device_id: i64 },
 }
 
 #[derive(Subcommand)]
@@ -311,10 +311,10 @@ async fn main() -> Result<()> {
         }
         Commands::Tunnel {
             command: TunnelCommands::Stop(args),
-        } => match (args.target_device_id, args.source_device_id) {
-            (Some(target_device_id), None) => {
+        } => match (args.peer_device_id, args.source_device_id) {
+            (Some(peer_device_id), None) => {
                 print_command_response(
-                    send_service_command(Data::StopActiveTunnel { target_device_id }).await?,
+                    send_service_command(Data::StopActiveTunnel { peer_device_id }).await?,
                 )?;
             }
             (None, Some(source_device_id)) => {
@@ -329,12 +329,12 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Connect(args) => match (args.device_id, args.invite) {
-            (Some(target_device_id), None) => {
-                let target_device_uuid = find_device_uuid(target_device_id).await?;
+            (Some(peer_device_id), None) => {
+                let peer_device_uuid = find_device_uuid(peer_device_id).await?;
                 print_command_response(
                     send_service_command(Data::StartActiveTunnelJob {
-                        target_device_id,
-                        target_device_uuid,
+                        peer_device_id,
+                        peer_device_uuid,
                         connect_code: None,
                         temporary_password: None,
                         lan_cidrs: Vec::new(),
@@ -380,10 +380,10 @@ async fn main() -> Result<()> {
             );
         }
         Commands::Job {
-            command: JobCommands::Stop { target_device_id },
+            command: JobCommands::Stop { peer_device_id },
         } => {
             print_command_response(
-                send_service_command(Data::StopActiveTunnelJob { target_device_id }).await?,
+                send_service_command(Data::StopActiveTunnelJob { peer_device_id }).await?,
             )?;
         }
         Commands::Service {
@@ -659,7 +659,7 @@ async fn command_runtime_status(command: Data) -> Result<RuntimeStatus> {
     }
 }
 
-async fn find_device_uuid(target_device_id: i64) -> Result<String> {
+async fn find_device_uuid(peer_device_id: i64) -> Result<String> {
     let devices = match send_service_command(Data::GetDeviceList).await? {
         Data::CommandResponse { ok, data, .. } => {
             if !ok {
@@ -680,7 +680,7 @@ async fn find_device_uuid(target_device_id: i64) -> Result<String> {
         .as_array()
         .ok_or_else(|| anyhow!("device list response data is not an array"))?;
     for device in list {
-        if device.get("device_id").and_then(Value::as_i64) == Some(target_device_id) {
+        if device.get("device_id").and_then(Value::as_i64) == Some(peer_device_id) {
             return device
                 .get("device_uuid")
                 .and_then(Value::as_str)
@@ -688,7 +688,7 @@ async fn find_device_uuid(target_device_id: i64) -> Result<String> {
                 .ok_or_else(|| anyhow!("target device missing device_uuid"));
         }
     }
-    Err(anyhow!("target device not found: {}", target_device_id))
+    Err(anyhow!("target device not found: {}", peer_device_id))
 }
 
 fn other_to_json(data: Data) -> Result<Value> {

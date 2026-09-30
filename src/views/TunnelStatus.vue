@@ -342,7 +342,7 @@ async function retryTunnel(tunnel: TunnelItem) {
     })
     await invoke<string>('start_service_active_tunnel', {
       targetDeviceId: tunnel.peer_device_id,
-      targetDeviceUuid: device.device_uuid,
+      peerDeviceUuid: device.device_uuid,
       connectCode: null,
       temporaryPassword: null,
       lanCidrs: [],

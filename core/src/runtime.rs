@@ -14,9 +14,9 @@ use crate::config::{
     save_machine_config,
 };
 use crate::control::{
-    accept_ipc_client, ActiveTunnelJobState, ActiveTunnelJobStatus, Connection, Data, IpcStream,
+    accept_ipc_client, TunnelJobState, TunnelJobStatus, Connection, Data, IpcStream,
     RuntimeStatus, TunnelLastResult, TunnelLifecycleRole, TunnelLifecycleState,
-    TunnelLifecycleStatus, WgvpnHealthState, WgvpnJobState, WgvpnJobStatus, WgvpnSessionStatus,
+    TunnelLifecycleStatus, WgvpnHealthState, WgvpnSessionStatus,
 };
 use crate::device::{
     anonymous_connect, collect_device_status_report, delete_device, generate_connect_code,
@@ -65,7 +65,8 @@ use ipc::*;
 use p2p_signal::*;
 use status::{
     clear_active_tunnel_job_status, current_locale, relocalize_runtime_status,
-    update_active_tunnel_job_status, update_status, upsert_tunnel_lifecycle,
+    tunnel_job_lifecycle_projection, update_active_tunnel_job_status, update_status,
+    upsert_tunnel_lifecycle,
 };
 use tunnel_health::*;
 use tunnel_jobs::*;
@@ -1324,11 +1325,12 @@ mod tests {
     fn relocalize_runtime_status_updates_existing_job_messages() {
         let mut status = RuntimeStatus {
             locale: Some("zh-CN".to_string()),
-            active_tunnel_jobs: vec![ActiveTunnelJobStatus {
+            active_tunnel_jobs: vec![TunnelJobStatus {
+                is_active: true,
                 tcp_retry_recommended: false,
-                target_device_id: 29,
-                target_device_uuid: "peer-29".to_string(),
-                state: ActiveTunnelJobState::Waiting,
+                peer_device_id: 29,
+                peer_device_uuid: "peer-29".to_string(),
+                state: TunnelJobState::Waiting,
                 attempt: 2,
                 max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                 message: "本次建立失败：等待打洞响应超时；60 秒后自动重试".to_string(),
@@ -1400,13 +1402,16 @@ mod tests {
             },
         );
 
-        let stale_status = WgvpnJobStatus {
+        let stale_status = TunnelJobStatus {
             peer_device_id: 29,
+            peer_device_uuid: String::new(),
             is_active: false,
-            state: WgvpnJobState::Running,
+            state: TunnelJobState::Running,
             attempt: 1,
             max_attempts: WGVPN_JOB_MAX_ATTEMPTS,
             message: "stale token".to_string(),
+            result: None,
+            tcp_retry_recommended: false,
             updated_at: 1,
         };
         assert!(!update_wgvpn_job_status(&shared, stale_status, Some(1)));

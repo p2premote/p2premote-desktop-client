@@ -784,9 +784,9 @@ pub async fn stop_service_tunnel(source_device_id: i64) -> Result<ServiceStatusR
 
 #[tauri::command]
 pub async fn stop_service_active_tunnel(
-    target_device_id: i64,
+    peer_device_id: i64,
 ) -> Result<ServiceStatusResponse, String> {
-    match send_command_responsive(Data::StopActiveTunnel { target_device_id }).await {
+    match send_command_responsive(Data::StopActiveTunnel { peer_device_id }).await {
         Ok(Data::CommandResponse {
             ok: true, status, ..
         }) => {
@@ -821,16 +821,16 @@ pub async fn test_tunnel_speed(peer_device_id: i64) -> Result<serde_json::Value,
 #[tauri::command]
 pub async fn start_service_active_tunnel(
     app: AppHandle,
-    target_device_id: i64,
-    target_device_uuid: String,
+    peer_device_id: i64,
+    peer_device_uuid: String,
     connect_code: Option<String>,
     temporary_password: Option<String>,
     #[allow(unused_variables)] lan_cidrs: Option<Vec<String>>,
 ) -> Result<String, String> {
     debug!(
-        "[service] start active tunnel requested: target_device_id={}, target_uuid={}, connect_code={}, temp_password={}, lan_cidrs={}",
-        target_device_id,
-        target_device_uuid,
+        "[service] start active tunnel requested: peer_device_id={}, target_uuid={}, connect_code={}, temp_password={}, lan_cidrs={}",
+        peer_device_id,
+        peer_device_uuid,
         connect_code.as_ref().map(|v| !v.is_empty()).unwrap_or(false),
         temporary_password.as_ref().map(|v| !v.is_empty()).unwrap_or(false),
         lan_cidrs.as_ref().map(|v| v.len()).unwrap_or(0)
@@ -838,39 +838,39 @@ pub async fn start_service_active_tunnel(
     let _ = app.emit_all(
         "active-tunnel-stage",
         serde_json::json!({
-            "target_device_id": target_device_id,
+            "peer_device_id": peer_device_id,
             "stage": "service_session",
             "message": crate::commands::localized("service.start.confirming", &[]),
         }),
     );
     debug!(
-        "[service] ensuring background service before active tunnel: target_device_id={}",
-        target_device_id
+        "[service] ensuring background service before active tunnel: peer_device_id={}",
+        peer_device_id
     );
     let _ = ensure_background_service_session(app.clone()).await?;
     let _ = app.emit_all(
         "active-tunnel-stage",
         serde_json::json!({
-            "target_device_id": target_device_id,
+            "peer_device_id": peer_device_id,
             "stage": "service_ready",
             "message": crate::commands::localized("service.start.service_ready", &[]),
         }),
     );
     debug!(
-        "[service] background service ready, sending StartActiveTunnelJob IPC: target_device_id={}",
-        target_device_id
+        "[service] background service ready, sending StartActiveTunnelJob IPC: peer_device_id={}",
+        peer_device_id
     );
     let _ = app.emit_all(
         "active-tunnel-stage",
         serde_json::json!({
-            "target_device_id": target_device_id,
+            "peer_device_id": peer_device_id,
             "stage": "service_ipc",
             "message": crate::commands::localized("service.start.sent", &[]),
         }),
     );
     match send_command_responsive(Data::StartActiveTunnelJob {
-        target_device_id,
-        target_device_uuid,
+        peer_device_id,
+        peer_device_uuid,
         connect_code,
         temporary_password,
         lan_cidrs: lan_cidrs.unwrap_or_default(),
@@ -881,13 +881,13 @@ pub async fn start_service_active_tunnel(
             ok: true, message, ..
         }) => {
             debug!(
-                "[service] StartActiveTunnelJob IPC succeeded: target_device_id={}",
-                target_device_id
+                "[service] StartActiveTunnelJob IPC succeeded: peer_device_id={}",
+                peer_device_id
             );
             let _ = app.emit_all(
                 "active-tunnel-stage",
                 serde_json::json!({
-                    "target_device_id": target_device_id,
+                    "peer_device_id": peer_device_id,
                     "stage": "service_done",
                     "message": crate::commands::localized("service.start.job_started", &[]),
                 }),
@@ -896,13 +896,13 @@ pub async fn start_service_active_tunnel(
         }
         Ok(Data::CommandResponse { message, .. }) => {
             warn!(
-                "[service] StartActiveTunnelJob IPC returned failure: target_device_id={}, message={}",
-                target_device_id, message
+                "[service] StartActiveTunnelJob IPC returned failure: peer_device_id={}, message={}",
+                peer_device_id, message
             );
             let _ = app.emit_all(
                 "active-tunnel-stage",
                 serde_json::json!({
-                    "target_device_id": target_device_id,
+                    "peer_device_id": peer_device_id,
                     "stage": "service_failed",
                     "message": crate::commands::localized(
                         "service.start.service_failed",
@@ -914,13 +914,13 @@ pub async fn start_service_active_tunnel(
         }
         Ok(other) => {
             warn!(
-                "[service] StartActiveTunnelJob IPC returned unexpected response: target_device_id={}, response={:?}",
-                target_device_id, other
+                "[service] StartActiveTunnelJob IPC returned unexpected response: peer_device_id={}, response={:?}",
+                peer_device_id, other
             );
             let _ = app.emit_all(
                 "active-tunnel-stage",
                 serde_json::json!({
-                    "target_device_id": target_device_id,
+                    "peer_device_id": peer_device_id,
                     "stage": "service_unexpected",
                     "message": crate::commands::localized("service.start.unknown_response", &[]),
                 }),
@@ -929,13 +929,13 @@ pub async fn start_service_active_tunnel(
         }
         Err(err) => {
             warn!(
-                "[service] StartActiveTunnelJob IPC failed: target_device_id={}, error={}",
-                target_device_id, err
+                "[service] StartActiveTunnelJob IPC failed: peer_device_id={}, error={}",
+                peer_device_id, err
             );
             let _ = app.emit_all(
                 "active-tunnel-stage",
                 serde_json::json!({
-                    "target_device_id": target_device_id,
+                    "peer_device_id": peer_device_id,
                     "stage": "service_ipc_failed",
                     "message": crate::commands::localized(
                         "service.start.ipc_failed",
@@ -989,8 +989,8 @@ pub async fn start_service_anonymous_active_tunnel(
 }
 
 #[tauri::command]
-pub async fn stop_active_tunnel_job(target_device_id: i64) -> Result<String, String> {
-    match send_command_responsive(Data::StopActiveTunnelJob { target_device_id }).await {
+pub async fn stop_active_tunnel_job(peer_device_id: i64) -> Result<String, String> {
+    match send_command_responsive(Data::StopActiveTunnelJob { peer_device_id }).await {
         Ok(Data::CommandResponse {
             ok: true, message, ..
         }) => Ok(message),

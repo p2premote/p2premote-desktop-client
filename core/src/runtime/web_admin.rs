@@ -1442,17 +1442,17 @@ async fn handle_web_command(
                 .unwrap_or(serde_json::Value::Null))
         }
         "start_service_active_tunnel" => {
-            let target_device_id = arg_i64(&args, &["targetDeviceId", "target_device_id"])?;
-            let target_device_uuid =
-                arg_string(&args, &["targetDeviceUuid", "target_device_uuid"])?;
+            let peer_device_id = arg_i64(&args, &["targetDeviceId", "peer_device_id"])?;
+            let peer_device_uuid =
+                arg_string(&args, &["targetDeviceUuid", "peer_device_uuid"])?;
             let connect_code = arg_optional_string(&args, &["connectCode", "connect_code"]);
             let temporary_password =
                 arg_optional_string(&args, &["temporaryPassword", "temporary_password"]);
             let lan_cidrs = arg_string_array(&args, &["lanCidrs", "lan_cidrs"]).unwrap_or_default();
             let resp = dispatch_web_data(
                 Data::StartActiveTunnelJob {
-                    target_device_id,
-                    target_device_uuid,
+                    peer_device_id,
+                    peer_device_uuid,
                     connect_code,
                     temporary_password,
                     lan_cidrs,
@@ -1484,9 +1484,9 @@ async fn handle_web_command(
             }))
         }
         "stop_active_tunnel_job" => {
-            let target_device_id = arg_i64(&args, &["targetDeviceId", "target_device_id"])?;
+            let peer_device_id = arg_i64(&args, &["targetDeviceId", "peer_device_id"])?;
             let resp =
-                dispatch_web_data(Data::StopActiveTunnelJob { target_device_id }, state).await?;
+                dispatch_web_data(Data::StopActiveTunnelJob { peer_device_id }, state).await?;
             command_message(resp)
         }
         "approve_inbound_tunnel" => {
@@ -1500,8 +1500,8 @@ async fn handle_web_command(
             command_message(resp)
         }
         "stop_service_active_tunnel" => {
-            let target_device_id = arg_i64(&args, &["targetDeviceId", "target_device_id"])?;
-            let _ = dispatch_web_data(Data::StopActiveTunnel { target_device_id }, state).await?;
+            let peer_device_id = arg_i64(&args, &["targetDeviceId", "peer_device_id"])?;
+            let _ = dispatch_web_data(Data::StopActiveTunnel { peer_device_id }, state).await?;
             Ok(web_status_value(state))
         }
         "test_tunnel_speed" => {

@@ -206,7 +206,7 @@ import type { FormInstance, FormRules } from 'element-plus/es/components/form/in
 import { Close, CopyDocument, Monitor } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { errorMessage } from '../utils/errorMessage'
-import type { ActiveTunnelJobStatus, BackgroundServiceStatus } from '../types/api'
+import type { TunnelJobStatus, BackgroundServiceStatus } from '../types/api'
 import { useConnectingDots } from '../composables/useConnectingDots'
 const { t } = useI18n()
 
@@ -224,7 +224,7 @@ const localDevice = ref<DeviceInfo | null>(null)
 const loadingLocalDevice = ref(false)
 const generatingCode = ref(false)
 const savingPassword = ref(false)
-const activeJob = ref<ActiveTunnelJobStatus | null>(null)
+const activeJob = ref<TunnelJobStatus | null>(null)
 let unlistenServiceStatus: UnlistenFn | null = null
 
 const form = reactive({
@@ -472,11 +472,11 @@ async function disableTcpAndRetry() {
   try {
     const preferences = await invoke<{ prefer_ipv6: boolean }>('get_connection_preferences')
     await invoke('save_connection_preferences', { preferIpv6: preferences.prefer_ipv6, preferTcp: false })
-    await invoke('stop_active_tunnel_job', { targetDeviceId: peer })
+    await invoke('stop_active_tunnel_job', { peerDeviceId: peer })
     const deadline = Date.now() + 150_000
     while (true) {
       const status = await invoke<BackgroundServiceStatus>('get_service_status')
-      const job = status.runtime?.active_tunnel_jobs?.find(item => item.target_device_id === peer)
+      const job = status.runtime?.active_tunnel_jobs?.find(item => item.peer_device_id === peer)
       if (!job || !['running', 'waiting'].includes(job.state)) break
       if (Date.now() >= deadline) throw new Error(t('app.settings.draining'))
       await new Promise(resolve => window.setTimeout(resolve, 500))
@@ -527,9 +527,9 @@ async function handleConnect() {
   }
 }
 
-function updateActiveJobFromList(jobs?: ActiveTunnelJobStatus[]) {
+function updateActiveJobFromList(jobs?: TunnelJobStatus[]) {
   if (!verifiedDevice.value || !Array.isArray(jobs)) return
-  const job = jobs.find(item => item.target_device_id === verifiedDevice.value?.device_id)
+  const job = jobs.find(item => item.peer_device_id === verifiedDevice.value?.device_id)
   if (job) {
     activeJob.value = job
   }
@@ -538,7 +538,7 @@ function updateActiveJobFromList(jobs?: ActiveTunnelJobStatus[]) {
 async function cancelActiveTunnelJob() {
   if (!verifiedDevice.value) return
   try {
-    await invoke('stop_active_tunnel_job', { targetDeviceId: verifiedDevice.value.device_id })
+    await invoke('stop_active_tunnel_job', { peerDeviceId: verifiedDevice.value.device_id })
     ElMessage.success(t('remote.message.auto_tunnel_cancelled'))
   } catch (error) {
     const message = errorMessage(error, t('remote.message.cancel_failed'))

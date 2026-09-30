@@ -376,15 +376,15 @@ pub(super) async fn handle_data(
             }
         }
         Data::StartActiveTunnelJob {
-            target_device_id,
-            target_device_uuid,
+            peer_device_id,
+            peer_device_uuid,
             connect_code,
             temporary_password,
             lan_cidrs,
         } => start_active_tunnel_job(
             shared,
-            target_device_id,
-            target_device_uuid,
+            peer_device_id,
+            peer_device_uuid,
             connect_code,
             temporary_password,
             lan_cidrs,
@@ -393,8 +393,8 @@ pub(super) async fn handle_data(
             connect_code,
             temporary_password,
         } => start_anonymous_active_tunnel_job(shared, connect_code, temporary_password).await,
-        Data::StopActiveTunnelJob { target_device_id } => {
-            stop_active_tunnel_job(shared, target_device_id)
+        Data::StopActiveTunnelJob { peer_device_id } => {
+            stop_active_tunnel_job(shared, peer_device_id)
         }
         Data::StartDesktopSession {
             peer_device_id,
@@ -1001,13 +1001,13 @@ pub(super) async fn handle_data(
             ))
         }
         Data::StopTunnel { source_device_id } => stop_wgvpn_job(shared, source_device_id).await,
-        Data::StopActiveTunnel { target_device_id } => {
-            if shared.lock().active_tunnel_job_cancels.contains_key(&target_device_id) {
-                stop_active_tunnel_job(shared, target_device_id);
+        Data::StopActiveTunnel { peer_device_id } => {
+            if shared.lock().active_tunnel_job_cancels.contains_key(&peer_device_id) {
+                stop_active_tunnel_job(shared, peer_device_id);
             } else {
-                clear_active_tunnel_job_status(shared, target_device_id);
+                clear_active_tunnel_job_status(shared, peer_device_id);
             }
-            stop_wgvpn_job(shared, target_device_id).await
+            stop_wgvpn_job(shared, peer_device_id).await
         }
         Data::TestTunnelSpeed { peer_device_id } => {
             let passive_health_server = {

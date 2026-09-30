@@ -483,7 +483,7 @@ async function closeSettings(done: () => void) {
 import { useLocale } from './composables/useLocale'
 import { errorMessage } from './utils/errorMessage'
 import type {
-  ActiveTunnelJobStatus,
+  TunnelJobStatus,
   BackgroundServiceStatus,
   InboundApprovalStatus,
 } from './types/api'
@@ -1124,7 +1124,7 @@ function updateServiceStatusFromEvent(runtime: any) {
       },
     }
   }
-  void handleActiveTunnelJobStatuses(runtime?.active_tunnel_jobs)
+  void handleTunnelJobStatuses(runtime?.active_tunnel_jobs)
   void handlePassiveWgvpnSessions(runtime)
 }
 
@@ -1140,8 +1140,8 @@ function primeActiveTunnelJobs(runtime: BackgroundServiceStatus['runtime'] | nul
   for (const job of runtime?.active_tunnel_jobs || []) {
     if (job.state !== 'succeeded' && job.state !== 'failed' && job.state !== 'cancelled') continue
     handledActiveTunnelJobKeys.set(
-      job.target_device_id,
-      new Set([`${job.target_device_id}:${job.state}:${job.updated_at}`]),
+      job.peer_device_id,
+      new Set([`${job.peer_device_id}:${job.state}:${job.updated_at}`]),
     )
   }
 }
@@ -1241,7 +1241,7 @@ async function flushPendingActiveTunnelJobNotifications() {
   }
 }
 
-async function handleActiveTunnelJobStatuses(jobs?: ActiveTunnelJobStatus[]) {
+async function handleTunnelJobStatuses(jobs?: TunnelJobStatus[]) {
   if (!Array.isArray(jobs)) {
     return
   }
@@ -1251,11 +1251,11 @@ async function handleActiveTunnelJobStatuses(jobs?: ActiveTunnelJobStatus[]) {
       continue
     }
 
-    const key = `${job.target_device_id}:${job.state}:${job.updated_at}`
-    let deviceKeys = handledActiveTunnelJobKeys.get(job.target_device_id)
+    const key = `${job.peer_device_id}:${job.state}:${job.updated_at}`
+    let deviceKeys = handledActiveTunnelJobKeys.get(job.peer_device_id)
     if (!deviceKeys) {
       deviceKeys = new Set<string>()
-      handledActiveTunnelJobKeys.set(job.target_device_id, deviceKeys)
+      handledActiveTunnelJobKeys.set(job.peer_device_id, deviceKeys)
     }
     if (deviceKeys.has(key)) {
       continue

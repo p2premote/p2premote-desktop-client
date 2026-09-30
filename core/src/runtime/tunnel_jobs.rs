@@ -93,10 +93,13 @@ pub(super) fn spawn_wgvpn_job_task(
 
             update_wgvpn_job_status(
                 &shared,
-                WgvpnJobStatus {
+                TunnelJobStatus {
+                    peer_device_uuid: String::new(),
+                    result: None,
+                    tcp_retry_recommended: false,
                     peer_device_id,
                     is_active,
-                    state: WgvpnJobState::Running,
+                    state: TunnelJobState::Running,
                     attempt,
                     max_attempts,
                     message: localized_message(
@@ -117,10 +120,13 @@ pub(super) fn spawn_wgvpn_job_task(
                 Err(err) => {
                     update_wgvpn_job_status(
                         &shared,
-                        WgvpnJobStatus {
+                        TunnelJobStatus {
+                            peer_device_uuid: String::new(),
+                            result: None,
+                            tcp_retry_recommended: false,
                             peer_device_id,
                             is_active,
-                            state: WgvpnJobState::Failed,
+                            state: TunnelJobState::Failed,
                             attempt,
                             max_attempts,
                             message: localized_message(
@@ -243,10 +249,13 @@ pub(super) fn spawn_wgvpn_job_task(
                             }
                             update_wgvpn_job_status(
                                 &shared,
-                                WgvpnJobStatus {
+                                TunnelJobStatus {
+                                    peer_device_uuid: String::new(),
+                                    result: None,
+                                    tcp_retry_recommended: false,
                                     peer_device_id,
                                     is_active,
-                                    state: WgvpnJobState::Failed,
+                                    state: TunnelJobState::Failed,
                                     attempt,
                                     max_attempts,
                                     message: err.to_string(),
@@ -266,10 +275,13 @@ pub(super) fn spawn_wgvpn_job_task(
                     // 成功：更新 job 状态为 Succeeded，刷新 sessions 快照
                     update_wgvpn_job_status(
                         &shared,
-                        WgvpnJobStatus {
+                        TunnelJobStatus {
+                            peer_device_uuid: String::new(),
+                            result: None,
+                            tcp_retry_recommended: false,
                             peer_device_id,
                             is_active,
-                            state: WgvpnJobState::Succeeded,
+                            state: TunnelJobState::Succeeded,
                             attempt,
                             max_attempts,
                             message: result.message,
@@ -304,10 +316,13 @@ pub(super) fn spawn_wgvpn_job_task(
                     if is_non_retryable_wgvpn_error(&err_text) {
                         update_wgvpn_job_status(
                             &shared,
-                            WgvpnJobStatus {
+                            TunnelJobStatus {
+                                peer_device_uuid: String::new(),
+                                result: None,
+                                tcp_retry_recommended: false,
                                 peer_device_id,
                                 is_active,
-                                state: WgvpnJobState::Failed,
+                                state: TunnelJobState::Failed,
                                 attempt,
                                 max_attempts,
                                 message: err_text,
@@ -321,10 +336,13 @@ pub(super) fn spawn_wgvpn_job_task(
                     if attempt >= max_attempts {
                         update_wgvpn_job_status(
                             &shared,
-                            WgvpnJobStatus {
+                            TunnelJobStatus {
+                                peer_device_uuid: String::new(),
+                                result: None,
+                                tcp_retry_recommended: false,
                                 peer_device_id,
                                 is_active,
-                                state: WgvpnJobState::Failed,
+                                state: TunnelJobState::Failed,
                                 attempt,
                                 max_attempts,
                                 message: err_text,
@@ -337,10 +355,13 @@ pub(super) fn spawn_wgvpn_job_task(
                     }
                     update_wgvpn_job_status(
                         &shared,
-                        WgvpnJobStatus {
+                        TunnelJobStatus {
+                            peer_device_uuid: String::new(),
+                            result: None,
+                            tcp_retry_recommended: false,
                             peer_device_id,
                             is_active,
-                            state: WgvpnJobState::Waiting,
+                            state: TunnelJobState::Waiting,
                             attempt,
                             max_attempts,
                             message: localized_message(
@@ -379,10 +400,13 @@ pub(super) fn spawn_wgvpn_job_task(
         // 重试耗尽
         update_wgvpn_job_status(
             &shared,
-            WgvpnJobStatus {
+            TunnelJobStatus {
+                peer_device_uuid: String::new(),
+                result: None,
+                tcp_retry_recommended: false,
                 peer_device_id,
                 is_active,
-                state: WgvpnJobState::Failed,
+                state: TunnelJobState::Failed,
                 attempt: max_attempts,
                 max_attempts,
                 message: localized_message(
@@ -442,10 +466,13 @@ async fn await_passive_inbound_approval(
     refresh_pending_inbound_approvals(shared);
     update_wgvpn_job_status(
         shared,
-        WgvpnJobStatus {
+        TunnelJobStatus {
+            peer_device_uuid: String::new(),
+            result: None,
+            tcp_retry_recommended: false,
             peer_device_id,
             is_active: false,
-            state: WgvpnJobState::Waiting,
+            state: TunnelJobState::Waiting,
             attempt,
             max_attempts,
             message: localized_message(
@@ -743,7 +770,7 @@ pub(super) async fn cancel_all_wgvpn_jobs(shared: &Arc<Mutex<SharedRuntimeState>
     if let Ok(config) = load_machine_config() {
         let peer_ids: Vec<i64> = wgvpn_flow::snapshot_sessions()
             .into_iter()
-            .map(|s| s.target_device_id)
+            .map(|s| s.peer_device_id)
             .collect();
         for peer_id in peer_ids {
             if let Err(err) = wgvpn_flow::stop_wgvpn(&config, peer_id).await {
@@ -772,10 +799,13 @@ pub(super) fn publish_wgvpn_job_cancelled(
     let locale = current_locale(shared);
     update_wgvpn_job_status(
         shared,
-        WgvpnJobStatus {
+        TunnelJobStatus {
+            peer_device_uuid: String::new(),
+            result: None,
+            tcp_retry_recommended: false,
             peer_device_id,
             is_active,
-            state: WgvpnJobState::Cancelled,
+            state: TunnelJobState::Cancelled,
             attempt: 0,
             max_attempts: WGVPN_JOB_MAX_ATTEMPTS,
             message: localized_message(locale.as_deref(), "wgvpn.job.cancelled", &[]),
@@ -815,7 +845,7 @@ pub(super) fn remove_wgvpn_job_if_current(
 
 pub(super) fn update_wgvpn_job_status(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    status: WgvpnJobStatus,
+    status: TunnelJobStatus,
     generation: Option<u64>,
 ) -> bool {
     let mut state = shared.lock();
@@ -840,28 +870,8 @@ pub(super) fn update_wgvpn_job_status(
         state.status.wgvpn_jobs.push(status.clone());
     }
     if !status.is_active {
-        let (lifecycle_state, last_result, error_code) = match status.state {
-            WgvpnJobState::Running | WgvpnJobState::Waiting => (
-                TunnelLifecycleState::Connecting,
-                TunnelLastResult::None,
-                None,
-            ),
-            WgvpnJobState::Succeeded => (
-                TunnelLifecycleState::Connected,
-                TunnelLastResult::None,
-                None,
-            ),
-            WgvpnJobState::Failed => (
-                TunnelLifecycleState::NotEstablished,
-                TunnelLastResult::AttemptFailed,
-                Some(classify_tunnel_error_code(&status.message).to_string()),
-            ),
-            WgvpnJobState::Cancelled => (
-                TunnelLifecycleState::NotEstablished,
-                TunnelLastResult::Cancelled,
-                Some("user_cancelled".to_string()),
-            ),
-        };
+        let (lifecycle_state, last_result, error_code) =
+            tunnel_job_lifecycle_projection(status.state, &status.message);
         let existing_lifecycle = state
             .status
             .tunnel_lifecycles
@@ -916,7 +926,7 @@ pub(super) fn update_wgvpn_job_status(
                 updated_at: status.updated_at,
             },
         );
-        if status.state == WgvpnJobState::Succeeded {
+        if status.state == TunnelJobState::Succeeded {
             let username = state
                 .status
                 .tunnel_lifecycles

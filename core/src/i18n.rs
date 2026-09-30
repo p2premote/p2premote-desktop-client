@@ -192,7 +192,7 @@ fn zh_message(key: &str) -> &str {
         }
         "device_identity.manual_rebuilding" => "设备身份已手动重建，正在重新注册。",
 
-        // ---- 主动隧道 job（ActiveTunnelJobStatus.message）----
+        // ---- 主动隧道 job（TunnelJobStatus.message）----
         "tunnel.job.waiting_passive" => "等待主动端建立连接",
         "tunnel.job.attempt_progress_secs" => "第 {attempt} 次尝试超过 {secs} 秒",
         "tunnel.job.auto_established" => "隧道已自动建立成功",
@@ -214,7 +214,7 @@ fn zh_message(key: &str) -> &str {
         "tunnel.lifecycle.disconnected" => "隧道已断开",
         "tunnel.lifecycle.passive_disconnected" => "隧道已主动断开",
 
-        // ---- wgvpn job（WgvpnJobStatus.message）----
+        // ---- wgvpn job（TunnelJobStatus.message）----
         "wgvpn.job.building" => "正在建立 wgvpn 隧道，第 {attempt}/{max} 次",
         "wgvpn.job.config_load_failed" => "加载配置失败: {reason}",
         "wgvpn.job.attempt_failed_retry" => "第 {attempt} 次失败: {reason}，{secs} 秒后重试",

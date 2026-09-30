@@ -51,18 +51,22 @@ export interface ActiveTunnelJobResult {
   warning?: string | null
 }
 
-/** core::control::ActiveTunnelJobStatus */
-export interface ActiveTunnelJobStatus {
-  tcp_retry_recommended?: boolean
-  target_device_id: number
-  target_device_uuid: string
+/** core::control::TunnelJobStatus（审计 O-1：主动/被动两轨统一元素类型。
+ * active_tunnel_jobs 填 peer_device_uuid/result/tcp_retry_recommended；
+ * wgvpn_jobs 填 is_active。） */
+export interface TunnelJobStatus {
+  peer_device_id: number
+  peer_device_uuid?: string
+  is_active?: boolean
   state: 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
   attempt: number
   max_attempts: number
   message: string
   result?: ActiveTunnelJobResult | null
+  tcp_retry_recommended?: boolean
   updated_at: number
 }
+
 
 // ============ 隧道生命周期 ============
 
@@ -147,7 +151,7 @@ export interface BackgroundServiceStatus {
       peer_device_alias?: string
     }>
     pending_inbound_approvals?: InboundApprovalStatus[]
-    active_tunnel_jobs?: ActiveTunnelJobStatus[]
+    active_tunnel_jobs?: TunnelJobStatus[]
   } | null
   machine_logged_in: boolean
   config_path: string

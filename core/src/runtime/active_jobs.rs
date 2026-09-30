@@ -35,13 +35,13 @@ pub(super) async fn start_anonymous_active_tunnel_job(
             }
         };
     let device_json = serde_json::to_value(&device).unwrap_or(serde_json::Value::Null);
-    let target_device_id = device.device_id;
-    let target_device_uuid = device.device_uuid.clone();
+    let peer_device_id = device.device_id;
+    let peer_device_uuid = device.device_uuid.clone();
 
     match start_active_tunnel_job(
         shared,
-        target_device_id,
-        target_device_uuid,
+        peer_device_id,
+        peer_device_uuid,
         Some(connect_code),
         Some(temporary_password),
         Vec::new(),
@@ -67,8 +67,8 @@ pub(super) async fn start_anonymous_active_tunnel_job(
 
 pub(super) fn start_active_tunnel_job(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    target_device_id: i64,
-    target_device_uuid: String,
+    peer_device_id: i64,
+    peer_device_uuid: String,
     connect_code: Option<String>,
     temporary_password: Option<String>,
     lan_cidrs: Vec<String>,
@@ -83,8 +83,8 @@ pub(super) fn start_active_tunnel_job(
             ));
         };
         if state.status.active_tunnel_jobs.iter().any(|job| {
-            job.target_device_id == target_device_id
-                && job.state == ActiveTunnelJobState::Succeeded
+            job.peer_device_id == peer_device_id
+                && job.state == TunnelJobState::Succeeded
                 && job.result.as_ref().is_some_and(|result| result.success)
         }) {
             return Some(cmd_response(
@@ -95,7 +95,7 @@ pub(super) fn start_active_tunnel_job(
         }
         if state
             .active_tunnel_job_cancels
-            .contains_key(&target_device_id)
+            .contains_key(&peer_device_id)
         {
             return Some(cmd_response(
                 true,
@@ -106,15 +106,15 @@ pub(super) fn start_active_tunnel_job(
         let (cancel_tx, cancel_rx) = watch::channel(false);
         state
             .active_tunnel_job_cancels
-            .insert(target_device_id, cancel_tx);
+            .insert(peer_device_id, cancel_tx);
         drop(state);
 
         spawn_active_tunnel_job_task(
             shared.clone(),
             ws_client,
             cancel_rx,
-            target_device_id,
-            target_device_uuid,
+            peer_device_id,
+            peer_device_uuid,
             connect_code,
             temporary_password,
             lan_cidrs,
@@ -132,14 +132,14 @@ pub(super) fn spawn_active_tunnel_job_task(
     shared: Arc<Mutex<SharedRuntimeState>>,
     ws_client: ServiceWsClient,
     mut cancel_rx: watch::Receiver<bool>,
-    target_device_id: i64,
-    target_device_uuid: String,
+    peer_device_id: i64,
+    peer_device_uuid: String,
     connect_code: Option<String>,
     temporary_password: Option<String>,
     lan_cidrs: Vec<String>,
 ) {
     let shared_for_task = shared.clone();
-    let target_uuid_for_task = target_device_uuid.clone();
+    let target_uuid_for_task = peer_device_uuid.clone();
     tokio::spawn(async move {
         let mut last_message = String::new();
         let mut last_attempt = 0;
@@ -155,7 +155,7 @@ pub(super) fn spawn_active_tunnel_job_task(
             Err(err) => {
                 publish_active_tunnel_job_failed(
                     &shared_for_task,
-                    target_device_id,
+                    peer_device_id,
                     target_uuid_for_task.clone(),
                     0,
                     err.to_string(),
@@ -163,20 +163,20 @@ pub(super) fn spawn_active_tunnel_job_task(
                 shared_for_task
                     .lock()
                     .active_tunnel_job_cancels
-                    .remove(&target_device_id);
+                    .remove(&peer_device_id);
                 return;
             }
         };
         let client_job_id = build_punch_token(&format!(
             "job-{}-{}-{}",
-            target_device_id,
+            peer_device_id,
             now_ts(),
             rand::thread_rng().gen::<u32>()
         ));
         let opened = match open_active_p2p_job(
             &config,
             client_job_id.clone(),
-            target_device_id,
+            peer_device_id,
             target_uuid_for_task.clone(),
             connect_code,
             temporary_password,
@@ -187,7 +187,7 @@ pub(super) fn spawn_active_tunnel_job_task(
             Err(err) => {
                 publish_active_tunnel_job_failed(
                     &shared_for_task,
-                    target_device_id,
+                    peer_device_id,
                     target_uuid_for_task.clone(),
                     0,
                     err.to_string(),
@@ -195,7 +195,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                 shared_for_task
                     .lock()
                     .active_tunnel_job_cancels
-                    .remove(&target_device_id);
+                    .remove(&peer_device_id);
                 return;
             }
         };
@@ -211,13 +211,13 @@ pub(super) fn spawn_active_tunnel_job_task(
             if *cancel_rx.borrow() {
                 publish_active_tunnel_job_cancelled(
                     &shared_for_task,
-                    target_device_id,
+                    peer_device_id,
                     target_uuid_for_task.clone(),
                 );
                 let _ = close_active_p2p_job(
                     &config,
                     &opened,
-                    target_device_id,
+                    peer_device_id,
                     &last_attempt_id,
                     last_network.clone(),
                     started_at.elapsed().as_secs(),
@@ -231,11 +231,12 @@ pub(super) fn spawn_active_tunnel_job_task(
 
             update_active_tunnel_job_status(
                 &shared_for_task,
-                ActiveTunnelJobStatus {
+                TunnelJobStatus {
+                    is_active: true,
             tcp_retry_recommended: false,
-                    target_device_id,
-                    target_device_uuid: target_uuid_for_task.clone(),
-                    state: ActiveTunnelJobState::Running,
+                    peer_device_id,
+                    peer_device_uuid: target_uuid_for_task.clone(),
+                    state: TunnelJobState::Running,
                     attempt,
                     max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                     message: localized_message(
@@ -250,7 +251,7 @@ pub(super) fn spawn_active_tunnel_job_task(
 
             let attempt_id = build_punch_token(&format!(
                 "attempt-{}-{}-{}",
-                target_device_id,
+                peer_device_id,
                 attempt,
                 now_ts()
             ));
@@ -258,7 +259,7 @@ pub(super) fn spawn_active_tunnel_job_task(
             let punch_token = build_punch_token(&format!(
                 "{}-{}-{}",
                 config.device_id.unwrap_or_default(),
-                target_device_id,
+                peer_device_id,
                 now_ts()
             ));
             let attempt_shared = shared_for_task.clone();
@@ -272,7 +273,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     &attempt_shared,
                     &attempt_ws,
                     &attempt_config,
-                    target_device_id,
+                    peer_device_id,
                     &attempt_client_job_id,
                     &attempt_opened,
                     attempt,
@@ -292,7 +293,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     let _ = send_p2p_attempt_message(
                         &ws_client,
                         opened.connection_id.clone(),
-                        target_device_id,
+                        peer_device_id,
                         opened.access_grant.clone(),
                         P2PAttemptMessage::AttemptCancel {
                             protocol_version: 1,
@@ -301,7 +302,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                         },
                     ).await;
                     let _ = attempt_handle.await;
-                    let _ = wgvpn_flow::stop_wgvpn(&config, target_device_id).await;
+                    let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
                     last_message = localized_message(
                         current_locale(&shared_for_task).as_deref(),
                         "tunnel.job.attempt_progress_secs",
@@ -318,7 +319,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                         let _ = send_p2p_attempt_message(
                             &ws_client,
                             opened.connection_id.clone(),
-                            target_device_id,
+                            peer_device_id,
                             opened.access_grant.clone(),
                             P2PAttemptMessage::AttemptCancel {
                                 protocol_version: 1,
@@ -327,13 +328,13 @@ pub(super) fn spawn_active_tunnel_job_task(
                             },
                         ).await;
                         let _ = attempt_handle.await;
-                        let _ = wgvpn_flow::stop_wgvpn(&config, target_device_id).await;
+                        let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
                         publish_active_tunnel_job_cancelled(
                             &shared_for_task,
-                            target_device_id,
+                            peer_device_id,
                             target_uuid_for_task.clone(),
                         );
-                        let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, target_device_id, &attempt_id,
+                        let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, peer_device_id, &attempt_id,
                             false, last_source_nat.clone(), last_target_nat.clone(),
                             last_network.clone(), started_at.elapsed().as_secs(),
                             "user_cancelled".to_string(), "user_cancelled".to_string()).await;
@@ -352,19 +353,19 @@ pub(super) fn spawn_active_tunnel_job_task(
                     let session_info = wgvpn_flow::snapshot_sessions()
                         .into_iter()
                         .find(|session| {
-                            session.peer_device_id == target_device_id && session.is_active
+                            session.peer_device_id == peer_device_id && session.is_active
                         })
                         .map(|session| (session.peer_virtual_ip, session.peer_health_port));
                     if *cancel_rx.borrow() {
                         publish_active_tunnel_job_cancelled(
                             &shared_for_task,
-                            target_device_id,
+                            peer_device_id,
                             target_uuid_for_task.clone(),
                         );
                         let _ = close_active_p2p_job(
                             &config,
                             &opened,
-                            target_device_id,
+                            peer_device_id,
                             &attempt_id,
                             success_network.clone(),
                             started_at.elapsed().as_secs(),
@@ -377,11 +378,12 @@ pub(super) fn spawn_active_tunnel_job_task(
                     }
                     update_active_tunnel_job_status(
                         &shared_for_task,
-                        ActiveTunnelJobStatus {
+                        TunnelJobStatus {
+                            is_active: true,
             tcp_retry_recommended: false,
-                            target_device_id,
-                            target_device_uuid: target_uuid_for_task.clone(),
-                            state: ActiveTunnelJobState::Succeeded,
+                            peer_device_id,
+                            peer_device_uuid: target_uuid_for_task.clone(),
+                            state: TunnelJobState::Succeeded,
                             attempt,
                             max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                             message: localized_message(
@@ -396,38 +398,38 @@ pub(super) fn spawn_active_tunnel_job_task(
                     shared_for_task
                         .lock()
                         .wgvpn_health_runtime
-                        .insert(target_device_id, WgvpnHealthRuntime::default());
+                        .insert(peer_device_id, WgvpnHealthRuntime::default());
                     refresh_wgvpn_sessions(&shared_for_task);
                     if let Some((peer_virtual_ip, peer_health_port)) = session_info {
                         if !peer_virtual_ip.is_empty() {
                             spawn_wgvpn_health_monitor(
                                 shared_for_task.clone(),
-                                target_device_id,
+                                peer_device_id,
                                 peer_virtual_ip,
                                 peer_health_port,
                             );
                         } else {
                             mark_wgvpn_health_degraded(
                                 shared_for_task.clone(),
-                                target_device_id,
+                                peer_device_id,
                                 "missing_peer_virtual_ip",
                             );
                         }
                     } else {
                         mark_wgvpn_health_degraded(
                             shared_for_task.clone(),
-                            target_device_id,
+                            peer_device_id,
                             "missing_peer_virtual_ip",
                         );
                     }
                     shared_for_task
                         .lock()
                         .active_tunnel_job_cancels
-                        .remove(&target_device_id);
+                        .remove(&peer_device_id);
                     let _ = crate::p2p::close_active_p2p_job_with_nat(
                         &config,
                         &opened,
-                        target_device_id,
+                        peer_device_id,
                         &attempt_id,
                         true,
                         source_nat_type,
@@ -445,8 +447,8 @@ pub(super) fn spawn_active_tunnel_job_task(
                 }
                 Some(Err(err)) => {
                     tracing::error!(
-                        "[wgvpn] active job attempt failed: target_device_id={}, attempt={}/{}, error={:#}",
-                        target_device_id,
+                        "[wgvpn] active job attempt failed: peer_device_id={}, attempt={}/{}, error={:#}",
+                        peer_device_id,
                         attempt,
                         ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                         err
@@ -468,11 +470,12 @@ pub(super) fn spawn_active_tunnel_job_task(
             if attempt < ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS {
                 update_active_tunnel_job_status(
                     &shared_for_task,
-                    ActiveTunnelJobStatus {
+                    TunnelJobStatus {
+                        is_active: true,
             tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(config.prefer_tcp, &last_message),
-                        target_device_id,
-                        target_device_uuid: target_uuid_for_task.clone(),
-                        state: ActiveTunnelJobState::Waiting,
+                        peer_device_id,
+                        peer_device_uuid: target_uuid_for_task.clone(),
+                        state: TunnelJobState::Waiting,
                         attempt,
                         max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                         message: localized_message(
@@ -492,10 +495,10 @@ pub(super) fn spawn_active_tunnel_job_task(
                         if *cancel_rx.borrow() {
                             publish_active_tunnel_job_cancelled(
                                 &shared_for_task,
-                                target_device_id,
+                                peer_device_id,
                                 target_uuid_for_task.clone(),
                             );
-                            let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, target_device_id, &attempt_id,
+                            let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, peer_device_id, &attempt_id,
                                 false, last_source_nat.clone(), last_target_nat.clone(),
                                 last_network.clone(), started_at.elapsed().as_secs(),
                                 "user_cancelled".to_string(), "user_cancelled".to_string()).await;
@@ -509,11 +512,12 @@ pub(super) fn spawn_active_tunnel_job_task(
 
         update_active_tunnel_job_status(
             &shared_for_task,
-            ActiveTunnelJobStatus {
+            TunnelJobStatus {
+                is_active: true,
             tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(config.prefer_tcp, &last_message),
-                target_device_id,
-                target_device_uuid: target_uuid_for_task,
-            state: ActiveTunnelJobState::Failed,
+                peer_device_id,
+                peer_device_uuid: target_uuid_for_task,
+            state: TunnelJobState::Failed,
             attempt: last_attempt,
                 max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                 message: if last_message.is_empty() {
@@ -536,12 +540,12 @@ pub(super) fn spawn_active_tunnel_job_task(
         shared_for_task
             .lock()
             .active_tunnel_job_cancels
-            .remove(&target_device_id);
+            .remove(&peer_device_id);
         let error_code = classify_tunnel_error_code(&last_message).to_string();
         let _ = crate::p2p::close_active_p2p_job_with_nat(
             &config,
             &opened,
-            target_device_id,
+            peer_device_id,
             &last_attempt_id,
             false,
             last_source_nat,
@@ -559,7 +563,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     ws_client: &ServiceWsClient,
     config: &crate::config::MachineConfig,
-    target_device_id: i64,
+    peer_device_id: i64,
     client_job_id: &str,
     opened: &ActiveP2POpenResult,
     attempt: u8,
@@ -600,7 +604,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
     if let Err(err) = send_p2p_attempt_message(
         ws_client,
         opened.connection_id.clone(),
-        target_device_id,
+        peer_device_id,
         opened.access_grant.clone(),
         start_message,
     )
@@ -633,7 +637,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
             let _ = send_p2p_attempt_message(
                 ws_client,
                 opened.connection_id.clone(),
-                target_device_id,
+                peer_device_id,
                 opened.access_grant.clone(),
                 P2PAttemptMessage::AttemptCancel {
                     protocol_version: 1,
@@ -652,14 +656,14 @@ pub(super) async fn start_wgvpn_active_with_notify(
             return Err(anyhow!("traversal_preference_mismatch"));
         }
         crate::traversal::register(punch_token.clone(), attempt_id.clone(), opened.connection_id.clone(),
-            target_device_id, opened.access_grant.clone(), ws_client.clone(), true, negotiation)?;
+            peer_device_id, opened.access_grant.clone(), ws_client.clone(), true, negotiation)?;
     }
     let blocking_config = config.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let mut start_handle = tokio::task::spawn_blocking(move || {
         runtime_handle.block_on(wgvpn_flow::start_active_wgvpn(
             &blocking_config,
-            target_device_id,
+            peer_device_id,
             punch_token,
             Vec::new(),
         ))
@@ -674,7 +678,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
         event = event_rx.recv() => match event {
             Some(P2PAttemptEvent::Failed { error_code, message }) => {
                 let local_result = start_handle.await;
-                let _ = wgvpn_flow::stop_wgvpn(config, target_device_id).await;
+                let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
                 match local_result {
                     Ok(Err(error)) if error.to_string().starts_with("punch_exhausted:") => Err(error),
                     _ => Err(anyhow!("{}: {}", error_code, message)),
@@ -682,7 +686,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
             },
             Some(P2PAttemptEvent::Cancelled) => {
                 let _ = start_handle.await;
-                let _ = wgvpn_flow::stop_wgvpn(config, target_device_id).await;
+                let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
                 Err(anyhow!("peer_cancelled"))
             },
             Some(P2PAttemptEvent::ApprovalRequired) => {
@@ -784,18 +788,19 @@ async fn await_active_inbound_approval(
 
 pub(super) fn publish_active_tunnel_job_failed(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    target_device_id: i64,
-    target_device_uuid: String,
+    peer_device_id: i64,
+    peer_device_uuid: String,
     attempt: u8,
     message: String,
 ) {
     update_active_tunnel_job_status(
         shared,
-        ActiveTunnelJobStatus {
+        TunnelJobStatus {
+            is_active: true,
             tcp_retry_recommended: false,
-            target_device_id,
-            target_device_uuid,
-            state: ActiveTunnelJobState::Failed,
+            peer_device_id,
+            peer_device_uuid,
+            state: TunnelJobState::Failed,
             attempt,
             max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
             message,
@@ -807,17 +812,18 @@ pub(super) fn publish_active_tunnel_job_failed(
 
 pub(super) fn publish_active_tunnel_job_cancelled(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    target_device_id: i64,
-    target_device_uuid: String,
+    peer_device_id: i64,
+    peer_device_uuid: String,
 ) {
     let locale = current_locale(shared);
     update_active_tunnel_job_status(
         shared,
-        ActiveTunnelJobStatus {
+        TunnelJobStatus {
+            is_active: true,
             tcp_retry_recommended: false,
-            target_device_id,
-            target_device_uuid,
-            state: ActiveTunnelJobState::Cancelled,
+            peer_device_id,
+            peer_device_uuid,
+            state: TunnelJobState::Cancelled,
             attempt: 0,
             max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
             message: localized_message(locale.as_deref(), "tunnel.job.cancelled", &[]),
@@ -828,17 +834,17 @@ pub(super) fn publish_active_tunnel_job_cancelled(
     shared
         .lock()
         .active_tunnel_job_cancels
-        .remove(&target_device_id);
+        .remove(&peer_device_id);
 }
 
 pub(super) fn stop_active_tunnel_job(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    target_device_id: i64,
+    peer_device_id: i64,
 ) -> Option<Data> {
     let cancel_tx = shared
         .lock()
         .active_tunnel_job_cancels
-        .get(&target_device_id)
+        .get(&peer_device_id)
         .cloned();
     match cancel_tx {
         Some(tx) => {

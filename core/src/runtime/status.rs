@@ -5,8 +5,8 @@ use super::{
     ACTIVE_TUNNEL_JOB_BACKOFF_SECS, WGVPN_JOB_BACKOFF_SECS,
 };
 use crate::control::{
-    ActiveTunnelJobState, ActiveTunnelJobStatus, RuntimeStatus, TunnelLastResult,
-    TunnelLifecycleRole, TunnelLifecycleState, TunnelLifecycleStatus, WgvpnJobState,
+    TunnelJobState, TunnelJobStatus, RuntimeStatus, TunnelLastResult,
+    TunnelLifecycleRole, TunnelLifecycleState, TunnelLifecycleStatus,
 };
 use crate::i18n::localized_message;
 use parking_lot::Mutex;
@@ -31,12 +31,12 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
 
     for job in &mut status.active_tunnel_jobs {
         job.message = match job.state {
-            ActiveTunnelJobState::Running => localized_message(
+            TunnelJobState::Running => localized_message(
                 locale.as_deref(),
                 "tunnel.job.attempt_total_secs",
                 &[("secs", &ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS.to_string())],
             ),
-            ActiveTunnelJobState::Waiting => localized_message(
+            TunnelJobState::Waiting => localized_message(
                 locale.as_deref(),
                 "tunnel.job.attempt_failed_retry",
                 &[
@@ -51,13 +51,13 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                     ("secs", &ACTIVE_TUNNEL_JOB_BACKOFF_SECS.to_string()),
                 ],
             ),
-            ActiveTunnelJobState::Succeeded => {
+            TunnelJobState::Succeeded => {
                 localized_message(locale.as_deref(), "tunnel.job.auto_established", &[])
             }
-            ActiveTunnelJobState::Failed => {
+            TunnelJobState::Failed => {
                 localized_message(locale.as_deref(), "tunnel.job.ended_not_established", &[])
             }
-            ActiveTunnelJobState::Cancelled => {
+            TunnelJobState::Cancelled => {
                 localized_message(locale.as_deref(), "tunnel.job.cancelled", &[])
             }
         };
@@ -65,7 +65,7 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
 
     for job in &mut status.wgvpn_jobs {
         job.message = match job.state {
-            WgvpnJobState::Running => localized_message(
+            TunnelJobState::Running => localized_message(
                 locale.as_deref(),
                 "wgvpn.job.building",
                 &[
@@ -73,7 +73,7 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                     ("max", &job.max_attempts.to_string()),
                 ],
             ),
-            WgvpnJobState::Waiting => localized_message(
+            TunnelJobState::Waiting => localized_message(
                 locale.as_deref(),
                 "wgvpn.job.attempt_failed_retry",
                 &[
@@ -89,15 +89,15 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                     ("secs", &WGVPN_JOB_BACKOFF_SECS.to_string()),
                 ],
             ),
-            WgvpnJobState::Succeeded => {
+            TunnelJobState::Succeeded => {
                 localized_message(locale.as_deref(), "tunnel.lifecycle.connected", &[])
             }
-            WgvpnJobState::Failed => localized_message(
+            TunnelJobState::Failed => localized_message(
                 locale.as_deref(),
                 "wgvpn.job.all_attempts_failed",
                 &[("max", &job.max_attempts.to_string())],
             ),
-            WgvpnJobState::Cancelled => {
+            TunnelJobState::Cancelled => {
                 localized_message(locale.as_deref(), "wgvpn.job.cancelled", &[])
             }
         };
@@ -108,7 +108,7 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
         .iter()
         .map(|job| {
             (
-                job.target_device_id,
+                job.peer_device_id,
                 TunnelLifecycleRole::Active,
                 job.message.clone(),
             )
@@ -236,57 +236,60 @@ pub(super) fn upsert_tunnel_lifecycle(
     }
 }
 
+/// 统一的 job 状态 → lifecycle 投影（审计 O-1：合并主动/被动两轨的重复映射）。
+/// Waiting 统一携带 hole_punch_wait_timeout：两轨的重试原因本就是同一个
+/// 打洞等待超时（i18n 共用 errors.hole_punch_wait_timeout）。
+pub(super) fn tunnel_job_lifecycle_projection(
+    state: TunnelJobState,
+    message: &str,
+) -> (TunnelLifecycleState, TunnelLastResult, Option<String>) {
+    match state {
+        TunnelJobState::Running => (TunnelLifecycleState::Connecting, TunnelLastResult::None, None),
+        TunnelJobState::Waiting => (
+            TunnelLifecycleState::Connecting,
+            TunnelLastResult::None,
+            Some("hole_punch_wait_timeout".to_string()),
+        ),
+        TunnelJobState::Succeeded => (TunnelLifecycleState::Connected, TunnelLastResult::None, None),
+        TunnelJobState::Failed => (
+            TunnelLifecycleState::NotEstablished,
+            TunnelLastResult::AttemptFailed,
+            Some(classify_tunnel_error_code(message).to_string()),
+        ),
+        TunnelJobState::Cancelled => (
+            TunnelLifecycleState::NotEstablished,
+            TunnelLastResult::Cancelled,
+            Some("user_cancelled".to_string()),
+        ),
+    }
+}
+
 pub(super) fn update_active_tunnel_job_status(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    status: ActiveTunnelJobStatus,
+    status: TunnelJobStatus,
 ) {
     let mut state = shared.lock();
     if let Some(existing) = state
         .status
         .active_tunnel_jobs
         .iter_mut()
-        .find(|item| item.target_device_id == status.target_device_id)
+        .find(|item| item.peer_device_id == status.peer_device_id)
     {
         *existing = status.clone();
     } else {
         state.status.active_tunnel_jobs.push(status.clone());
     }
-    let (lifecycle_state, last_result, error_code, stage) = match status.state {
-        ActiveTunnelJobState::Running => (
-            TunnelLifecycleState::Connecting,
-            TunnelLastResult::None,
-            None,
-            Some("hole_punch_wait".into()),
-        ),
-        ActiveTunnelJobState::Waiting => (
-            TunnelLifecycleState::Connecting,
-            TunnelLastResult::None,
-            Some("hole_punch_wait_timeout".into()),
-            Some("retry_wait".into()),
-        ),
-        ActiveTunnelJobState::Succeeded => (
-            TunnelLifecycleState::Connected,
-            TunnelLastResult::None,
-            None,
-            None,
-        ),
-        ActiveTunnelJobState::Failed => (
-            TunnelLifecycleState::NotEstablished,
-            TunnelLastResult::AttemptFailed,
-            Some(classify_tunnel_error_code(&status.message).into()),
-            None,
-        ),
-        ActiveTunnelJobState::Cancelled => (
-            TunnelLifecycleState::NotEstablished,
-            TunnelLastResult::Cancelled,
-            Some("user_cancelled".into()),
-            None,
-        ),
+    let (lifecycle_state, last_result, error_code) =
+        tunnel_job_lifecycle_projection(status.state, &status.message);
+    let stage = match status.state {
+        TunnelJobState::Running => Some("hole_punch_wait".to_string()),
+        TunnelJobState::Waiting => Some("retry_wait".to_string()),
+        _ => None,
     };
     upsert_tunnel_lifecycle(
         &mut state.status,
         TunnelLifecycleStatus {
-            peer_device_id: status.target_device_id,
+            peer_device_id: status.peer_device_id,
             source_user_id: 0,
             source_username: String::new(),
             source_email: String::new(),
@@ -316,13 +319,13 @@ pub(super) fn update_active_tunnel_job_status(
 
 pub(super) fn clear_active_tunnel_job_status(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    target_device_id: i64,
+    peer_device_id: i64,
 ) {
     let mut state = shared.lock();
     state
         .status
         .active_tunnel_jobs
-        .retain(|item| item.target_device_id != target_device_id);
+        .retain(|item| item.peer_device_id != peer_device_id);
     if let Some(tx) = &state.status_tx {
         let _ = tx.send(state.status.clone());
     }

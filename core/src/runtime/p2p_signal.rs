@@ -499,7 +499,7 @@ pub(super) async fn handle_p2p_notify(
 pub(super) async fn send_p2p_attempt_message(
     ws_client: &ServiceWsClient,
     connection_id: String,
-    target_device_id: i64,
+    peer_device_id: i64,
     access_grant: String,
     message: P2PAttemptMessage,
 ) -> Result<()> {
@@ -508,7 +508,7 @@ pub(super) async fn send_p2p_attempt_message(
     ws_client
         .send_p2p_notify(
             connection_id,
-            target_device_id,
+            peer_device_id,
             message_id,
             access_grant,
             data,
@@ -549,7 +549,7 @@ pub(super) fn spawn_passive_attempt_failure_reporter(
                     .cloned()
             };
             match status {
-                Some(job) if job.state == WgvpnJobState::Failed => {
+                Some(job) if job.state == TunnelJobState::Failed => {
                     let _ = send_p2p_attempt_message(
                         &ws_client,
                         connection_id,
@@ -580,7 +580,7 @@ pub(super) fn spawn_passive_attempt_failure_reporter(
                     refresh_pending_inbound_approvals(&shared);
                     return;
                 }
-                Some(job) if job.state == WgvpnJobState::Succeeded => return,
+                Some(job) if job.state == TunnelJobState::Succeeded => return,
                 None => {
                     let removed = {
                         let mut state = shared.lock();

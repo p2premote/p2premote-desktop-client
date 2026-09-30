@@ -465,7 +465,7 @@ pub(super) fn cleanup_wgvpn_session_async(
                         state
                             .status
                             .active_tunnel_jobs
-                            .retain(|job| job.target_device_id != peer_device_id);
+                            .retain(|job| job.peer_device_id != peer_device_id);
                     }
                     upsert_tunnel_lifecycle(
                         &mut state.status,

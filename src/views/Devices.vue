@@ -355,7 +355,7 @@ import mstscIcon from '../assets/icons/mstsc.png'
 import rustdeskTinyIcon from '../assets/icons/rustdesk-tiny.png'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { errorMessage } from '../utils/errorMessage'
-import type { ActiveTunnelJobStatus, TunnelLifecycleStatus } from '../types/api'
+import type { TunnelJobStatus, TunnelLifecycleStatus } from '../types/api'
 import { useAuthStore } from '../stores/auth'
 import DevicePlatformIcon from '../components/DevicePlatformIcon.vue'
 import { useConnectingDots } from '../composables/useConnectingDots'
@@ -376,16 +376,6 @@ interface TunnelInfo {
   latency_ms?: number | null
 }
 
-interface WgvpnJobStatus {
-  peer_device_id: number
-  is_active: boolean
-  state: 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
-  attempt: number
-  max_attempts: number
-  message: string
-  updated_at: number
-}
-
 const deviceStore = useDeviceStore()
 const authStore = useAuthStore()
 const showLocalProcessActions = isTauriRuntime()
@@ -396,7 +386,7 @@ const selectedDevice = ref<DeviceInfo | null>(null)
 const detailExpanded = ref(false)
 const currentDeviceUUID = ref('')
 const tunnelStatusMap = ref<Record<number, TunnelInfo>>({})
-const activeTunnelJobMap = ref<Record<number, ActiveTunnelJobStatus>>({})
+const activeTunnelJobMap = ref<Record<number, TunnelJobStatus>>({})
 const tunnelLifecycleMap = ref<Record<number, TunnelLifecycleStatus>>({})
 const preparingTunnelIds = ref(new Set<number>())
 const disconnectingIds = ref(new Set<number>())
@@ -500,7 +490,7 @@ function hasTunnel(device: DeviceInfo | null): boolean {
   return Boolean(tunnelStatusMap.value[device.device_id])
 }
 
-function activeTunnelJob(device: DeviceInfo | null): ActiveTunnelJobStatus | null {
+function activeTunnelJob(device: DeviceInfo | null): TunnelJobStatus | null {
   if (!device) return null
   const job = activeTunnelJobMap.value[device.device_id]
   if (!job || (job.state !== 'running' && job.state !== 'waiting')) return null
@@ -822,13 +812,13 @@ async function refreshTunnelStatusMap() {
 
 function applyTunnelRuntimeStatus(runtime: any) {
     const newMap: Record<number, TunnelInfo> = {}
-    const newJobMap: Record<number, ActiveTunnelJobStatus> = {}
+    const newJobMap: Record<number, TunnelJobStatus> = {}
     const activeJobs = runtime?.active_tunnel_jobs
     if (Array.isArray(activeJobs)) {
       for (const job of activeJobs) {
-        newJobMap[job.target_device_id] = job
+        newJobMap[job.peer_device_id] = job
         if (job.state === 'succeeded' && job.result?.success) {
-          newMap[job.target_device_id] = {
+          newMap[job.peer_device_id] = {
             role: 'active',
           }
         }
@@ -836,11 +826,11 @@ function applyTunnelRuntimeStatus(runtime: any) {
     }
     const wgvpnJobs = runtime?.wgvpn_jobs
     if (Array.isArray(wgvpnJobs)) {
-      for (const job of wgvpnJobs as WgvpnJobStatus[]) {
+      for (const job of wgvpnJobs as TunnelJobStatus[]) {
         if (!job.is_active) continue
         newJobMap[job.peer_device_id] = {
-          target_device_id: job.peer_device_id,
-          target_device_uuid: '',
+          peer_device_id: job.peer_device_id,
+          peer_device_uuid: '',
           state: job.state,
           attempt: job.attempt,
           max_attempts: job.max_attempts,
@@ -928,7 +918,7 @@ async function handleCancelRecoveringTunnel(device: DeviceInfo) {
     const lifecycle = deviceTunnelLifecycle(device)
     const serviceStatus = lifecycle.role === 'passive'
       ? await invoke<any>('stop_service_tunnel', { sourceDeviceId: device.device_id })
-      : await invoke<any>('stop_service_active_tunnel', { targetDeviceId: device.device_id })
+      : await invoke<any>('stop_service_active_tunnel', { peerDeviceId: device.device_id })
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
     ElMessage.success(t('devices.message.auto_tunnel_cancelled'))
   } catch (error) {
@@ -946,20 +936,20 @@ async function handleRetryTunnel(device: DeviceInfo) {
   preparing.add(device.device_id)
   preparingTunnelIds.value = preparing
   try {
-    await invoke('stop_service_active_tunnel', { targetDeviceId: device.device_id })
+    await invoke('stop_service_active_tunnel', { peerDeviceId: device.device_id })
     // A native punch call may still be draining. Starting early would reuse
     // the old job rather than the newly saved machine preferences.
     const deadline = Date.now() + 150_000
     while (true) {
       const status = await invoke<any>('get_service_status')
-      const job = status.runtime?.active_tunnel_jobs?.find((item: ActiveTunnelJobStatus) => item.target_device_id === device.device_id)
+      const job = status.runtime?.active_tunnel_jobs?.find((item: TunnelJobStatus) => item.peer_device_id === device.device_id)
       if (!job || !['running', 'waiting'].includes(job.state)) break
       if (Date.now() >= deadline) throw new Error(t('app.settings.draining'))
       await new Promise(resolve => window.setTimeout(resolve, 500))
     }
     await invoke<string>('start_service_active_tunnel', {
       targetDeviceId: device.device_id,
-      targetDeviceUuid: device.device_uuid,
+      peerDeviceUuid: device.device_uuid,
       connectCode: null,
       temporaryPassword: null,
       lanCidrs: [],
@@ -992,7 +982,7 @@ async function startTunnelSilently(device: DeviceInfo) {
   try {
     await invoke<string>('start_service_active_tunnel', {
       targetDeviceId: device.device_id,
-      targetDeviceUuid: device.device_uuid,
+      peerDeviceUuid: device.device_uuid,
       connectCode: null,
       temporaryPassword: null,
       lanCidrs: [],
@@ -1017,7 +1007,7 @@ async function startTunnelSilently(device: DeviceInfo) {
 
 async function handleCancelActiveTunnelJob(device: DeviceInfo) {
   try {
-    await invoke('stop_active_tunnel_job', { targetDeviceId: device.device_id })
+    await invoke('stop_active_tunnel_job', { peerDeviceId: device.device_id })
     delete activeTunnelJobMap.value[device.device_id]
     ElMessage.success(t('devices.message.auto_tunnel_cancelled'))
   } catch (error) {
@@ -1048,7 +1038,7 @@ async function handleDisconnectTunnel(device: DeviceInfo) {
     const lifecycle = deviceTunnelLifecycle(device)
     const serviceStatus = lifecycle.role === 'passive'
       ? await invoke<any>('stop_service_tunnel', { sourceDeviceId: device.device_id })
-      : await invoke<any>('stop_service_active_tunnel', { targetDeviceId: device.device_id })
+      : await invoke<any>('stop_service_active_tunnel', { peerDeviceId: device.device_id })
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
     ElMessage.success(t('devices.message.tunnel_disconnected'))
   } catch (error) {

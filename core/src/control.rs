@@ -47,8 +47,8 @@ pub enum Data {
     Status,
     RegisterDevice,
     StartActiveTunnelJob {
-        target_device_id: i64,
-        target_device_uuid: String,
+        peer_device_id: i64,
+        peer_device_uuid: String,
         #[serde(default)]
         connect_code: Option<String>,
         #[serde(default)]
@@ -61,7 +61,7 @@ pub enum Data {
         temporary_password: String,
     },
     StopActiveTunnelJob {
-        target_device_id: i64,
+        peer_device_id: i64,
     },
     StartDesktopSession {
         peer_device_id: i64,
@@ -85,7 +85,7 @@ pub enum Data {
         source_device_id: i64,
     },
     StopActiveTunnel {
-        target_device_id: i64,
+        peer_device_id: i64,
     },
     TestTunnelSpeed {
         peer_device_id: i64,
@@ -223,7 +223,7 @@ pub struct RuntimeStatus {
     #[serde(default)]
     pub current_device: Option<DeviceInfo>,
     #[serde(default)]
-    pub active_tunnel_jobs: Vec<ActiveTunnelJobStatus>,
+    pub active_tunnel_jobs: Vec<TunnelJobStatus>,
     #[serde(default)]
     pub invite_temporary_password: Option<String>,
     /// wgvpn 已建立的会话列表（从 WGVPN_SESSIONS 映射）。
@@ -231,7 +231,7 @@ pub struct RuntimeStatus {
     pub wgvpn_sessions: Vec<WgvpnSessionStatus>,
     /// wgvpn 异步 job 状态（重试中的连接任务）。
     #[serde(default)]
-    pub wgvpn_jobs: Vec<WgvpnJobStatus>,
+    pub wgvpn_jobs: Vec<TunnelJobStatus>,
     #[serde(default)]
     pub tunnel_lifecycles: Vec<TunnelLifecycleStatus>,
     /// Cross-account passive requests that have completed WG handshake and
@@ -331,24 +331,34 @@ pub struct TunnelLifecycleStatus {
     pub updated_at: i64,
 }
 
+/// 统一的隧道任务状态（审计 O-1：合并原 ActiveTunnelJobStatus 与 WgvpnJobStatus
+/// 双轨）。两个集合语义不同——`active_tunnel_jobs` 是本机主动发起的建链任务、
+/// `wgvpn_jobs` 是被动端的重试任务——但元素同构，共用本类型；轨专属字段以
+/// `#[serde(default)]` 兼容：active 轨填 `peer_device_uuid`/`result`/
+/// `tcp_retry_recommended`（is_active 恒 true），wgvpn 轨填 `is_active`
+/// （其余为默认值）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActiveTunnelJobStatus {
+pub struct TunnelJobStatus {
     #[serde(default)]
-    pub tcp_retry_recommended: bool,
-    pub target_device_id: i64,
-    pub target_device_uuid: String,
-    pub state: ActiveTunnelJobState,
+    pub peer_device_id: i64,
+    #[serde(default)]
+    pub peer_device_uuid: String,
+    #[serde(default)]
+    pub is_active: bool,
+    pub state: TunnelJobState,
     pub attempt: u8,
     pub max_attempts: u8,
     pub message: String,
     #[serde(default)]
     pub result: Option<ActiveStartResult>,
+    #[serde(default)]
+    pub tcp_retry_recommended: bool,
     pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ActiveTunnelJobState {
+pub enum TunnelJobState {
     Running,
     Waiting,
     Succeeded,
@@ -431,27 +441,6 @@ pub struct WgvpnSessionStatus {
     pub subnet_last_error: String,
 }
 
-/// wgvpn 异步 job 的状态（重试中的连接任务，仿 ActiveTunnelJobStatus）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WgvpnJobStatus {
-    pub peer_device_id: i64,
-    pub is_active: bool,
-    pub state: WgvpnJobState,
-    pub attempt: u8,
-    pub max_attempts: u8,
-    pub message: String,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WgvpnJobState {
-    Running,
-    Waiting,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
 
 // ---- 连接封装 ----
 
