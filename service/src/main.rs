@@ -19,20 +19,6 @@ const SERVICE_TYPE: windows_service::service::ServiceType =
     windows_service::service::ServiceType::OWN_PROCESS;
 
 #[cfg(windows)]
-fn service_trace(message: &str) {
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(r"C:\Windows\Temp\p2premote-service-trace.log")
-    {
-        let _ = writeln!(file, "{} {:?}", message, std::time::SystemTime::now());
-        let _ = file.flush();
-        let _ = file.sync_all();
-    }
-}
-
-#[cfg(windows)]
 define_windows_service!(ffi_service_main, service_entry);
 
 fn init_logging() {
@@ -126,7 +112,6 @@ fn apply_runtime_args() {
 #[cfg(windows)]
 fn handle_scm_command() -> anyhow::Result<()> {
     apply_runtime_args();
-    scm_trace("entered --scm helper");
     // 释放控制台窗口，避免提权后闪黑窗
     #[link(name = "kernel32")]
     extern "system" {
@@ -137,7 +122,6 @@ fn handle_scm_command() -> anyhow::Result<()> {
     }
 
     let args: Vec<String> = std::env::args().collect();
-    scm_trace("service control command received (arguments redacted)");
     let action = args
         .get(2)
         .ok_or_else(|| anyhow::anyhow!("usage: p2premote-service.exe --scm <action> [exe_path]"))?;
@@ -171,11 +155,11 @@ fn handle_scm_command() -> anyhow::Result<()> {
         "install" => install_exe
             .ok_or_else(|| anyhow::anyhow!("install requires exe_path argument"))
             .and_then(|exe_path| {
-                run_scm_step("install", || {
+                run_scm_step(|| {
                     p2premote_core::service_control::direct::install_service(&exe_path)
                 })
             }),
-        "uninstall" => run_scm_step("uninstall", || {
+        "uninstall" => run_scm_step(|| {
             // 先停并等停止再删除：对运行中的服务 DeleteService 只会"标记删除"，
             // 残留的标记状态会让紧随其后的 setup（重装场景）以
             // ERROR_SERVICE_MARKED_FOR_DELETE 失败，装完后服务缺失。
@@ -191,10 +175,10 @@ fn handle_scm_command() -> anyhow::Result<()> {
             }
             result
         }),
-        "start" => run_scm_step("start", || {
+        "start" => run_scm_step(|| {
             p2premote_core::service_control::direct::start_service()
         }),
-        "stop" => run_scm_step("stop", || {
+        "stop" => run_scm_step(|| {
             p2premote_core::service_control::direct::stop_service()?;
             // SCM acknowledges the stop request before the process has exited.
             // The installer replaces the service executable immediately after
@@ -202,20 +186,20 @@ fn handle_scm_command() -> anyhow::Result<()> {
             wait_until_service_stopped(std::time::Duration::from_secs(60));
             Ok(())
         }),
-        "enable" => run_scm_step("enable", || {
+        "enable" => run_scm_step(|| {
             p2premote_core::service_control::direct::enable_service()
         }),
-        "disable" => run_scm_step("disable", || {
+        "disable" => run_scm_step(|| {
             p2premote_core::service_control::direct::disable_service()
         }),
         // 复合操作：install + enable + start，一次 UAC 完成
         "setup" => install_exe
             .ok_or_else(|| anyhow::anyhow!("setup requires exe_path argument"))
             .and_then(|exe_path| {
-                run_scm_step("setup.install", || {
+                run_scm_step(|| {
                     p2premote_core::service_control::direct::install_service(&exe_path)
                 })?;
-                run_scm_step("setup.enable", || {
+                run_scm_step(|| {
                     p2premote_core::service_control::direct::enable_service()
                 })?;
                 // 等待 SCM 完成 config 变更后再启动
@@ -223,7 +207,7 @@ fn handle_scm_command() -> anyhow::Result<()> {
                 // 重试 start 最多 3 次
                 let mut start_err = None;
                 for attempt in 1..=3 {
-                    match run_scm_step("setup.start", || {
+                    match run_scm_step(|| {
                         p2premote_core::service_control::direct::start_service()
                     }) {
                         Ok(()) => {
@@ -231,7 +215,6 @@ fn handle_scm_command() -> anyhow::Result<()> {
                             break;
                         }
                         Err(e) => {
-                            scm_trace(&format!("setup.start attempt {} failed: {}", attempt, e));
                             start_err = Some(e);
                             if attempt < 3 {
                                 std::thread::sleep(std::time::Duration::from_secs(1));
@@ -240,7 +223,6 @@ fn handle_scm_command() -> anyhow::Result<()> {
                     }
                 }
                 if let Some(e) = start_err {
-                    scm_trace(&format!("setup.start failed after retries: {}", e));
                     return Err(e);
                 }
                 Ok(())
@@ -300,20 +282,16 @@ fn handle_scm_command() -> anyhow::Result<()> {
         };
         let _ = std::fs::write(path, content);
     }
-    scm_trace(&format!("result: {:?}", result));
 
     result
 }
 
 #[cfg(windows)]
-fn run_scm_step<F>(name: &str, f: F) -> anyhow::Result<()>
+fn run_scm_step<F>(f: F) -> anyhow::Result<()>
 where
     F: FnOnce() -> anyhow::Result<()>,
 {
-    scm_trace(&format!("step begin: {}", name));
-    let result = f();
-    scm_trace(&format!("step end: {} => {:?}", name, result));
-    result
+    f()
 }
 
 /// 轮询等待服务进入 Stopped（或已不存在）；超时不视为错误，交由后续步骤兜底。
@@ -328,7 +306,6 @@ fn wait_until_service_stopped(timeout: std::time::Duration) {
             return;
         }
         if std::time::Instant::now() >= deadline {
-            scm_trace("wait_until_service_stopped timed out");
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -347,7 +324,6 @@ fn wait_until_service_gone(timeout: std::time::Duration) {
             return;
         }
         if std::time::Instant::now() >= deadline {
-            scm_trace("wait_until_service_gone timed out");
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -355,25 +331,7 @@ fn wait_until_service_gone(timeout: std::time::Duration) {
 }
 
 #[cfg(windows)]
-fn scm_trace(message: &str) {
-    use std::io::Write;
-
-    let path =
-        std::env::temp_dir().join(format!("p2premote-scm-helper-{}.log", std::process::id()));
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{}", message);
-    }
-}
-
-#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    std::panic::set_hook(Box::new(|panic| {
-        service_trace(&format!("global panic: {}", panic));
-    }));
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|arg| arg == "--foreground") {
@@ -425,23 +383,18 @@ fn main() -> anyhow::Result<()> {
 
 fn run_foreground() -> anyhow::Result<()> {
     #[cfg(windows)]
-    service_trace("run_foreground begin");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     #[cfg(windows)]
-    service_trace("tokio runtime built");
     let result = runtime.block_on(run_service_foreground());
     #[cfg(windows)]
-    service_trace("run_foreground block_on returned");
     result
 }
 
 #[cfg(windows)]
 fn service_entry(_arguments: Vec<OsString>) {
-    service_trace("service_entry");
     if let Err(err) = service_main() {
-        service_trace(&format!("service_main error: {:#?}", err));
         error!("service main failed: {:#?}", err);
     }
 }
@@ -449,7 +402,6 @@ fn service_entry(_arguments: Vec<OsString>) {
 #[cfg(windows)]
 fn service_main() -> anyhow::Result<()> {
     use anyhow::Context;
-    service_trace("service_main begin");
     use std::sync::mpsc;
     use windows_service::service::{
         ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
@@ -463,7 +415,6 @@ fn service_main() -> anyhow::Result<()> {
             SERVICE_NAME,
             move |control_event| match control_event {
                 ServiceControl::Stop | ServiceControl::Shutdown => {
-                    service_trace("received Stop/Shutdown control");
                     let _ = shutdown_tx.send(());
                     ServiceControlHandlerResult::NoError
                 }
@@ -471,7 +422,6 @@ fn service_main() -> anyhow::Result<()> {
                 _ => ServiceControlHandlerResult::NotImplemented,
             },
         ).context("register service control handler")?;
-    service_trace("control handler registered");
 
     // 报告 StartPending
     status_handle.set_service_status(ServiceStatus {
@@ -483,24 +433,19 @@ fn service_main() -> anyhow::Result<()> {
         wait_hint: std::time::Duration::from_secs(5),
         process_id: None,
     }).context("report StartPending")?;
-    service_trace("reported StartPending");
 
     // 在独立线程运行 service 逻辑
     let service_result = std::thread::spawn(move || {
-        service_trace("runtime wrapper entered");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_foreground));
         match result {
             Ok(value) => {
-                service_trace("runtime wrapper returned");
                 value
             }
             Err(_) => {
-                service_trace("runtime wrapper caught panic");
                 Err(anyhow::anyhow!("runtime thread panicked"))
             }
         }
     });
-    service_trace("runtime thread spawned");
 
     // 报告 Running
     status_handle.set_service_status(ServiceStatus {
@@ -512,7 +457,6 @@ fn service_main() -> anyhow::Result<()> {
         wait_hint: std::time::Duration::from_secs(0),
         process_id: None,
     }).context("report Running")?;
-    service_trace("reported Running");
 
     loop {
         match shutdown_rx.try_recv() {
@@ -521,7 +465,6 @@ fn service_main() -> anyhow::Result<()> {
             Err(mpsc::TryRecvError::Empty) => {}
         }
         if service_result.is_finished() {
-            service_trace("runtime thread finished");
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -543,13 +486,11 @@ fn service_main() -> anyhow::Result<()> {
 
     // 等待 service 线程结束，并把 runtime 失败写入 service 日志。
     match service_result.join() {
-        Ok(Ok(())) => service_trace("runtime returned ok"),
+        Ok(Ok(())) => {}
         Ok(Err(err)) => {
-            service_trace(&format!("runtime returned error: {:#}", err));
             error!("service runtime failed: {:#}", err)
         }
         Err(_) => {
-            service_trace("runtime panicked");
             error!("service runtime panicked")
         }
     }

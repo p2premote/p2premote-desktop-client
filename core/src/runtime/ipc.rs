@@ -110,19 +110,7 @@ pub(super) async fn handle_client(
                     Some(data) => {
                         let command_name = data_variant(&data);
                         tracing::debug!("[ServiceControl] received: {:?}", command_name);
-                        // Keep a low-level Windows diagnostic trail as well.  The
-                        // Win7 service can be terminated by the OS/native code
-                        // without unwinding through Rust, so the normal tracing
-                        // log may end abruptly.  Recording the command boundary
-                        // lets us correlate a GUI startup command with the last
-                        // service action before an SCM 1067 event.
-                        runtime_trace(&format!("ipc command begin: {}", command_name));
                         let response = handle_data(data, shared).await;
-                        runtime_trace(&format!(
-                            "ipc command end: {} response={}",
-                            command_name,
-                            response.is_some()
-                        ));
                         // 批量唤醒：多条命令只触发一次 bootstrap / shutdown
                         {
                             let state = shared.lock();
@@ -135,7 +123,6 @@ pub(super) async fn handle_client(
                         }
                     }
                     None => {
-                        runtime_trace("ipc client disconnected");
                         break;
                     }
                 }

@@ -421,36 +421,14 @@ async fn rotate_invite_temporary_password(shared: &Arc<Mutex<SharedRuntimeState>
 
 static EXTERNAL_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(windows)]
-fn runtime_trace(message: &str) {
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(r"C:\Windows\Temp\p2premote-runtime-trace.log")
-    {
-        let _ = writeln!(file, "{} {:?}", message, std::time::SystemTime::now());
-        let _ = file.flush();
-        let _ = file.sync_all();
-    }
-}
-
-#[cfg(not(windows))]
-fn runtime_trace(_message: &str) {}
-
 pub async fn run_service_foreground() -> Result<()> {
-    runtime_trace("run_service_foreground entered");
     // Web UI 使用 HTTP 时，TLS provider 仍会被 API/P2P HTTPS 客户端使用。
     // 必须在任何 Rustls 客户端初始化前设置进程级默认 provider。ring
     // 对 Windows 7 的系统 API 依赖更低；reqwest 的 rustls-tls feature
     // 已启用同一 provider，因此不再强制加载 aws-lc native backend。
-    runtime_trace("before ring provider construction");
     let provider = rustls::crypto::ring::default_provider();
-    runtime_trace("after ring provider construction");
     let _ = provider.install_default();
-    runtime_trace("after ring provider install");
     info!("[ServiceRuntime] starting, pid={}", std::process::id());
-    runtime_trace("startup info logged");
     EXTERNAL_SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
     if let Err(err) = crate::config::clear_cached_public_network_info() {
         info!(
@@ -458,7 +436,6 @@ pub async fn run_service_foreground() -> Result<()> {
             err
         );
     }
-    runtime_trace("public network cache cleared");
     // 启动路径只加载一次 machine config：locale 恢复、wgvpn 残留清理、
     // 登录会话判定与 Web Admin 启动/日志共用，避免同一文件重复读 4-6 次。
     // 读失败时各消费点沿用原先的默认值语义（default / false / 跳过恢复）。
@@ -476,15 +453,11 @@ pub async fn run_service_foreground() -> Result<()> {
         .as_ref()
         .and_then(|config| config.locale.clone());
     crate::device::initialize_public_network_group(startup_locale.as_deref());
-    runtime_trace("public network group initialized");
 
     // WGVPN 数据面属于 service 进程，重启后不可恢复；这里只清理崩溃残留。
     let cleanup_config = startup_config.clone().unwrap_or_default();
-    runtime_trace("cleanup config loaded");
-    runtime_trace("before stale wgvpn cleanup");
     wgvpn_flow::cleanup_stale_sessions(&cleanup_config)
         .context("failed to clear stale wgvpn state before service startup")?;
-    runtime_trace("stale wgvpn sessions cleaned");
 
     let startup_login_enabled = startup_config
         .as_ref()
@@ -517,10 +490,8 @@ pub async fn run_service_foreground() -> Result<()> {
     }
     let wake = Arc::new(Notify::new());
     spawn_control_server(shared.clone(), wake.clone());
-    runtime_trace("control server spawned");
     info!("[ServiceRuntime] IPC control server started");
     web_admin::spawn_web_admin_server(shared.clone(), wake.clone(), startup_config.clone());
-    runtime_trace("web admin server spawned");
     info!(
         "[ServiceRuntime] web admin server scheduled on {}",
         web_admin::web_admin_addr_for_log(startup_config.as_ref())
@@ -605,28 +576,21 @@ pub async fn run_service_foreground() -> Result<()> {
         }
         Ok(())
     });
-    runtime_trace("before health server bind");
     let health_server = match spawn_health_server(health_handler, peer_validator).await {
         Ok(handle) => {
-            runtime_trace("health server bind succeeded");
             let handle = Arc::new(handle);
             shared.lock().health_server_handle = Some(handle.clone());
             Some(handle)
         }
         Err(err) => {
-            runtime_trace(&format!("health server bind failed: {}", err));
             warn!("[ServiceRuntime] health server start failed: {}", err);
             None
         }
     };
-    runtime_trace("after health server setup");
     let ws_client = ServiceWsClient::new();
-    runtime_trace("ws client created");
     shared.lock().ws_client = Some(ws_client.clone());
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<WsEvent>();
-    runtime_trace("event channel created");
     let mut device_status_tick = interval(Duration::from_secs(DEVICE_STATUS_POLL_SECS));
-    runtime_trace("device status interval created");
     let device_report_state = Arc::new(tokio::sync::Mutex::new((
         Option::<DeviceStatusReport>::None,
         Option::<Instant>::None,
@@ -636,48 +600,37 @@ pub async fn run_service_foreground() -> Result<()> {
     let maintenance_lock = Arc::new(tokio::sync::Mutex::new(()));
     let mut refresh_tick = interval(Duration::from_secs(60));
     let mut bootstrap_tick = interval(Duration::from_secs(60));
-    runtime_trace("maintenance intervals created");
 
-    runtime_trace("before initial bootstrap");
     if let Err(err) = bootstrap_service(&shared, &ws_client, event_tx.clone()).await {
-        runtime_trace(&format!("initial bootstrap failed: {}", err));
         info!("[ServiceRuntime] initial bootstrap failed: {}", err);
         handle_bootstrap_error(&shared, &ws_client, err).await;
     } else {
-        runtime_trace("initial bootstrap succeeded");
         info!("[ServiceRuntime] initial bootstrap succeeded");
     }
 
-    runtime_trace("entering service loop");
     loop {
-        runtime_trace("service loop iteration");
         if shared.lock().shutdown_requested || EXTERNAL_SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
             info!("[ServiceRuntime] shutdown requested");
             break;
         }
 
-        runtime_trace("before runtime select");
         tokio::select! {
             _ = bootstrap_tick.tick() => {
-                runtime_trace("select bootstrap tick");
                 spawn_bootstrap_maintenance(
                     shared.clone(), ws_client.clone(), event_tx.clone(), maintenance_lock.clone(), "tick"
                 );
             }
             _ = wake.notified() => {
-                runtime_trace("select wake");
                 debug!("[ServiceRuntime] wake received, running bootstrap");
                 spawn_bootstrap_maintenance(
                     shared.clone(), ws_client.clone(), event_tx.clone(), maintenance_lock.clone(), "wake"
                 );
             }
             _ = device_status_tick.tick() => {
-                runtime_trace("select device status tick");
                 let report_shared = shared.clone();
                 let report_state = device_report_state.clone();
                 let report_lock = maintenance_lock.clone();
                 tokio::spawn(async move {
-                    runtime_trace("device status task entered");
                     let _maintenance_guard = report_lock.lock().await;
                     let mut report_state = report_state.lock().await;
                     let (last_status, last_report_at) = &mut *report_state;
@@ -689,26 +642,21 @@ pub async fn run_service_foreground() -> Result<()> {
                         warn!("[ServiceRuntime] device status report failed: {}", err);
                         set_last_error(&report_shared, err.to_string());
                     }
-                    runtime_trace("device status task returned");
                 });
             }
             _ = refresh_tick.tick() => {
-                runtime_trace("select refresh tick");
                 let refresh_shared = shared.clone();
                 let refresh_wake = wake.clone();
                 let refresh_lock = maintenance_lock.clone();
                 tokio::spawn(async move {
-                    runtime_trace("auth refresh task entered");
                     let _maintenance_guard = refresh_lock.lock().await;
                     if let Err(err) = maybe_refresh_auth(&refresh_shared, &refresh_wake).await {
                         warn!("[ServiceRuntime] auth refresh failed: {}", err);
                         set_last_error(&refresh_shared, err.to_string());
                     }
-                    runtime_trace("auth refresh task returned");
                 });
             }
             maybe_event = event_rx.recv() => {
-                runtime_trace("select event received");
                 if let Some(event) = maybe_event {
                     match event {
                         WsEvent::Connected => {
@@ -864,13 +812,11 @@ fn spawn_bootstrap_maintenance(
     reason: &'static str,
 ) {
     tokio::spawn(async move {
-        runtime_trace("bootstrap maintenance task entered");
         let _maintenance_guard = maintenance_lock.lock().await;
         if let Err(err) = bootstrap_service(&shared, &ws_client, event_tx).await {
             info!("[ServiceRuntime] bootstrap {} failed: {}", reason, err);
             handle_bootstrap_error(&shared, &ws_client, err).await;
         }
-        runtime_trace("bootstrap maintenance task returned");
     });
 }
 
