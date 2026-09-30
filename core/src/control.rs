@@ -711,10 +711,22 @@ pub async fn accept_ipc_client() -> Result<IpcStream> {
     // 握手 secret 来自可读的机器 ID，不能单独作为本机用户的授权依据。
     #[cfg(target_os = "linux")]
     let socket_mode = 0o666;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     let socket_mode = 0o660;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(socket_mode))
         .with_context(|| format!("failed to set unix socket permissions for {:?}", path))?;
+    // macOS：socket 由 root 后台服务创建，默认属 wheel 组，GUI（admin 组）
+    // 无法连接。收敛到 admin 组；本地 admin 用户本就具备完整提权能力，
+    // 与 machine logs 目录的共享边界一致。
+    #[cfg(target_os = "macos")]
+    match crate::config::macos_admin_group_gid() {
+        Some(gid) => {
+            if let Err(error) = std::os::unix::fs::chown(&path, None, Some(gid)) {
+                tracing::warn!("[control] failed to set unix socket group: {error}");
+            }
+        }
+        None => tracing::warn!("[control] failed to resolve admin group gid"),
+    }
     loop {
         let (stream, _) = listener
             .accept()

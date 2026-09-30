@@ -539,8 +539,50 @@ pub fn ensure_machine_dirs() -> Result<()> {
     fs::create_dir_all(machine_log_dir()).context("failed to create machine log dir")?;
     if !DIR_PERMISSIONS_SET.swap(true, Ordering::SeqCst) {
         configure_machine_data_dir_permissions(&config_dir);
+        #[cfg(target_os = "macos")]
+        configure_macos_log_dir_permissions();
     }
     Ok(())
+}
+
+/// macOS admin 组的 gid。root 后台服务据此把 machine logs 目录与 IPC 套接字
+/// 共享给 GUI 进程（本地 GUI 用户默认属于 admin 组）。
+///
+/// SAFETY: getgrnam 返回指向静态缓冲的指针，非线程安全；仅在进程启动路径
+/// （服务/GUI 初始化阶段，单线程时）调用。
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_admin_group_gid() -> Option<u32> {
+    unsafe {
+        let name = b"admin\0";
+        let group = libc::getgrnam(name.as_ptr().cast());
+        if group.is_null() {
+            None
+        } else {
+            Some((*group).gr_gid)
+        }
+    }
+}
+
+/// macOS：machine logs 目录由 root 后台服务与普通用户 GUI 共写。
+/// root 创建的目录默认 root:wheel 0755，GUI 无法写入日志；收敛为 admin 组
+/// 可写（0770）。GUI（p2premote-*.log）与服务（p2premote-service-*.log）
+/// 的日志文件名不同，互不冲突。
+#[cfg(target_os = "macos")]
+fn configure_macos_log_dir_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = machine_log_dir();
+    match macos_admin_group_gid() {
+        Some(gid) => {
+            if let Err(error) = std::os::unix::fs::chown(&dir, None, Some(gid)) {
+                tracing::warn!("[config] failed to set machine log dir group: {error}");
+            }
+        }
+        None => tracing::warn!("[config] failed to resolve admin group gid"),
+    }
+    if let Err(error) = fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)) {
+        tracing::warn!("[config] failed to set machine log dir permissions: {error}");
+    }
 }
 
 /// 初始化机器级数据目录的访问权限。

@@ -153,20 +153,32 @@ fn init_logging() -> Result<(), String> {
 
     // 日志输出目录：由 core 统一按平台解析
     let log_dir = app_log_dir();
-    let file_writer = p2premote_core::logging::DailyLogWriter::new(log_dir, "p2premote")
-        .map_err(|error| format!("failed to initialize application log file: {error}"))?;
-
     let file_filter = EnvFilter::new("p2premote_lib=debug,hyper=info,reqwest=info,tokio=info,info");
 
-    let file_layer = fmt::layer()
-        .with_writer(file_writer)
-        .with_ansi(false)
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_file(true)
-        .with_line_number(true)
-        .with_level(true)
-        .with_timer(ChronoLocal::rfc_3339());
+    // 日志文件初始化失败不阻止启动：macOS 拖拽安装后、后台服务尚未安装时
+    // machine 目录不存在，普通用户无权创建。降级为仅控制台输出，安装后台
+    // 服务并重启后自动恢复。
+    let file_layer = match p2premote_core::logging::DailyLogWriter::new(&log_dir, "p2premote") {
+        Ok(file_writer) => Some(
+            fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false)
+                .with_target(true)
+                .with_thread_ids(false)
+                .with_file(true)
+                .with_line_number(true)
+                .with_level(true)
+                .with_timer(ChronoLocal::rfc_3339()),
+        ),
+        Err(error) => {
+            eprintln!(
+                "[p2premote] failed to initialize application log file in {}: {error}; \
+                 falling back to console-only logging",
+                log_dir.display()
+            );
+            None
+        }
+    };
 
     let console_filter =
         EnvFilter::new("p2premote_lib=debug,hyper=info,reqwest=info,tokio=info,info");
@@ -204,8 +216,14 @@ fn init_config_dir() -> Result<(), String> {
 }
 
 pub fn run() {
-    init_logging().expect("application logging initialization failed");
-    init_config_dir().expect("application data directory initialization failed");
+    // 启动阶段失败不 panic：后台服务未安装时 machine 目录尚不存在（macOS
+    // 拖拽安装即属于该场景），降级启动，待 UI 引导安装后台服务后自愈。
+    if let Err(error) = init_logging() {
+        eprintln!("[p2premote] application logging initialization failed: {error}");
+    }
+    if let Err(error) = init_config_dir() {
+        eprintln!("[p2premote] application data directory initialization failed: {error}");
+    }
 
     debug!("[p2premote] configuration is managed by background service");
 
