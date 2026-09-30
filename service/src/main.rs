@@ -382,13 +382,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_foreground() -> anyhow::Result<()> {
-    #[cfg(windows)]
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    #[cfg(windows)]
     let result = runtime.block_on(run_service_foreground());
-    #[cfg(windows)]
     result
 }
 
