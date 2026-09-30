@@ -1078,7 +1078,6 @@ pub(super) fn refresh_wgvpn_sessions_with_options(
                     s.subnet_udp_sessions = peer.udp_sessions;
                     s.subnet_wg_rx_packets = peer.rx_packets.max(0) as u64;
                     s.subnet_wg_tx_packets = peer.tx_packets.max(0) as u64;
-                    s.userspace_wg_rx_batches = peer.rx_batches.max(0) as u64;
                     s.userspace_wg_tx_batches = peer.tx_batches.max(0) as u64;
                     s.subnet_icmp_success = peer.icmp_success.max(0) as u64;
                     s.subnet_icmp_failed = peer.icmp_failed.max(0) as u64;
@@ -1095,7 +1094,7 @@ pub(super) fn refresh_wgvpn_sessions_with_options(
                 continue;
             }
             if let Ok(router) =
-                gonc_ffi::get_subnet_router_status(library_path, &s.subnet_router_handle_id)
+                gonc_ffi::get_subnet_router_status(&s.subnet_router_handle_id)
             {
                 if let Some(mode) = subnet_router::lan_mode_from_backend_label(&router.lan_mode) {
                     s.lan_mode = mode;
@@ -1173,10 +1172,7 @@ pub(super) fn refresh_wgvpn_sessions_locked(state: &mut SharedRuntimeState) {
         .map(|session| {
             (
                 (session.peer_device_id, session.is_active),
-                (
-                    session.userspace_wg_rx_batches,
-                    session.userspace_wg_tx_batches,
-                ),
+                session.userspace_wg_tx_batches,
             )
         })
         .collect::<HashMap<_, _>>();
@@ -1191,7 +1187,7 @@ pub(super) fn refresh_wgvpn_sessions_locked(state: &mut SharedRuntimeState) {
                 .get(&(s.peer_device_id, s.is_active))
                 .copied()
                 .unwrap_or_default();
-            let (userspace_wg_rx_batches, userspace_wg_tx_batches) = userspace_batches_by_peer
+            let userspace_wg_tx_batches = userspace_batches_by_peer
                 .get(&(s.peer_device_id, s.is_active))
                 .copied()
                 .unwrap_or_default();
@@ -1222,7 +1218,6 @@ pub(super) fn refresh_wgvpn_sessions_locked(state: &mut SharedRuntimeState) {
                 subnet_udp_sessions: s.subnet_udp_sessions,
                 subnet_wg_rx_packets: s.subnet_wg_rx_packets,
                 subnet_wg_tx_packets: s.subnet_wg_tx_packets,
-                userspace_wg_rx_batches,
                 userspace_wg_tx_batches,
                 subnet_icmp_success: s.subnet_icmp_success,
                 subnet_icmp_failed: s.subnet_icmp_failed,

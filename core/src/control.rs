@@ -420,9 +420,8 @@ pub struct WgvpnSessionStatus {
     pub subnet_wg_rx_packets: u64,
     #[serde(default)]
     pub subnet_wg_tx_packets: u64,
-    /// 用户态 WireGuard Bind 实际收发批次数，用于计算每批包数和定位逐包退化。
-    #[serde(default)]
-    pub userspace_wg_rx_batches: u64,
+    /// 用户态 WireGuard Bind 发送批次数，用于计算每批包数和定位逐包退化。
+    /// （接收侧每次恰收 1 包，批数恒等于收包数，已于 2026-09-30 移除。）
     #[serde(default)]
     pub userspace_wg_tx_batches: u64,
     #[serde(default)]

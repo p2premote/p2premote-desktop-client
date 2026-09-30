@@ -823,7 +823,6 @@ pub async fn start_passive_wgvpn(
     let mut router = None;
     if !use_userspace_router && !passive_exposed_lan_cidrs.is_empty() {
         let started = gonc_ffi::start_subnet_router(
-            Path::new(&punch_lib),
             &gonc_ffi::StartSubnetRouterRequest {
                 session_id: source_device_id,
                 peer_device_id,
@@ -1003,7 +1002,7 @@ async fn stop_wgvpn_internal(
     }
 
     if let Err(e) =
-        gonc_ffi::stop_subnet_router(Path::new(&punch_lib), &session.subnet_router_handle_id)
+        gonc_ffi::stop_subnet_router(&session.subnet_router_handle_id)
     {
         warn!("[wgvpn] stop subnet router failed: {:#}", e);
         cleanup_errors.push(format!("stop subnet router: {e:#}"));

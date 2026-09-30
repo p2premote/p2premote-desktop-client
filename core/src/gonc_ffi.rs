@@ -134,16 +134,6 @@ pub struct StartSubnetRouterRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct StopSubnetRouterRequest {
-    pub handle_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct GetSubnetRouterStatusRequest {
-    pub handle_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct StartWindowsWgPeerRequest {
     pub session_id: i64,
     pub peer_device_id: i64,
@@ -218,8 +208,8 @@ pub struct WindowsWgPeerResult {
     pub rx_packets: i64,
     #[serde(default)]
     pub tx_packets: i64,
-    #[serde(default)]
-    pub rx_batches: i64,
+    // rx_batches dropped 2026-09-30 (audit B-2): receive handles exactly one
+    // packet per call, so the count always equalled rx_packets.
     #[serde(default)]
     pub tx_batches: i64,
     #[serde(default)]
@@ -287,9 +277,6 @@ pub struct SubnetRouterResult {
 #[cfg_attr(windows, link(name = "p2premote-wg", kind = "raw-dylib"))]
 #[cfg_attr(target_os = "macos", link(name = "p2premote-wg"))]
 extern "C" {
-    fn StartSubnetRouter(input: *const c_char) -> *mut c_char;
-    fn StopSubnetRouter(input: *const c_char) -> *mut c_char;
-    fn GetSubnetRouterStatus(input: *const c_char) -> *mut c_char;
     fn GetWgCapabilities(input: *const c_char) -> *mut c_char;
     fn GenerateWgKeypair(input: *const c_char) -> *mut c_char;
     fn StartUserspaceWgPeer(input: *const c_char) -> *mut c_char;
@@ -668,106 +655,46 @@ pub fn stop_udp_tunnel(handle_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn start_subnet_router(
-    library_path: &Path,
-    request: &StartSubnetRouterRequest,
-) -> Result<SubnetRouterResult> {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = library_path;
-        let native =
-            p2premote_punch::api::start_subnet_router(p2premote_punch::StartSubnetRouterInput {
-                session_id: request.session_id,
-                peer_device_id: request.peer_device_id,
-                wg_private_key: request.wg_private_key.clone(),
-                peer_public_key: request.peer_public_key.clone(),
-                tail_ip: request.tail_ip.clone(),
-                peer_tail_ip: request.peer_tail_ip.clone(),
-                peer_endpoint: request.peer_endpoint.clone(),
-                listen_ip: request.listen_ip.clone(),
-                listen_port: i32::from(request.listen_port),
-                exposed_lan_cidrs: request.exposed_lan_cidrs.clone(),
-                snat: request.snat,
-                allow_tcp: request.allow_tcp,
-                allow_udp: request.allow_udp,
-                allow_icmp_echo: request.allow_icmp_echo,
-            });
-        return native_subnet_router_result(native, "start subnet router");
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        validate_punch_library_available(library_path)?;
-        let input =
-            serde_json::to_string(request).context("failed to encode subnet router request")?;
-        let output = ffi_call(
-            &input,
-            |ptr| unsafe { StartSubnetRouter(ptr) },
-            "StartSubnetRouter",
-        )?;
-        parse_subnet_router_result(&output, "start subnet router")
-    }
+pub fn start_subnet_router(request: &StartSubnetRouterRequest) -> Result<SubnetRouterResult> {
+    let native =
+        p2premote_punch::api::start_subnet_router(p2premote_punch::StartSubnetRouterInput {
+            session_id: request.session_id,
+            peer_device_id: request.peer_device_id,
+            wg_private_key: request.wg_private_key.clone(),
+            peer_public_key: request.peer_public_key.clone(),
+            tail_ip: request.tail_ip.clone(),
+            peer_tail_ip: request.peer_tail_ip.clone(),
+            peer_endpoint: request.peer_endpoint.clone(),
+            listen_ip: request.listen_ip.clone(),
+            listen_port: i32::from(request.listen_port),
+            exposed_lan_cidrs: request.exposed_lan_cidrs.clone(),
+            snat: request.snat,
+            allow_tcp: request.allow_tcp,
+            allow_udp: request.allow_udp,
+            allow_icmp_echo: request.allow_icmp_echo,
+        });
+    native_subnet_router_result(native, "start subnet router")
 }
 
-pub fn stop_subnet_router(library_path: &Path, handle_id: &str) -> Result<()> {
+pub fn stop_subnet_router(handle_id: &str) -> Result<()> {
     if handle_id.is_empty() {
         return Ok(());
     }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = library_path;
-        let result = native_subnet_router_result(
-            p2premote_punch::api::stop_subnet_router(handle_id),
-            "stop subnet router",
-        )?;
-        let _ = result;
-        return Ok(());
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        validate_punch_library_available(library_path)?;
-        let input = serde_json::to_string(&StopSubnetRouterRequest {
-            handle_id: handle_id.to_string(),
-        })
-        .context("failed to encode stop subnet router request")?;
-        let output = ffi_call(
-            &input,
-            |ptr| unsafe { StopSubnetRouter(ptr) },
-            "StopSubnetRouter",
-        )?;
-        let _ = parse_subnet_router_result(&output, "stop subnet router")?;
-        Ok(())
-    }
+    let result = native_subnet_router_result(
+        p2premote_punch::api::stop_subnet_router(handle_id),
+        "stop subnet router",
+    )?;
+    let _ = result;
+    Ok(())
 }
 
-pub fn get_subnet_router_status(
-    library_path: &Path,
-    handle_id: &str,
-) -> Result<SubnetRouterResult> {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = library_path;
-        return native_subnet_router_result(
-            p2premote_punch::api::get_subnet_router_status(handle_id),
-            "get subnet router status",
-        );
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        validate_punch_library_available(library_path)?;
-        let input = serde_json::to_string(&GetSubnetRouterStatusRequest {
-            handle_id: handle_id.to_string(),
-        })
-        .context("failed to encode subnet router status request")?;
-        let output = ffi_call(
-            &input,
-            |ptr| unsafe { GetSubnetRouterStatus(ptr) },
-            "GetSubnetRouterStatus",
-        )?;
-        parse_subnet_router_result(&output, "get subnet router status")
-    }
+pub fn get_subnet_router_status(handle_id: &str) -> Result<SubnetRouterResult> {
+    native_subnet_router_result(
+        p2premote_punch::api::get_subnet_router_status(handle_id),
+        "get subnet router status",
+    )
 }
 
-#[cfg(target_os = "linux")]
 fn native_subnet_router_result(
     result: p2premote_punch::SubnetRouterResult,
     op: &str,
@@ -805,31 +732,6 @@ fn native_subnet_router_result(
         return Err(anyhow!("{} result is incomplete", op));
     }
     Ok(mapped)
-}
-
-pub fn parse_subnet_router_result(raw: &str, op: &str) -> Result<SubnetRouterResult> {
-    let result: SubnetRouterResult = serde_json::from_str(raw)
-        .with_context(|| format!("invalid subnet router result json: {}", raw))?;
-    if !result.ok {
-        return Err(anyhow!(
-            "{} failed: {}",
-            op,
-            if result.error.is_empty() {
-                "unknown error"
-            } else {
-                result.error.as_str()
-            }
-        ));
-    }
-    if op.starts_with("start") {
-        if result.handle_id.is_empty() {
-            return Err(anyhow!("{} result missing handle_id", op));
-        }
-        if !result.started {
-            return Err(anyhow!("{} result is not started", op));
-        }
-    }
-    Ok(result)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -911,48 +813,4 @@ mod tests {
         validate_punch_library_available(Path::new("missing-libp2premote-punch.a")).unwrap();
     }
 
-    #[test]
-    fn parses_subnet_router_success_result() {
-        let raw = r#"{
-            "ok": true,
-            "handle_id": "sr-1",
-            "lan_mode": "userspace_snat",
-            "listen_ip": "127.0.0.1",
-            "listen_port": 51820,
-            "started": true,
-            "tcp_sessions": 1,
-            "udp_sessions": 2,
-            "icmp_success": 3,
-            "icmp_failed": 4,
-            "rejected_flows": 5,
-            "last_error": "dial timeout",
-            "advertised_routes": ["192.168.10.0/24"]
-        }"#;
-        let parsed = parse_subnet_router_result(raw, "start subnet router").unwrap();
-        assert_eq!(parsed.handle_id, "sr-1");
-        assert_eq!(parsed.listen_port, 51820);
-        assert_eq!(parsed.advertised_routes, vec!["192.168.10.0/24"]);
-        assert_eq!(parsed.icmp_success, 3);
-        assert_eq!(parsed.icmp_failed, 4);
-        assert_eq!(parsed.rejected_flows, 5);
-        assert_eq!(parsed.last_error, "dial timeout");
-    }
-
-    #[test]
-    fn rejects_subnet_router_failure_result() {
-        let err = parse_subnet_router_result(
-            r#"{"ok":false,"error":"subnet router backend is not implemented on windows in this build"}"#,
-            "start subnet router",
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("not implemented"));
-    }
-
-    #[test]
-    fn rejects_started_subnet_router_without_handle() {
-        let err =
-            parse_subnet_router_result(r#"{"ok":true,"started":true}"#, "start subnet router")
-                .unwrap_err();
-        assert!(err.to_string().contains("handle_id"));
-    }
 }
