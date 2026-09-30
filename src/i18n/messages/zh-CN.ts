@@ -188,8 +188,6 @@ export default {
       tunnel_failed_body: '自动建立隧道已结束，仍未建立隧道。',
       device_identity_updated: '设备身份已更新',
       device_clone_default: '检测到系统副本，已自动创建新的设备身份。',
-      device_online: '设备 {deviceName} 已上线',
-      device_offline: '设备 {deviceName} 已离线',
       peer_device_id: '设备 #{deviceId}',
       session_expired_title: '登录已失效',
       session_expired_body: '登录凭证已过期或失效，请重新登录。',

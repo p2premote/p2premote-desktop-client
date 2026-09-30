@@ -153,10 +153,3 @@ export interface BackgroundServiceStatus {
   config_path: string
   log_dir: string
 }
-
-// ============ WS 事件（旧 UI 直连云通道，仅剩死监听在用） ============
-
-export interface WsEventPayload {
-  msg_type: string
-  data: Record<string, any>
-}

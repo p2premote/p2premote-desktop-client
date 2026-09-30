@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { invoke, listen } from '../runtime/bridge'
-import type { DeviceInfo, WsEventPayload } from '../types/api'
+import { invoke } from '../runtime/bridge'
+import type { DeviceInfo } from '../types/api'
 
 // 视图沿用 from stores/device 的 DeviceInfo 导入路径
 export type { DeviceInfo } from '../types/api'
@@ -13,16 +13,6 @@ interface ApiResponse<T> {
   data: T
 }
 
-/// 设备在线事件
-interface DeviceOnlinePayload {
-  device_id: number
-  device_name: string
-}
-
-/// 设备离线事件
-interface DeviceOfflinePayload {
-  device_id: number
-}
 
 export const useDeviceStore = defineStore('device', () => {
   const FETCH_THROTTLE_MS = 10_000
@@ -75,39 +65,11 @@ export const useDeviceStore = defineStore('device', () => {
     lastFetchDevicesAt = 0
   }
 
-  /// 监听设备上线事件
-  function onDeviceOnline(callback: (deviceId: number, deviceName: string) => void) {
-    listen<WsEventPayload>('ws-device-online', (event) => {
-      const data = event.payload.data as DeviceOnlinePayload
-      const device = devices.value.find(d => d.device_id === data.device_id)
-      if (device) {
-        device.status = 'online'
-      } else {
-        void fetchDevices({ force: true })
-      }
-      callback(data.device_id, data.device_name)
-    })
-  }
-
-  /// 监听设备离线事件
-  function onDeviceOffline(callback: (deviceId: number) => void) {
-    listen<WsEventPayload>('ws-device-offline', (event) => {
-      const data = event.payload.data as DeviceOfflinePayload
-      const device = devices.value.find(d => d.device_id === data.device_id)
-      if (device) {
-        device.status = 'offline'
-      }
-      callback(data.device_id)
-    })
-  }
-
   return {
     devices,
     loading,
     fetchDevices,
     setDevices,
-    resetDevices,
-    onDeviceOnline,
-    onDeviceOffline
+    resetDevices
   }
 })

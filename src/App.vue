@@ -486,7 +486,6 @@ import type {
   ActiveTunnelJobStatus,
   BackgroundServiceStatus,
   InboundApprovalStatus,
-  WsEventPayload,
 } from './types/api'
 import { SUPPORTED_LOCALES } from './i18n'
 
@@ -550,7 +549,6 @@ const webCurrentSourceIp = ref('')
 const webAccessSettingsError = ref('')
 const webAccessSettingsSaving = ref(false)
 let appBootstrapped = false
-let wsListenersInitialized = false
 const webAuthGateVisible = computed(
   () => !isTauriRuntime() && (
     !webAuthChecked.value
@@ -1590,34 +1588,6 @@ async function checkForUpdates(manual = false) {
   }
 }
 
-async function setupWsListeners() {
-  if (wsListenersInitialized) return
-  wsListenersInitialized = true
-  await listen<WsEventPayload>('ws-connected', async () => {
-    console.log('[App] [WS] connected')
-    // 建连前拉取的列表可能把本机标记为离线；连接事件必须绕过普通刷新节流。
-    await deviceStore.fetchDevices({ force: true })
-  })
-
-  await listen<WsEventPayload>('ws-disconnected', () => {
-    console.log('[App] [WS] UI websocket disconnected, realtime is owned by background service')
-  })
-
-  await listen<WsEventPayload>('ws-p2p-start', async () => {
-    console.log('[App] [WS] ignoring p2p-start because background service owns realtime')
-  })
-
-  deviceStore.onDeviceOnline((deviceId, deviceName) => {
-    console.log('[App] 设备上线:', deviceId, deviceName)
-    ElMessage.success(t('app.notification.device_online', { deviceName }))
-  })
-
-  deviceStore.onDeviceOffline((deviceId) => {
-    const device = deviceStore.devices.find(d => d.device_id === deviceId)
-    ElMessage.info(t('app.notification.device_offline', { deviceName: device?.device_name || String(deviceId) }))
-  })
-}
-
 async function bootstrapApp() {
   try {
     const preflightOk = await runStartupPreflight()
@@ -1632,7 +1602,6 @@ async function bootstrapApp() {
     primeActiveTunnelJobs(backgroundServiceStatus.value?.runtime)
     primePassiveWgvpnPeers(backgroundServiceStatus.value?.runtime)
     if (forceUpdateVisible.value) {
-      await setupWsListeners()
       return
     }
 
@@ -1743,8 +1712,6 @@ async function bootstrapApp() {
     startupError.value = errorMessage(e, t('common.unknown_error'))
     await setStartupStep(t('app.startup_status.failed'))
   }
-
-  await setupWsListeners()
 }
 
 onMounted(async () => {
