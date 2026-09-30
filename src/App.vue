@@ -1516,15 +1516,9 @@ async function handleUserAction(command: string) {
   router.push('/login')
 }
 
-async function refreshUserInfo() {
-  await authStore.fetchUserInfo()
-}
-
-async function restoreServiceSession(token: string) {
-  authStore.setToken(token)
-  await refreshUserInfo()
+async function restoreServiceSession(sessionToken: string) {
+  await authStore.adoptServiceSession(sessionToken)
   await ensureServiceRealtimeOwnership()
-  await deviceStore.fetchDevices({ force: true })
 }
 
 async function checkForUpdates(manual = false) {

@@ -393,9 +393,7 @@ const disconnectingIds = ref(new Set<number>())
 const wakingIds = reactive(new Set<number>())
 
 const aliasForm = reactive({ alias: '', loading: false })
-const FOREGROUND_REFRESH_THROTTLE_MS = 10_000
 let autoRefreshTimer: ReturnType<typeof window.setInterval> | null = null
-let lastForegroundRefreshAt = 0
 let unlistenServiceStatus: UnlistenFn | null = null
 
 const onlineDeviceCount = computed(() => deviceStore.devices.filter(device => device.status === 'online').length)
@@ -787,17 +785,12 @@ async function autoRefreshDevicesInForeground() {
   await refreshDevices()
 }
 
+/// focus/visibilitychange 直接走 autoRefresh：刷新频率由 device store 的
+/// 10s 节流统一兜底（审计 G-5：原先页面层再叠一层同参数节流，语义重复）。
 async function handleForegroundResume() {
   if (!isDevicesPageInForeground()) {
     return
   }
-
-  const now = Date.now()
-  if (now - lastForegroundRefreshAt < FOREGROUND_REFRESH_THROTTLE_MS) {
-    return
-  }
-  lastForegroundRefreshAt = now
-
   await autoRefreshDevicesInForeground()
 }
 

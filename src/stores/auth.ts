@@ -74,20 +74,25 @@ export const useAuthStore = defineStore('auth', () => {
     throw new Error(response.msg || i18n.global.t('errors.login_failed'))
   }
 
-  async function resumeSavedSession(autoLogin: boolean) {
-    deviceStore.resetDevices()
-    await invoke('resume_saved_session', { autoLogin })
+  /// 接管一个已由后台 service 建立的会话（自动登录 token 或 '__service_session__'
+  /// 哨兵）：置 token → 拉用户信息 → 同步 service 运行时配置 → 强制刷新设备列表。
+  /// App.vue 的启动恢复流程与本 store 的 resumeSavedSession 共用此单一入口
+  /// （审计 G-7：原先两份并行流程仅入口命令不同）。
+  async function adoptServiceSession(sessionToken: string) {
+    token.value = sessionToken
     const info = await invoke<UserInfo | null>('fetch_user_profile')
     if (!info) {
       throw new Error(i18n.global.t('errors.login_failed'))
     }
-    token.value = '__service_session__'
     userInfo.value = info
-    const status = await syncServiceRuntimeConfig()
-    if (status?.runtime?.current_device) {
-      currentDevice.value = status.runtime.current_device
-    }
+    await syncServiceRuntimeConfig()
     await deviceStore.fetchDevices({ force: true })
+  }
+
+  async function resumeSavedSession(autoLogin: boolean) {
+    deviceStore.resetDevices()
+    await invoke('resume_saved_session', { autoLogin })
+    await adoptServiceSession('__service_session__')
   }
 
   async function logout() {
@@ -115,28 +120,15 @@ export const useAuthStore = defineStore('auth', () => {
     deviceStore.resetDevices()
   }
 
-  function setToken(newToken: string) {
-    token.value = newToken
-  }
-
-  async function fetchUserInfo() {
-    const info = await invoke<UserInfo | null>('fetch_user_profile')
-    if (info) {
-      userInfo.value = info
-    }
-    return info
-  }
-
   return {
     token,
     userInfo,
     currentDevice,
     isLoggedIn,
     login,
+    adoptServiceSession,
     resumeSavedSession,
     logout,
     resetSession,
-    setToken,
-    fetchUserInfo,
   }
 })
