@@ -19,7 +19,10 @@ use tracing::{debug, info, warn};
 pub const HEALTH_PORT: u16 = 41119;
 /// Clients released before health-port negotiation always connect here.
 pub const LEGACY_HEALTH_PORT: u16 = 48082;
-const PEER_SESSION_LOOKUP_RETRIES: usize = 5;
+// The active peer can finish its WireGuard handshake and open health before
+// the passive start task has registered its session (especially after a slow
+// IPv4 traversal). Keep this below the Android HelloAck read timeout of 5 s.
+const PEER_SESSION_LOOKUP_RETRIES: usize = 35;
 const PEER_SESSION_LOOKUP_RETRY_DELAY_MS: u64 = 100;
 
 static NEXT_HEALTH_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -723,6 +726,50 @@ mod tests {
                 assert!(message.contains("tunnel_peer_identity_mismatch"));
             }
             other => panic!("expected rejected hello ack, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn health_connection_waits_for_passive_session_registration() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener address");
+        let registered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server_registered = registered.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept stream");
+            health_server_connection_loop(
+                Arc::new(|_, _, _| {}),
+                Arc::new(StdMutex::new(HashMap::new())),
+                stream,
+                Arc::new(move |_, _| {
+                    if server_registered.load(Ordering::SeqCst) {
+                        Ok(())
+                    } else {
+                        Err("wgvpn session not found".to_string())
+                    }
+                }),
+            )
+            .await;
+        });
+        let stream = TcpStream::connect(addr).await.expect("connect");
+        let mut conn = TunnelControlConnection::new(stream);
+        conn.send(&TunnelControlMessage::Hello {
+            source_device_id: 42,
+            protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+        })
+        .await
+        .expect("send hello");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        registered.store(true, Ordering::SeqCst);
+        match tokio::time::timeout(std::time::Duration::from_secs(5), conn.next())
+            .await
+            .expect("hello ack timeout")
+            .expect("read ack")
+        {
+            Some(TunnelControlMessage::HelloAck { ok: true, .. }) => {}
+            other => panic!("expected accepted hello ack, got {other:?}"),
         }
     }
 
