@@ -666,7 +666,14 @@ Section WebView2
   install_webview2:
     DetailPrint "$(installingWebview2)"
     ; $6 holds the path to the webview2 installer
-    ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
+    !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"
+      ; WebView2 共享载荷不认 /silent、/install（"unsupported switch for
+      ; WebView"，退出码 53），也不需要它们——静默语义由 build-windows-win7.ps1
+      ; 的参数集表达，此处不得追加 /install（其他模式的包装器仍需要它）。
+      ExecWait "$6 ${WEBVIEW2INSTALLERARGS}" $1
+    !else
+      ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
+    !endif
     ${If} $1 != 0
       DetailPrint "$(webview2InstallError)"
       Abort "$(webview2AbortError)"
