@@ -272,6 +272,9 @@ echo "Created $dmg_path"
 
 # ---- pkg 安装包（正式分发格式：app + LaunchDaemon，postinstall 以 root 完成
 # machine 目录/服务安装并启动；DMG 仅保留作内部测试） ----
+# 执行位兜底：Windows 检出的工作树可能丢失 postinstall 的 +x，pkgbuild 原样
+# 打包会让安装器无法执行脚本（PKInstallErrorDomain 112）。
+chmod +x "$repo_dir/scripts/macos-pkg/postinstall"
 pkg_staging="$build_dir/pkg-root"
 rm -rf "$pkg_staging"
 mkdir -p "$pkg_staging/Applications" "$pkg_staging/Library/LaunchDaemons"
