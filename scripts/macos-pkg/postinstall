@@ -4,12 +4,33 @@
 #   - 服务二进制 + wg dylib 拷到 machine resources，daemon 与 .app 位置解耦
 #   - logs 目录收敛给 admin 组（GUI 与 root 服务共写），data 目录 root-only
 #   - LaunchDaemon 直接注册并启动（不经过 SMAppService，不依赖 app 签名）
+# RustDeskTiny 被控端（与 Windows 的 RustDeskTiny-install.exe 静默安装、Linux 的
+# rustdesktiny deb 同一模式），按上游 RustDesk 的 macOS 服务布局：
+#   - RustDeskTiny.app 装到 /Applications：上游 is_installed()/TCC 授权都以
+#     /Applications 为准，用户在系统设置里授权时也更容易找到这个 app
+#   - root daemon（service 二进制）：特权 IPC，plist 命名与上游
+#     install.scpt 生成的完全一致（is_installed_daemon 按名字互检）
+#   - user agent（RustDeskTiny --server）：被控主进程，direct server 21121
+#     在这里监听；tiny::initialize 只在主二进制进程里执行，因此被控逻辑必须
+#     由 agent 而不是 service 二进制承载
+#   - plist 内容对应上游 privileges_scripts/{daemon,agent}.plist 经
+#     correct_app_name("RustDeskTiny") 后的结果；不用
+#     `service --write-plists` 生成（1.5.1 及更早的 service 进程内 APP_NAME
+#     是默认值 "RustDesk" 会写错名字；源码已在 service.rs 补 tiny 初始化，
+#     但钉版产物未重发前手写 plist 最稳妥）
 set -euo pipefail
 
 APP="/Applications/p2pRemote.app"
 ROOT="/Library/Application Support/p2pRemote"
 LABEL="top.p2premote.service"
 PLIST="/Library/LaunchDaemons/top.p2premote.service.plist"
+
+TINY_APP="/Applications/RustDeskTiny.app"
+TINY_DAEMON_LABEL="com.carriez.RustDeskTiny_service"
+TINY_AGENT_LABEL="com.carriez.RustDeskTiny_server"
+TINY_DAEMON_PLIST="/Library/LaunchDaemons/${TINY_DAEMON_LABEL}.plist"
+TINY_AGENT_PLIST="/Library/LaunchAgents/${TINY_AGENT_LABEL}.plist"
+TINY_PREFS_DIR="Library/Preferences/com.carriez.RustDeskTiny"
 
 BUNDLE_RESOURCES="$APP/Contents/Resources/resources"
 for artifact in p2premote-service libp2premote-wg.dylib; do
@@ -39,9 +60,157 @@ fi
 chmod 770 "$ROOT/logs"
 chmod 700 "$ROOT/data"
 
-# 升级场景：先摘除旧 daemon 再注册，幂等。
+# 升级场景：先摘除旧 daemon 再注册，幂等。enable 必须在 bootstrap 之前：
+# 曾被 unload -w / launchctl disable 过的 label 留在 disabled 列表里，直接
+# bootstrap 会报 "Bootstrap failed: 5: Input/output error"（RustDeskTiny 托盘
+# 的"停止服务"走 unload -w，p2premote 设置页的禁用走 launchctl disable）。
 /bin/launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
-/bin/launchctl bootstrap system "$PLIST"
 /bin/launchctl enable "system/$LABEL"
+/bin/launchctl bootstrap system "$PLIST" || /bin/launchctl kickstart -k "system/$LABEL" || {
+  echo "postinstall: failed to start $LABEL now; it will start at next boot" >&2
+}
 
 echo "postinstall: p2pRemote background service installed and started"
+
+# ---- RustDeskTiny 被控端 ----
+BUNDLED_TINY="$BUNDLE_RESOURCES/RustDeskTiny.app"
+if [[ -d "$BUNDLED_TINY" ]]; then
+  # ditto 保留代码签名与元数据；先删旧拷贝保证升级幂等。
+  rm -rf "$TINY_APP"
+  /usr/bin/ditto "$BUNDLED_TINY" "$TINY_APP"
+
+  rm -f "$TINY_DAEMON_PLIST" "$TINY_AGENT_PLIST"
+  cat > "$TINY_DAEMON_PLIST" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>com.carriez.RustDeskTiny_service</string>
+        <key>AssociatedBundleIdentifiers</key>
+        <string>top.p2premote.rustdesktiny</string>
+        <key>KeepAlive</key>
+        <true/>
+        <key>ThrottleInterval</key>
+        <integer>1</integer>
+        <key>ProgramArguments</key>
+        <array>
+            <string>/bin/sh</string>
+            <string>-c</string>
+            <string>/Applications/RustDeskTiny.app/Contents/MacOS/service</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>WorkingDirectory</key>
+        <string>/Applications/RustDeskTiny.app/Contents/MacOS/</string>
+        <key>StandardErrorPath</key>
+        <string>/var/log/rustdesktiny_service.err</string>
+        <key>StandardOutPath</key>
+        <string>/var/log/rustdesktiny_service.out</string>
+    </dict>
+</plist>
+PLIST
+  cat > "$TINY_AGENT_PLIST" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>com.carriez.RustDeskTiny_server</string>
+        <key>AssociatedBundleIdentifiers</key>
+        <string>top.p2premote.rustdesktiny</string>
+        <key>LimitLoadToSessionType</key>
+        <array>
+            <string>LoginWindow</string>
+            <string>Aqua</string>
+        </array>
+        <key>KeepAlive</key>
+        <dict>
+            <key>SuccessfulExit</key>
+            <false/>
+            <key>AfterInitialDemand</key>
+            <false/>
+        </dict>
+        <key>ThrottleInterval</key>
+        <integer>1</integer>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>ProgramArguments</key>
+        <array>
+            <string>/Applications/RustDeskTiny.app/Contents/MacOS/RustDeskTiny</string>
+            <string>--server</string>
+        </array>
+        <key>WorkingDirectory</key>
+        <string>/Applications/RustDeskTiny.app/Contents/MacOS/</string>
+        <key>ProcessType</key>
+        <string>Interactive</string>
+    </dict>
+</plist>
+PLIST
+  chown root:wheel "$TINY_DAEMON_PLIST" "$TINY_AGENT_PLIST"
+  chmod 644 "$TINY_DAEMON_PLIST" "$TINY_AGENT_PLIST"
+
+  # 上游 install.scpt 的等价动作：把控制台用户的配置同步给 root，让
+  # LoginWindow 会话（以 root 跑 agent）与用户会话共享同一份密码/选项。
+  # 注意本 fork 的配置文件名带应用前缀（RustDeskTiny.toml / RustDeskTiny2.toml）。
+  if [[ -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" && "$CONSOLE_USER" != "loginwindow" ]]; then
+    user_prefs="/Users/$CONSOLE_USER/$TINY_PREFS_DIR"
+    root_prefs="/var/root/$TINY_PREFS_DIR"
+    if [[ -d "$user_prefs" ]]; then
+      mkdir -p "$root_prefs"
+      for config_file in RustDeskTiny.toml RustDeskTiny2.toml; do
+        [[ -f "$user_prefs/$config_file" ]] && cp -f "$user_prefs/$config_file" "$root_prefs/$config_file" || true
+      done
+    fi
+  fi
+
+  # RustDeskTiny 托盘"停止服务"/卸载流程会把 stop-service 写成 'Y'，direct
+  # server（21121）随之禁用。安装/升级即代表用户要被控可用，复位为 'N'。
+  for prefs_dir in "/Users/$CONSOLE_USER/$TINY_PREFS_DIR" "/var/root/$TINY_PREFS_DIR"; do
+    options_file="$prefs_dir/RustDeskTiny2.toml"
+    if [[ -f "$options_file" ]]; then
+      sed -i '' -e "s/^stop-service *= *'Y'/stop-service = 'N'/" "$options_file" || true
+    fi
+  done
+
+  # enable 先行（label 可能被 RustDeskTiny 托盘"停止服务"的 unload -w 留在
+  # disabled 列表），bootstrap 再注册，失败时 kickstart 兜底重启。
+  /bin/launchctl bootout "system/$TINY_DAEMON_LABEL" >/dev/null 2>&1 || true
+  /bin/launchctl enable "system/$TINY_DAEMON_LABEL"
+  /bin/launchctl bootstrap system "$TINY_DAEMON_PLIST" || /bin/launchctl kickstart -k "system/$TINY_DAEMON_LABEL" || {
+    echo "postinstall: failed to start $TINY_DAEMON_LABEL now; it will start at next boot" >&2
+  }
+
+  # agent 属用户会话域：当前已登录就立即拉起，否则由 launchd 在登录时加载。
+  if [[ -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" && "$CONSOLE_USER" != "loginwindow" ]]; then
+    CONSOLE_UID="$(stat -f %u /dev/console 2>/dev/null || true)"
+    if [[ -n "$CONSOLE_UID" ]]; then
+      /bin/launchctl asuser "$CONSOLE_UID" /bin/launchctl bootout "gui/$CONSOLE_UID/$TINY_AGENT_LABEL" >/dev/null 2>&1 || true
+      /bin/launchctl asuser "$CONSOLE_UID" /bin/launchctl enable "gui/$CONSOLE_UID/$TINY_AGENT_LABEL" >/dev/null 2>&1 || true
+      /bin/launchctl asuser "$CONSOLE_UID" /bin/launchctl bootstrap "gui/$CONSOLE_UID" "$TINY_AGENT_PLIST" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  echo "postinstall: RustDeskTiny controlled-end service installed and started"
+else
+  echo "postinstall: RustDeskTiny.app missing from bundle; controlled-end setup skipped" >&2
+fi
+
+# ---- 被控端授权指引（macOS 的屏幕录制/辅助功能权限无法静默授予） ----
+if [[ -d "$TINY_APP" && -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" && "$CONSOLE_USER" != "loginwindow" ]]; then
+  CONSOLE_UID="$(stat -f %u /dev/console 2>/dev/null || true)"
+  if [[ -n "$CONSOLE_UID" ]]; then
+    # AppleScript 字符串字面量不接受真实换行，折行必须写成 \n 转义。
+    button="$(/bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/osascript -e 'display dialog "p2pRemote 安装完成。\n\n这台 Mac 若要作为被控端（允许其他设备远程控制桌面），需要在系统设置中为 RustDeskTiny（已随 p2pRemote 安装到「应用程序」）授权：\n\n• 屏幕录制：系统设置 → 隐私与安全性 → 屏幕录制\n• 辅助功能：系统设置 → 隐私与安全性 → 辅助功能\n\n在以上两项中添加并开启 RustDeskTiny。未授权时远端会黑屏或无法操控；授权后如未生效，请注销并重新登录一次。" buttons {"稍后", "打开系统设置"} default button "打开系统设置" giving up after 90' -e 'try
+  return button returned of result
+on error
+  return ""
+end try' 2>/dev/null || true)"
+    if [[ "$button" == "打开系统设置" ]]; then
+      /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open \
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
+exit 0

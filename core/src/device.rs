@@ -41,7 +41,10 @@ fn current_capabilities() -> Vec<String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let installed = std::env::current_exe()
+        // 正式布局：pkg postinstall 把 RustDeskTiny.app 装到 /Applications（上游
+        // RustDesk 的服务布局，也是 TCC 授权的目标）。exe 同目录的拷贝仅用于
+        // 开发布局，服务进程本身在 /Library/Application Support 下，那里没有它。
+        let bundled_next_to_exe = std::env::current_exe()
             .ok()
             .and_then(|service| {
                 service
@@ -49,7 +52,10 @@ fn current_capabilities() -> Vec<String> {
                     .map(|resources| resources.join("RustDeskTiny.app/Contents/MacOS/RustDeskTiny"))
             })
             .is_some_and(|executable| rustdesk_tiny_executable_installed(&executable));
-        if installed {
+        let installed_in_applications = rustdesk_tiny_executable_installed(
+            std::path::Path::new("/Applications/RustDeskTiny.app/Contents/MacOS/RustDeskTiny"),
+        );
+        if bundled_next_to_exe || installed_in_applications {
             vec![CAPABILITY_RUSTDESK_TINY.to_string()]
         } else {
             Vec::new()
