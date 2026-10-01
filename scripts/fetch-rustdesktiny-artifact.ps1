@@ -6,7 +6,7 @@
 # throw 传递结果，不使用 exit。
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('windows-x64', 'windows-win7-x64')]
+    [ValidateSet('windows-x64', 'windows-win7-x64', 'webview2-win7-x64')]
     [string]$Kind
 )
 
@@ -18,7 +18,10 @@ if (-not (Test-Path -LiteralPath $pinFile -PathType Leaf)) {
     throw "missing RustDeskTiny pin file: $pinFile"
 }
 $pin = @{}
-foreach ($line in Get-Content -LiteralPath $pinFile) {
+# 显式 UTF-8：无 BOM 的中文注释在 Windows PowerShell 5.1 下会被按 ANSI
+# 误解码，注释行末 UTF-8 尾字节可与换行符组成一个双字节字符而吞掉换行，
+# 使紧随其后的键值行解析失败
+foreach ($line in Get-Content -LiteralPath $pinFile -Encoding UTF8) {
     if ($line -match '^\s*([A-Z0-9_]+)=(.*)$') {
         $pin[$Matches[1]] = $Matches[2].Trim()
     }
@@ -30,14 +33,61 @@ if ($Kind -eq 'windows-win7-x64') {
     $version = $pin['RUSTDESK_TINY_LEGACY_VERSION']
     $baseUrl = $pin['RUSTDESK_TINY_LEGACY_BASE_URL']
     $sha256 = $pin['RUSTDESK_TINY_WINDOWS_WIN7_X64_SHA256']
+    $target = Join-Path $repoRoot "src-tauri\resources\$asset"
+}
+elseif ($Kind -eq 'webview2-win7-x64') {
+    # WebView2 Runtime v109（Win7/8 最后版本）离线安装器：本地布局在 ../webview/。
+    # 134MB 超 GitHub 单文件 100MB 上限，无法直接入库，拆分片存放于仓库
+    # packaging/webview2-v109/，缺失时按序拼接并校验 SHA-256。
+    $version = $pin['WEBVIEW2_WIN7_X64_VERSION']
+    $asset = "MicrosoftEdgeWebView2RuntimeInstallerX64V$version.exe"
+    $sha256 = $pin['WEBVIEW2_WIN7_X64_SHA256']
+    $target = Join-Path $repoRoot "..\webview\$asset"
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        Write-Host "Reusing local webview2 artifact: $target"
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($version) -or [string]::IsNullOrWhiteSpace($sha256)) {
+        throw "pin file is missing WEBVIEW2_WIN7_X64_VERSION/SHA256 for $Kind"
+    }
+    $partsDir = Join-Path $repoRoot 'packaging\webview2-v109'
+    $parts = @(Get-ChildItem -LiteralPath $partsDir -Filter 'webview2-v109.exe.part-*.bin' -ErrorAction SilentlyContinue | Sort-Object Name)
+    if ($parts.Count -lt 2) {
+        throw "webview2 v109 split parts not found in $partsDir (expected webview2-v109.exe.part-*.bin)"
+    }
+    $webviewDir = Split-Path -Parent $target
+    New-Item -ItemType Directory -Path $webviewDir -Force | Out-Null
+    $partial = "$target.partial"
+    try {
+        $out = [System.IO.File]::Open($partial, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+        try {
+            foreach ($part in $parts) {
+                $in = [System.IO.File]::OpenRead($part.FullName)
+                try { $in.CopyTo($out) } finally { $in.Dispose() }
+            }
+        }
+        finally { $out.Dispose() }
+        $actual = (Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $sha256) {
+            throw "SHA-256 mismatch for reassembled ${asset}: expected $sha256, got $actual"
+        }
+        Move-Item -LiteralPath $partial -Destination $target -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $partial -PathType Leaf) {
+            Remove-Item -LiteralPath $partial -Force
+        }
+    }
+    Write-Host "Verified webview2 $Kind artifact: $target"
+    return
 }
 else {
     $asset = 'RustDeskTiny-install.exe'
     $version = $pin['RUSTDESK_TINY_VERSION']
     $baseUrl = $pin['RUSTDESK_TINY_BASE_URL']
     $sha256 = $pin['RUSTDESK_TINY_WINDOWS_X64_SHA256']
+    $target = Join-Path $repoRoot "src-tauri\resources\$asset"
 }
-$target = Join-Path $repoRoot "src-tauri\resources\$asset"
 if (Test-Path -LiteralPath $target -PathType Leaf) {
     Write-Host "Reusing local RustDeskTiny artifact: $target"
     return

@@ -31,10 +31,14 @@
 # APPLE_NOTARY_KEYCHAIN_PROFILE）后去掉 --unsigned，或继续用专用 Mac 编译机。
 #
 # 未包含的平台（按需自行添加 job）：
-#   - Windows 7 包：scripts/build-windows-win7.ps1，需独立工具链；
-#     RustDeskTinyLegacy 安装器已可按钉版自动下载（独立仓库 Release）。
 #   - Linux aarch64：build-linux.sh --arch aarch64，前置
 #     docker/setup-qemu-action@v3 注册 binfmt（QEMU 全模拟编译很慢）。
+#
+# Windows 7 包（windows-win7-x64 job）：独立工具链线（rust 1.77.2 +
+# tauri.win7.conf.json + WebView2 v109 离线安装器 + RustDeskTinyLegacy）。
+# RustDeskTinyLegacy 按钉版从 RustDeskTinyLegacy 仓库 Release 自动下载；
+# WebView2 v109（134MB，微软官方已无直链）拆两片入库 packaging/webview2-v109/
+# （GitHub 单文件上限 100MB），构建时拼接并校验 SHA-256。
 
 name: build
 
@@ -166,6 +170,65 @@ jobs:
         with:
           name: windows-x64
           path: artifacts/windows-x64/
+          if-no-files-found: error
+
+  windows-win7-x64:
+    name: Windows 7 x64 NSIS 安装包（WebView2 v109 离线）
+    needs: resolve-version
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout p2premote-desktop-client
+        uses: actions/checkout@v4
+
+      - name: Checkout p2premote-punch-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-punch-rs
+          path: p2premote-punch-rs
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Checkout p2premote-wg-ffi
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-wg-ffi
+          path: p2premote-wg-ffi
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Move sibling repos to ../
+        shell: bash
+        run: |
+          mv "$GITHUB_WORKSPACE/p2premote-punch-rs" "$GITHUB_WORKSPACE/../p2premote-punch-rs"
+          mv "$GITHUB_WORKSPACE/p2premote-wg-ffi" "$GITHUB_WORKSPACE/../p2premote-wg-ffi"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.20.14'
+          cache-dependency-path: ../p2premote-wg-ffi/go.sum
+
+      # 与 windows-x64 相同的 Win7 兼容工具链线（rust-toolchain.toml 1.77.2）
+      - uses: dtolnay/rust-toolchain@1.77.2
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 脚本内部完成：RustDeskTinyLegacy 按钉版自动下载（RustDeskTinyLegacy
+      # 仓库 Release）、WebView2 v109 从仓库分片拼接（packaging/webview2-v109/）、
+      # win7 NSIS 模板生成、npx tauri build（tauri.win7.conf.json）、
+      # 产物归档 artifacts/windows-win7-x64/
+      - name: Build Win7 package
+        shell: pwsh
+        run: ./scripts/build-windows-win7.ps1 -v "${{ needs.resolve-version.outputs.version }}"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-win7-x64
+          path: artifacts/windows-win7-x64/
           if-no-files-found: error
 
   linux-headless-x86_64:

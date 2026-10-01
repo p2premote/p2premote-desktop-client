@@ -7,6 +7,14 @@
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $installer = [System.IO.Path]::GetFullPath((Join-Path $projectRoot '..\webview\MicrosoftEdgeWebView2RuntimeInstallerX64V109.0.1518.140.exe'))
+# WebView2 v109 离线安装器不入 git（../webview/ 仅本地存在）；干净环境按钉版
+# 从 rustdeskTiny 仓库 Release 自动下载并校验（微软官方已不提供该版本直链）
+if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+    & (Join-Path $PSScriptRoot 'fetch-rustdesktiny-artifact.ps1') -Kind 'webview2-win7-x64'
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        throw "WebView2 v109 offline installer is still missing after download: $installer"
+    }
+}
 $legacyInstallerProvided = -not [string]::IsNullOrWhiteSpace($RustDeskTinyLegacyInstaller)
 if (-not $legacyInstallerProvided) {
     $RustDeskTinyLegacyInstaller = Join-Path $projectRoot 'src-tauri\resources\RustDeskTinyLegacy-install.exe'
