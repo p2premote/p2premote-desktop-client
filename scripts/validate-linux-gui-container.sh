@@ -79,3 +79,10 @@ grep -Fq 'verified bundled file: /opt/p2premote/resources/p2premote-cli' /tmp/de
   echo "deb GUI did not resolve its bundled CLI from /opt/p2premote/resources" >&2
   exit 1
 }
+# XDG autostart runs the GUI binary directly (Exec=current_exe), bypassing the
+# /usr/bin/p2premote wrapper and its P2PREMOTE_INSTALL_ROOT export.
+run_gui_smoke_test direct /opt/p2premote/p2premote
+grep -Fq 'verified bundled file: /opt/p2premote/resources/p2premote-cli' /tmp/direct.log || {
+  echo "GUI launched without the /usr/bin/p2premote wrapper did not resolve its bundled CLI from /opt/p2premote/resources" >&2
+  exit 1
+}

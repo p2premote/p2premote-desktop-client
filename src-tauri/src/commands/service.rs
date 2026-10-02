@@ -247,12 +247,29 @@ fn require_bundled_binary(app: &AppHandle, binary_name: &str) -> Result<PathBuf,
     let path = {
         match std::env::var_os("P2PREMOTE_INSTALL_ROOT").filter(|root| !root.is_empty()) {
             Some(root) => PathBuf::from(root).join("resources").join(binary_name),
-            None => app
-                .path_resolver()
-                .resource_dir()
-                .ok_or_else(|| "failed to resolve application resource directory".to_string())?
-                .join("resources")
-                .join(binary_name),
+            None => {
+                // The shipped deb is repacked to /opt/p2premote with a wrapper at
+                // /usr/bin/p2premote exporting P2PREMOTE_INSTALL_ROOT. Launches
+                // that bypass the wrapper (XDG autostart runs the GUI binary
+                // directly) lose that variable, and Tauri's Linux resolver then
+                // falls back to the hardcoded Debian layout /usr/lib/p2premote,
+                // which the repacked deb no longer contains. Prefer the install
+                // root derived from the executable itself and only keep the
+                // Tauri path for the upstream /usr/lib layout.
+                let exe_relative =
+                    p2premote_core::config::linux_resources_dir().join(binary_name);
+                if exe_relative.is_file() {
+                    exe_relative
+                } else {
+                    app.path_resolver()
+                        .resource_dir()
+                        .ok_or_else(|| {
+                            "failed to resolve application resource directory".to_string()
+                        })?
+                        .join("resources")
+                        .join(binary_name)
+                }
+            }
         }
     };
 
