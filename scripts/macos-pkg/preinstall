@@ -1,0 +1,23 @@
+#!/bin/bash
+# p2pRemote pkg preinstall: runs as root, before the payload lands.
+# 与 Windows 安装器同一语义（不限版本、可降级覆盖）：落盘前先停掉已在运行的
+# 服务与 GUI。覆盖运行中的二进制在 Unix 语义下虽然可行，但先停能保证
+# postinstall 立即以新版本拉起，也避免旧进程跨版本继续写状态。全部容错——
+# 首次安装时这些服务都不存在。
+set -u
+
+LABEL="top.p2premote.service"
+TINY_DAEMON_LABEL="com.carriez.RustDeskTiny_service"
+TINY_AGENT_LABEL="com.carriez.RustDeskTiny_server"
+
+/usr/bin/pkill -x p2pRemote >/dev/null 2>&1 || true
+/bin/launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+/bin/launchctl bootout "system/$TINY_DAEMON_LABEL" >/dev/null 2>&1 || true
+
+CONSOLE_USER="$(stat -f %Su /dev/console 2>/dev/null || true)"
+CONSOLE_UID="$(stat -f %u /dev/console 2>/dev/null || true)"
+if [[ -n "$CONSOLE_UID" && "$CONSOLE_USER" != "root" && "$CONSOLE_USER" != "loginwindow" ]]; then
+  /bin/launchctl asuser "$CONSOLE_UID" /bin/launchctl bootout "gui/$CONSOLE_UID/$TINY_AGENT_LABEL" >/dev/null 2>&1 || true
+fi
+
+exit 0

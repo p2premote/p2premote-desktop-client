@@ -310,9 +310,9 @@ fi
 
 # ---- pkg 安装包（唯一分发格式：app + LaunchDaemon，postinstall 以 root 完成
 # machine 目录/服务安装并启动） ----
-# 执行位兜底：Windows 检出的工作树可能丢失 postinstall 的 +x，pkgbuild 原样
-# 打包会让安装器无法执行脚本（PKInstallErrorDomain 112）。
-chmod +x "$repo_dir/scripts/macos-pkg/postinstall"
+# 执行位兜底：Windows 检出的工作树可能丢失脚本的 +x，pkgbuild 原样打包会让
+# 安装器无法执行脚本（PKInstallErrorDomain 112）。
+chmod +x "$repo_dir/scripts/macos-pkg/postinstall" "$repo_dir/scripts/macos-pkg/preinstall"
 pkg_staging="$build_dir/pkg-root"
 rm -rf "$pkg_staging"
 mkdir -p "$pkg_staging/Applications" "$pkg_staging/Library/LaunchDaemons"
@@ -326,6 +326,7 @@ pkgbuild \
   --identifier top.p2premote.client \
   --version "$build_version" \
   --scripts "$repo_dir/scripts/macos-pkg" \
+  --component-plist "$repo_dir/src-tauri/macos/component.plist" \
   "$pkg_path"
 
 echo "Created $pkg_path"

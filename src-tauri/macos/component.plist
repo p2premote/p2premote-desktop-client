@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- 与 Windows 安装器同一语义：不限版本、允许降级覆盖安装。
+     BundleIsVersionChecked=false：已装更高/相同版本时不再跳过 app payload
+     （否则 app 不落盘，postinstall 找不到 p2premote-service 直接 112 失败）；
+     BundleIsRelocatable=false：不向 LaunchServices 查询重定位目标，固定装到
+     /Applications（否则会被别处注册的同 ID app——如构建产物、废纸篓里的
+     副本——劫持安装位置）；
+     BundleOverwriteAction=update：目标已存在时无条件替换文件。 -->
+<array>
+    <dict>
+        <key>RootRelativeBundlePath</key>
+        <string>Applications/p2pRemote.app</string>
+        <key>BundleIsVersionChecked</key>
+        <false/>
+        <key>BundleIsRelocatable</key>
+        <false/>
+        <key>BundleOverwriteAction</key>
+        <string>update</string>
+    </dict>
+</array>
+</plist>
