@@ -348,6 +348,7 @@ pub(super) async fn handle_data(
                             s.last_heartbeat_at = Some(now_ts());
                         }
                     });
+                    shared.lock().device_registration_abandoned = false;
                     shared.lock().reconnect_requested = true;
                     match heartbeat_result {
                         Ok(()) => Some(cmd_response_with_data(
@@ -373,6 +374,8 @@ pub(super) async fn handle_data(
                     update_status(shared, |s| {
                         s.device_registration_error = Some(err.to_string());
                     });
+                    // 手动注册同样被拒绝：停止后续自动重试，避免周期性失败请求。
+                    shared.lock().device_registration_abandoned = true;
                     Some(cmd_response(
                         false,
                         &err.to_string(),
@@ -601,7 +604,13 @@ pub(super) async fn handle_data(
                     state.current_user_id = Some(bundle.user.user_id);
                     state.login_session_enabled = true;
                     state.reconnect_requested = true;
+                    // 重新登录视为用户已处理过注册失败（如已删除旧设备释放
+                    // 名额），重置放弃标记让 bootstrap 再试一次。
+                    state.device_registration_abandoned = false;
                 }
+                update_status(shared, |s| {
+                    s.device_registration_error = None;
+                });
                 Some(cmd_response_with_data(
                     true,
                     "login ok",
@@ -1104,6 +1113,7 @@ pub(super) async fn handle_data(
                 state.current_user_id = None;
                 state.login_session_enabled = false;
                 state.reconnect_requested = true;
+                state.device_registration_abandoned = false;
             }
             update_status(shared, |s| {
                 s.logged_in = false;

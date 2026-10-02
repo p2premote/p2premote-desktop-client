@@ -248,7 +248,7 @@ export default {
   // ============ 设备页（Devices.vue） ============
   devices: {
     registration_failed_title: '本机设备注册失败',
-    registration_failed_body: '{error}。请删除不用的设备释放名额，删除后系统将自动重试注册。',
+    registration_failed_body: '{error}。请删除不用的设备释放名额，然后重新登录。',
     list: {
       title: '我的设备',
       empty: '暂无设备',

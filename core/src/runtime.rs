@@ -174,6 +174,9 @@ pub(super) struct SharedRuntimeState {
     /// 被动连接请求附带的来源设备展示信息，仅用于本次进程内通知。
     passive_peer_infos: HashMap<i64, PassivePeerInfo>,
     p2p_notify_locks: HashMap<i64, Arc<tokio::sync::Mutex<()>>>,
+    /// 本机注册已被服务端拒绝（如设备数超限）后停止周期重试，避免每分钟
+    /// 打一次注定失败的请求。重新登录或 service 重启后才会再试。
+    device_registration_abandoned: bool,
     status_tx: Option<tokio::sync::broadcast::Sender<RuntimeStatus>>,
 }
 
@@ -913,6 +916,12 @@ async fn bootstrap_service(
 
     let mut current_device = None;
     if config.device_id.is_none() || config.device_uuid.is_none() {
+        if shared.lock().device_registration_abandoned {
+            // 注册已被服务端拒绝（如设备数超限）：不再周期重试，横幅状态
+            // 已暴露给 UI。重新登录或 service 重启后才会再试。静默返回，
+            // 避免每分钟刷一条 error 日志并重推 status。
+            return Ok(());
+        }
         match register_current_device_auto(&mut config).await {
             Ok(device) => {
                 current_device = Some(device);
@@ -923,10 +932,12 @@ async fn bootstrap_service(
             Err(err) => {
                 // 注册失败（如设备数达到账号上限）不影响登录态，logged_in 仍为
                 // true；错误必须写入专用字段，否则 UI 只会看到本机从设备列表
-                // 消失而没有任何提示。bootstrap 每 60 秒重试，成功后自动清除。
+                // 消失而没有任何提示。标记放弃后本轮 service 生命周期内不再
+                // 自动重试。
                 update_status(shared, |s| {
                     s.device_registration_error = Some(err.to_string());
                 });
+                shared.lock().device_registration_abandoned = true;
                 return Err(err);
             }
         }
@@ -1089,6 +1100,7 @@ async fn handle_bootstrap_error(
         state.login_session_enabled = false;
         state.reconnect_requested = false;
         state.current_user_id = None;
+        state.device_registration_abandoned = false;
     }
     update_status(shared, |status| {
         status.logged_in = false;
