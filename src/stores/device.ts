@@ -19,9 +19,17 @@ export const useDeviceStore = defineStore('device', () => {
   const devices = ref<DeviceInfo[]>([])
   const loading = ref(false)
 
+  // 上次选中的设备只存活在内存里：页面切换、窗口隐藏到托盘后重新打开都保留，
+  // GUI 进程重启即失，不写任何存储。
+  const lastSelectedDeviceId = ref<number | null>(null)
+
   // WS 事件监听器
   let fetchDevicesPromise: Promise<void> | null = null
   let lastFetchDevicesAt = 0
+
+  function rememberSelectedDevice(deviceId: number) {
+    lastSelectedDeviceId.value = deviceId
+  }
 
   async function fetchDevices(options: { force?: boolean } = {}) {
     if (fetchDevicesPromise) {
@@ -63,13 +71,16 @@ export const useDeviceStore = defineStore('device', () => {
     loading.value = false
     fetchDevicesPromise = null
     lastFetchDevicesAt = 0
+    lastSelectedDeviceId.value = null
   }
 
   return {
     devices,
     loading,
+    lastSelectedDeviceId,
     fetchDevices,
     setDevices,
-    resetDevices
+    resetDevices,
+    rememberSelectedDevice
   }
 })

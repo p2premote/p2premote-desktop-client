@@ -428,8 +428,11 @@ watch(
       return
     }
 
-    const currentSelectedId = selectedDevice.value?.device_id
-    const matched = devices.find(device => device.device_id === currentSelectedId)
+    // 当前选中优先（列表刷新保持不变）；组件重挂载时回落到记忆中的上次选中
+    const currentSelectedId = selectedDevice.value?.device_id ?? deviceStore.lastSelectedDeviceId
+    const matched = currentSelectedId != null
+      ? devices.find(device => device.device_id === currentSelectedId)
+      : undefined
     selectedDevice.value = matched || devices[0]
   },
   { immediate: true }
@@ -744,11 +747,14 @@ async function testTunnelSpeed(device: DeviceInfo) {
   }
 }
 
+/// 用户显式选中设备（点击列表项、菜单操作等）的唯一入口：
+/// 记录到 store 内存，页面切换或窗口隐藏到托盘后重开时恢复上次选中。
 function selectDevice(device: DeviceInfo) {
   if (selectedDevice.value?.device_id !== device.device_id) {
     detailExpanded.value = false
   }
   selectedDevice.value = device
+  deviceStore.rememberSelectedDevice(device.device_id)
 }
 
 async function refreshDevices(options: { force?: boolean } = {}) {
@@ -867,7 +873,7 @@ function applyTunnelRuntimeStatus(runtime: any) {
 }
 
 function openAliasDialog(device: DeviceInfo) {
-  selectedDevice.value = device
+  selectDevice(device)
   aliasForm.alias = device.device_alias || ''
   aliasDialogVisible.value = true
 }
@@ -1045,7 +1051,7 @@ async function handleDisconnectTunnel(device: DeviceInfo) {
 }
 
 async function copyRemoteDesktopAddress(device: DeviceInfo) {
-  selectedDevice.value = device
+  selectDevice(device)
   try {
     const address = remoteDesktopAddress(device)
     if (!address) {
@@ -1107,7 +1113,7 @@ async function launchP2pRemoteDesktop(device: DeviceInfo) {
 }
 
 async function handleDeviceAction(command: string, device: DeviceInfo) {
-  selectedDevice.value = device
+  selectDevice(device)
   switch (command) {
     case 'alias':
       openAliasDialog(device)
