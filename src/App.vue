@@ -111,28 +111,44 @@
                 <el-tabs tab-position="left">
                 <el-tab-pane :label="$t('app.settings.group_preferences')">
                 <section class="settings-group">
-                  <div class="settings-group-title">{{ $t('app.settings.group_preferences') }}</div>
+                  <div class="settings-section-header">
+                    <h2>{{ $t('app.settings.group_preferences') }}</h2>
+                    <p>{{ $t('app.settings.preferences_intro') }}</p>
+                  </div>
                   <div class="settings-item">
-                    <span>{{ $t('app.settings.auto_start') }}</span>
-                    <el-switch v-model="autoStart" @change="handleAutoStartChange" />
+                    <div class="settings-item-copy">
+                      <label for="settings-auto-start">{{ $t('app.settings.auto_start') }}</label>
+                      <p>{{ $t('app.settings.auto_start_hint') }}</p>
+                    </div>
+                    <el-switch id="settings-auto-start" v-model="autoStart" @change="handleAutoStartChange" />
                   </div>
                   <div v-if="isMacOS" class="settings-item">
-                    <span>{{ $t('app.settings.background_service') }}</span>
+                    <div class="settings-item-copy">
+                      <label for="settings-background-service">{{ $t('app.settings.background_service') }}</label>
+                      <p>{{ $t('app.settings.background_service_hint') }}</p>
+                    </div>
                     <el-switch
+                      id="settings-background-service"
                       :model-value="backgroundServiceEnabled"
                       :loading="backgroundServiceChanging"
                       @change="handleBackgroundServiceChange"
                     />
                   </div>
                   <div class="settings-item">
-                    <span>{{ $t('app.settings.language') }}</span>
-                    <el-select v-model="localeModel" class="language-select" size="small">
+                    <div class="settings-item-copy">
+                      <label>{{ $t('app.settings.language') }}</label>
+                      <p>{{ $t('app.settings.language_hint') }}</p>
+                    </div>
+                    <el-select v-model="localeModel" class="language-select" size="small" :aria-label="$t('app.settings.language')">
                       <el-option v-for="item in SUPPORTED_LOCALES" :key="item.value" :label="item.label" :value="item.value" />
                     </el-select>
                   </div>
                   <div class="settings-item">
-                    <span>{{ $t('app.settings.theme') }}</span>
-                    <el-select v-model="themeMode" class="theme-select" size="small">
+                    <div class="settings-item-copy">
+                      <label>{{ $t('app.settings.theme') }}</label>
+                      <p>{{ $t('app.settings.theme_hint') }}</p>
+                    </div>
+                    <el-select v-model="themeMode" class="theme-select" size="small" :aria-label="$t('app.settings.theme')">
                       <el-option :label="$t('app.settings.theme_system')" value="system" />
                       <el-option :label="$t('app.settings.theme_light')" value="light" />
                       <el-option :label="$t('app.settings.theme_dark')" value="dark" />
@@ -148,7 +164,10 @@
                 </el-tab-pane>
                 <el-tab-pane v-if="authStore.isLoggedIn" :label="$t('app.settings.group_account')">
                 <section class="settings-group">
-                  <div class="settings-group-title">{{ $t('app.settings.group_account') }}</div>
+                  <div class="settings-section-header">
+                    <h2>{{ $t('app.settings.group_account') }}</h2>
+                    <p>{{ $t('app.settings.account_intro') }}</p>
+                  </div>
                   <button type="button" class="settings-item clickable" @click="handleShowInviteDialog">
                     <span>{{ $t('app.settings.invite_friend') }}</span><el-icon><LinkIcon /></el-icon>
                   </button>
@@ -159,7 +178,7 @@
                 </el-tab-pane>
                 <el-tab-pane v-if="!isTauriRuntime()" :label="$t('app.web_admin.group')">
                 <section class="settings-group">
-                  <div class="settings-group-title">{{ $t('app.web_admin.group') }}</div>
+                  <div class="settings-section-header"><h2>{{ $t('app.web_admin.group') }}</h2></div>
                   <button type="button" class="settings-item clickable" @click="openWebSecurityCodeDialog">
                     <span>{{ $t('app.web_admin.change_security_code') }}</span>
                   </button>
@@ -170,7 +189,10 @@
                 </el-tab-pane>
                 <el-tab-pane :label="$t('app.settings.group_support')">
                 <section class="settings-group">
-                  <div class="settings-group-title">{{ $t('app.settings.group_support') }}</div>
+                  <div class="settings-section-header">
+                    <h2>{{ $t('app.settings.group_support') }}</h2>
+                    <p>{{ $t('app.settings.support_intro') }}</p>
+                  </div>
                   <button type="button" class="settings-item clickable" @click="handleCheckUpdate">
                     <span>{{ $t('app.settings.check_update') }}</span><span class="version-info">v{{ appVersion }}</span>
                   </button>
@@ -2301,23 +2323,53 @@ watch(
   border-top: 1px solid var(--fluent-divider);
 }
 
-.settings-group-title {
-  padding: 2px 8px 5px;
-  color: var(--fluent-text-tertiary);
-  font-size: 11px;
+.settings-section-header {
+  padding: 2px 8px 12px;
+}
+
+.settings-section-header h2 {
+  font-size: 16px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  line-height: 1.35;
+}
+
+.settings-section-header p {
+  margin-top: 4px;
+  color: var(--fluent-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .settings-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  min-height: 36px;
-  padding: 6px 8px;
+  min-height: 56px;
+  gap: 24px;
+  padding: 8px;
   font-size: 14px;
   color: var(--fluent-text);
+}
+
+.settings-item + .settings-item {
+  border-top: 1px solid var(--fluent-divider);
+}
+
+.settings-item-copy {
+  min-width: 0;
+}
+
+.settings-item-copy label {
+  display: block;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.settings-item-copy p {
+  margin-top: 2px;
+  color: var(--fluent-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .settings-item .el-select {
@@ -2325,6 +2377,7 @@ watch(
 }
 
 .settings-item.clickable {
+  min-height: 44px;
   width: 100%;
   border: 0;
   background: transparent;
@@ -2337,6 +2390,11 @@ watch(
 
 .settings-item.clickable:hover {
   background: var(--fluent-layer-hover);
+}
+
+.settings-item.clickable:active {
+  background: var(--fluent-layer-pressed);
+  transform: scale(0.99);
 }
 
 .settings-tip {
