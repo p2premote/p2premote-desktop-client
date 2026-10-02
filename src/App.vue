@@ -929,9 +929,9 @@ watch(deviceRegistrationError, (message) => {
   lastNotifiedRegistrationError = message
   ElNotification({
     title: t('app.notification.device_registration_failed_title'),
-    message,
+    message: t('devices.registration_failed_body', { error: message }),
     type: 'error',
-    duration: 0,
+    duration: 8000,
   })
 })
 watch(

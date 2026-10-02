@@ -231,8 +231,8 @@ const en = {
   },
 
   devices: {
-    registration_failed_title: 'This device is not registered to your account',
-    registration_failed_hint: 'This computer is temporarily missing from the device list below and cannot be reached remotely. Remove unused devices to free a slot; registration retries automatically every minute.',
+    registration_failed_title: 'This device failed to register',
+    registration_failed_body: '{error}. Remove unused devices to free a slot; registration retries automatically.',
     list: {
       title: 'My devices',
       empty: 'No devices',

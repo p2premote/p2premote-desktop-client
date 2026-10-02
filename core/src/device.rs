@@ -198,8 +198,10 @@ struct RegisterRequest {
 }
 
 /// 业务响应 envelope 复用 http::ApiResponse<T>，按 data 类型别名。
-type RegisterResponse = ApiResponse<DeviceInfo>;
-type DeviceListResponse = ApiResponse<Vec<DeviceInfo>>;
+/// data 一律 Option：服务端错误响应不带 data 字段，必填会先在
+/// serde 反序列化阶段报 "missing field `data`"，吞掉真正的业务错误文案。
+type RegisterResponse = ApiResponse<Option<DeviceInfo>>;
+type DeviceListResponse = ApiResponse<Option<Vec<DeviceInfo>>>;
 type ConnectCodeResponse = ApiResponse<Option<ConnectCodeData>>;
 type AnonymousConnectResponse = ApiResponse<Option<AnonymousConnectData>>;
 /// 仅判定 code 的通用响应（data 不读取，仅反序列化兼容）。
@@ -328,11 +330,14 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
             parsed.localized_error_message(config.locale.as_deref())
         ));
     }
+    let device = parsed
+        .data
+        .ok_or_else(|| anyhow!("register response missing device data"))?;
 
-    config.device_id = Some(parsed.data.device_id);
-    config.device_uuid = Some(parsed.data.device_uuid.clone());
+    config.device_id = Some(device.device_id);
+    config.device_uuid = Some(device.device_uuid.clone());
     save_machine_config(config)?;
-    Ok(parsed.data)
+    Ok(device)
 }
 
 pub async fn collect_device_status_report(
@@ -458,7 +463,9 @@ pub async fn get_device_list(config: &mut MachineConfig) -> Result<Vec<DeviceInf
             parsed.localized_error_message(config.locale.as_deref())
         ));
     }
-    Ok(parsed.data)
+    parsed
+        .data
+        .ok_or_else(|| anyhow!("device list response missing data"))
 }
 
 /// 匿名连接校验：设备代码 + 临时密码，无 Bearer token。

@@ -799,7 +799,7 @@ function applyCurrentDeviceUUIDFromRuntime(runtime: any) {
 
 const registrationErrorMessage = computed(() => {
   if (!registrationError.value) return ''
-  return `${registrationError.value} ${t('devices.registration_failed_hint')}`
+  return t('devices.registration_failed_body', { error: registrationError.value })
 })
 
 async function autoRefreshDevicesInForeground() {

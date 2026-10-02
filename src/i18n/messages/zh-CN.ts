@@ -247,8 +247,8 @@ export default {
 
   // ============ 设备页（Devices.vue） ============
   devices: {
-    registration_failed_title: '本机设备未注册到当前账号',
-    registration_failed_hint: '本机暂时不会出现在下方设备列表中，也无法被远程连接。请删除不用的设备释放名额，系统每分钟会自动重试注册。',
+    registration_failed_title: '本机设备注册失败',
+    registration_failed_body: '{error}。请删除不用的设备释放名额，删除后系统将自动重试注册。',
     list: {
       title: '我的设备',
       empty: '暂无设备',
