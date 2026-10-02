@@ -229,8 +229,11 @@ pub fn read_private_key(path: &Path) -> Result<String> {
 
 // ============ 配置文件生成 ============
 
-/// 为 WireGuard + gonc 双层 UDP 封装预留足够空间，避免外层 IP 分片。
-pub const WGVPN_MTU: u16 = 1280;
+/// MTU 上限按最坏外层路径推算：外层路径只保证 IPv6 最小 MTU 1280，本包
+/// 外层开销最大 80 字节（外层 IPv6 头 40 + UDP 8 + WG 32），故内层须 ≤1200。
+/// 曾用 1280：在外层路径恰为 1280 的环境（WSL NAT、部分 VPN）满尺寸包被
+/// 静默丢弃且无 ICMP 回馈，表现为隧道小包通、TCP 传输卡死。
+pub const WGVPN_MTU: u16 = 1200;
 
 /// WireGuard 多 Peer 配置生成上下文（builder 模式）。
 pub struct WgConfigBuilder {
@@ -1140,7 +1143,7 @@ mod linux_userspace_tests {
     #[test]
     fn converts_wg_quick_config_to_uapi() {
         let conf = format!(
-            "[Interface]\nPrivateKey = {PRIVATE_KEY}\nAddress = 100.99.71.2/24\nListenPort = 51820\nMTU = 1280\n\n[Peer]\nPublicKey = {PUBLIC_KEY}\nEndpoint = 127.0.0.1:50000\nAllowedIPs = 100.99.71.3/32, 192.168.1.0/24\nPersistentKeepalive = 25\n"
+            "[Interface]\nPrivateKey = {PRIVATE_KEY}\nAddress = 100.99.71.2/24\nListenPort = 51820\nMTU = 1200\n\n[Peer]\nPublicKey = {PUBLIC_KEY}\nEndpoint = 127.0.0.1:50000\nAllowedIPs = 100.99.71.3/32, 192.168.1.0/24\nPersistentKeepalive = 25\n"
         );
         let uapi = wg_quick_conf_to_uapi(&conf).unwrap();
         assert!(uapi.contains("replace_peers=true"));
