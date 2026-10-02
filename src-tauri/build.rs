@@ -14,6 +14,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=P2PREMOTE_WG_FFI_DIR");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PREBUILT_RESOURCES");
     println!("cargo:rerun-if-env-changed=RUSTDESK_TINY_ARTIFACT_DIR");
+    // 本 crate 的 build 脚本读取该 env 传递给 service/cli/notifier 子构建；
+    // 一旦声明过任何 rerun-if，cargo 不再"任何变化都重建"，必须显式声明
+    println!("cargo:rerun-if-env-changed=P2PREMOTE_CLIENT_VERSION");
 
     emit_macos_rpath();
 

@@ -58,7 +58,41 @@ tiny_app="${RUSTDESK_TINY_APP:-}"
 tiny_zip_x64="$resources_dir/RustDeskTiny-macos-x86_64.zip"
 tiny_zip_arm64="$resources_dir/RustDeskTiny-macos-aarch64.zip"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/p2premote-macos.XXXXXX")"
-trap 'rm -rf "$build_dir"' EXIT
+# 与 Windows/Linux 一致：三段式版本自动追加 6 位提交后缀，service/cli 上报、
+# GUI 应用内版本、pkg 文件名与 pkgbuild --version 全部统一用该值；传入值本身
+# 带后缀（如 1.11.2-ebff2c）视为手动盖章，原样使用
+git_commit="$(git -C "$repo_dir" rev-parse --short=6 HEAD)"
+if [[ ! "$git_commit" =~ ^[0-9a-f]{6}$ ]]; then
+  echo "Failed to resolve the current git commit id" >&2
+  exit 1
+fi
+if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  build_version="$version-$git_commit"
+else
+  build_version="$version"
+fi
+# src-tauri/Cargo.toml 临时盖章（与 build-windows.ps1 的 Set-ClientVersion 同款
+# 机制）：GUI 应用内版本 env!("CARGO_PKG_VERSION") 与产物文件名同源，避免
+# "包文件名是新版本、软件内仍是旧版本"；构建结束由 trap 还原，Cargo.lock 随
+# cargo 命令连带更新，一并备份还原
+if [[ "$(grep -c '^version = "' "$repo_dir/src-tauri/Cargo.toml" || true)" -ne 1 ]]; then
+  echo "expected exactly one top-level version field in src-tauri/Cargo.toml" >&2
+  exit 1
+fi
+cp "$repo_dir/src-tauri/Cargo.toml" "$build_dir/Cargo.toml.orig"
+cp "$repo_dir/Cargo.lock" "$build_dir/Cargo.lock.orig"
+sed -i '' "s/^version = \".*\"/version = \"$build_version\"/" "$repo_dir/src-tauri/Cargo.toml"
+echo "==> Stamped src-tauri/Cargo.toml version to $build_version"
+cleanup() {
+  if [[ -f "$build_dir/Cargo.toml.orig" ]]; then
+    cp "$build_dir/Cargo.toml.orig" "$repo_dir/src-tauri/Cargo.toml"
+  fi
+  if [[ -f "$build_dir/Cargo.lock.orig" ]]; then
+    cp "$build_dir/Cargo.lock.orig" "$repo_dir/Cargo.lock"
+  fi
+  rm -rf "$build_dir"
+}
+trap cleanup EXIT
 
 for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun hdiutil ditto file; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
@@ -148,7 +182,7 @@ mkdir -p "$resources_dir" "$build_dir/x86_64" "$build_dir/arm64"
 build_rust_helper() {
   local triple="$1"
   local arch_dir="$2"
-  P2PREMOTE_CLIENT_VERSION="$version" \
+  P2PREMOTE_CLIENT_VERSION="$build_version" \
   P2PREMOTE_PUNCH_LIB_DIR="$arch_dir" cargo build \
     --manifest-path "$repo_dir/Cargo.toml" \
     --release --target "$triple" \
@@ -201,18 +235,18 @@ fi
 (cd "$repo_dir" && npm ci && npm run build)
 macos_config="$build_dir/tauri.macos.conf.json"
 {
-  printf '{\n  "package": { "version": "%s" },\n' "$version"
+  printf '{\n  "package": { "version": "%s" },\n' "$build_version"
   tail -n +2 "$repo_dir/src-tauri/tauri.macos.conf.json"
 } > "$macos_config"
 (
   cd "$repo_dir"
   if [[ "$unsigned" == 1 ]]; then
     env -u APPLE_SIGNING_IDENTITY \
-      P2PREMOTE_CLIENT_VERSION="$version" \
+      P2PREMOTE_CLIENT_VERSION="$build_version" \
       P2PREMOTE_PREBUILT_RESOURCES=1 \
       npx tauri build --target universal-apple-darwin --bundles app --config "$macos_config"
   else
-    P2PREMOTE_CLIENT_VERSION="$version" \
+    P2PREMOTE_CLIENT_VERSION="$build_version" \
     P2PREMOTE_PREBUILT_RESOURCES=1 \
     APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" \
       npx tauri build --target universal-apple-darwin --bundles app --config "$macos_config"
@@ -231,6 +265,16 @@ else
     --sign "$APPLE_SIGNING_IDENTITY" "$app_path"
 fi
 lipo "$app_path/Contents/MacOS/p2pRemote" -verify_arch x86_64 arm64
+# 防回归：GUI 主程序与内嵌 service 必须包含本次构建版本。历史上 tag 触发的
+# 构建曾因 Cargo.toml 未盖章出现"文件名 1.13.x、软件内 1.12.4-fb23c3"
+grep -aqF "$build_version" "$app_path/Contents/MacOS/p2pRemote" || {
+  echo "GUI binary does not embed build version $build_version" >&2
+  exit 1
+}
+grep -aqF "$build_version" "$app_path/Contents/Resources/resources/p2premote-service" || {
+  echo "service binary does not embed build version $build_version" >&2
+  exit 1
+}
 for artifact in p2premote-service p2premote-cli libp2premote-wg.dylib; do
   lipo "$app_path/Contents/Resources/resources/$artifact" -verify_arch x86_64 arm64
 done
@@ -273,12 +317,12 @@ mkdir -p "$pkg_staging/Applications" "$pkg_staging/Library/LaunchDaemons"
 cp -R "$app_path" "$pkg_staging/Applications/$(basename "$app_path")"
 cp "$repo_dir/src-tauri/macos/top.p2premote.service.plist" \
   "$pkg_staging/Library/LaunchDaemons/top.p2premote.service.plist"
-pkg_path="$dist_dir/p2pRemote_${version}_macos-universal.pkg"
+pkg_path="$dist_dir/p2pRemote_${build_version}_macos-universal.pkg"
 rm -f "$pkg_path"
 pkgbuild \
   --root "$pkg_staging" \
   --identifier top.p2premote.client \
-  --version "$version" \
+  --version "$build_version" \
   --scripts "$repo_dir/scripts/macos-pkg" \
   "$pkg_path"
 

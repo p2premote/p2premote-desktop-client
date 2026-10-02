@@ -200,6 +200,22 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "tauri build failed with exit code $LASTEXITCODE"
     }
+    # 防回归：主程序必须内嵌本次构建版本。tag 触发的构建曾在 Linux/macOS 上因
+    # Cargo.toml 未盖章出现"文件名 1.13.x、软件内 1.12.4-fb23c3"；Windows 靠
+    # Set-ClientVersion 机制本已正确，此断言确保该机制失效时当场报错
+    $mainExeCandidates = @(
+        (Join-Path $cargoTargetDirectory ($buildProfile + '\p2pRemote.exe')),
+        (Join-Path $cargoTargetDirectory ($buildProfile + '\p2premote.exe'))
+    )
+    $mainExe = $mainExeCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $mainExe) {
+        throw "built GUI executable not found under $(Join-Path $cargoTargetDirectory $buildProfile)"
+    }
+    # ASCII 解码会把 >=0x7F 的字节变成 '?'，但版本串是纯 ASCII，不受影响
+    $mainExeText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($mainExe))
+    if (-not $mainExeText.Contains($buildVersion)) {
+        throw "built GUI executable does not embed build version ${buildVersion}: $mainExe"
+    }
 }
 finally {
     Pop-Location

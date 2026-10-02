@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: $0 <version>" >&2
+# 与产物文件名同源：gui 容器构建传入的是 version-commit 形态（如 1.13.2-0ccec0b）
+if [[ $# -ne 1 || ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "usage: $0 <version>[-<commit-id>]" >&2
   exit 2
 fi
 

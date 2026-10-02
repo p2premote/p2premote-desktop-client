@@ -7,6 +7,10 @@ fn main() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PUNCH_LIB_DIR");
+    // core/src 用 option_env! 编译期固化客户端版本号；不声明该项时，持久
+    // target 缓存（本地 rust-cache、CI rust-cache）下仅变化该 env 不会触发
+    // 重编译，会产出携带旧版本号的二进制
+    println!("cargo:rerun-if-env-changed=P2PREMOTE_CLIENT_VERSION");
     let resources_dir = env::var_os("P2PREMOTE_PUNCH_LIB_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join("..").join("src-tauri").join("resources"));
