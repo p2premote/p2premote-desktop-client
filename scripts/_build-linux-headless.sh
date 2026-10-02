@@ -272,37 +272,10 @@ rust_release_dir() {
   echo "$CARGO_TARGET_DIR/$RUST_TARGET/release"
 }
 
-prepare_prefix_root() {
-  local root="$1"
-  local release_dir
-  release_dir="$(rust_release_dir)"
-  mkdir -p "$root/resources"
-  mkdir -p "$root/resources/web"
-  cp "$release_dir/p2premote-service" "$root/resources/p2premote-service"
-  cp "$release_dir/p2premote-cli" "$root/resources/p2premote-cli"
-  cp "$WIREGUARD_GO" "$root/resources/wireguard-go"
-  cp "$WG_CLI" "$root/resources/wg"
-  cp "$APP_DIR/src-tauri/resources/.p2premote_default.json" "$root/resources/.p2premote_default.json"
-  cp "$APP_DIR/packaging/linux/common/configure-installation.sh" "$root/resources/configure-installation"
-  cp "$APP_DIR/packaging/linux/common/configure-kysec.sh" "$root/resources/configure-kysec"
-  cp -a "$APP_DIR/dist/." "$root/resources/web/"
-  cp "$APP_DIR/packaging/linux/common/p2premote-service.service" "$root/p2premote-service.service"
-  cp "$APP_DIR/packaging/linux/common/p2premote-web.desktop" "$root/p2premote-web.desktop"
-  cp "$APP_DIR/src-tauri/icons/icon.png" "$root/p2premote.png"
-  cp "$APP_DIR/packaging/linux/headless/scripts/install-service.sh" "$root/install-service.sh"
-  cp "$APP_DIR/packaging/linux/headless/scripts/install-gui.sh" "$root/install-gui.sh"
-  cp "$APP_DIR/packaging/linux/headless/scripts/install-p2premote.desktop" "$root/安装-p2pRemote.desktop"
-  cp "$APP_DIR/packaging/linux/headless/scripts/uninstall-service.sh" "$root/uninstall-service.sh"
-  chmod 755 "$root/resources/p2premote-service" "$root/resources/p2premote-cli" "$root/resources/wireguard-go" "$root/resources/wg" "$root/resources/configure-installation" "$root/resources/configure-kysec"
-  chmod 755 "$root/install-service.sh" "$root/install-gui.sh" "$root/安装-p2pRemote.desktop" "$root/uninstall-service.sh"
-  chmod 644 "$root/resources/.p2premote_default.json" "$root/p2premote-service.service" \
-    "$root/p2premote-web.desktop" "$root/p2premote.png"
-  find "$root/resources/web" -type d -exec chmod 755 {} +
-  find "$root/resources/web" -type f -exec chmod 644 {} +
-}
+source "$APP_DIR/scripts/_stage-linux-prefix.sh"
 
 echo "==> Preparing headless tarball root"
-prepare_prefix_root "$PKG_ROOT"
+stage_linux_prefix "$PKG_ROOT" "$(rust_release_dir)" "$WIREGUARD_GO" "$WG_CLI" "$APP_DIR"
 # Source files arrive through a WSL bind mount and may retain the host user's
 # numeric uid. Native packages must install application files as root-owned.
 chown -R 0:0 "$PKG_ROOT"

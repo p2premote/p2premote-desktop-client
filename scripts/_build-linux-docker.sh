@@ -154,11 +154,11 @@ fi
 (cd "$REPO_ROOT" && P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" P2PREMOTE_RELEASE_TARGET="$RELEASE_TARGET" cargo build --release --target "$RUST_TARGET" -p p2premote-service -p p2premote-cli)
 
 RELEASE_DIR="$CARGO_TARGET_DIR/$RUST_TARGET/release"
-cp "$RELEASE_DIR/p2premote-service" "$CONTEXT_DIR/package/resources/"
-cp "$RELEASE_DIR/p2premote-cli" "$CONTEXT_DIR/package/resources/"
-cp "$OUT_DIR/wireguard-go" "$CONTEXT_DIR/package/resources/"
-cp "$OUT_DIR/wg" "$CONTEXT_DIR/package/resources/"
-cp "$REPO_ROOT/src-tauri/resources/.p2premote_default.json" "$CONTEXT_DIR/package/resources/"
-cp -a "$REPO_ROOT/dist/." "$CONTEXT_DIR/package/resources/web/"
+source "$REPO_ROOT/scripts/_stage-linux-prefix.sh"
+stage_linux_prefix \
+  "$CONTEXT_DIR/package" \
+  "$RELEASE_DIR" \
+  "$OUT_DIR/wireguard-go" \
+  "$OUT_DIR/wg" \
+  "$REPO_ROOT"
 cp "$REPO_ROOT/packaging/linux/docker/Dockerfile" "$CONTEXT_DIR/Dockerfile"
-chmod 755 "$CONTEXT_DIR/package/resources/p2premote-service" "$CONTEXT_DIR/package/resources/p2premote-cli" "$CONTEXT_DIR/package/resources/wireguard-go" "$CONTEXT_DIR/package/resources/wg"
