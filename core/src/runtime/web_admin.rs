@@ -1394,9 +1394,8 @@ async fn handle_web_command(
                 .unwrap_or(serde_json::Value::Null))
         }
         "start_service_active_tunnel" => {
-            let peer_device_id = arg_i64(&args, &["targetDeviceId", "peer_device_id"])?;
-            let peer_device_uuid =
-                arg_string(&args, &["targetDeviceUuid", "peer_device_uuid"])?;
+            let peer_device_id = arg_i64(&args, &["peerDeviceId", "peer_device_id"])?;
+            let peer_device_uuid = arg_string(&args, &["peerDeviceUuid", "peer_device_uuid"])?;
             let connect_code = arg_optional_string(&args, &["connectCode", "connect_code"]);
             let temporary_password =
                 arg_optional_string(&args, &["temporaryPassword", "temporary_password"]);
@@ -1436,7 +1435,7 @@ async fn handle_web_command(
             }))
         }
         "stop_active_tunnel_job" => {
-            let peer_device_id = arg_i64(&args, &["targetDeviceId", "peer_device_id"])?;
+            let peer_device_id = arg_i64(&args, &["peerDeviceId", "peer_device_id"])?;
             let resp =
                 dispatch_web_data(Data::StopActiveTunnelJob { peer_device_id }, state).await?;
             command_message(resp)
@@ -1452,7 +1451,7 @@ async fn handle_web_command(
             command_message(resp)
         }
         "stop_service_active_tunnel" => {
-            let peer_device_id = arg_i64(&args, &["targetDeviceId", "peer_device_id"])?;
+            let peer_device_id = arg_i64(&args, &["peerDeviceId", "peer_device_id"])?;
             let _ = dispatch_web_data(Data::StopActiveTunnel { peer_device_id }, state).await?;
             Ok(web_status_value(state))
         }
