@@ -29,10 +29,10 @@ export function detectDevicePlatform(device: DevicePlatformSource | null): Devic
   if (/\buos\b|统信/.test(value)) return 'uos'
   if (/ubuntu/.test(value)) return 'ubuntu'
 
-  if (/windows|\bwin(?:dows)?\b/.test(value)) {
-    if (/windows\s*11|\bwin\s*11\b/.test(value)) return 'windows-11'
-    if (/windows\s*10|\bwin\s*10\b/.test(value)) return 'windows-10'
-    if (/windows\s*7|\bwin\s*7\b/.test(value)) return 'windows-7'
+  if (/windows|\bwin(?:dows)?(?:7|10|11)?\b/.test(value)) {
+    if (/windows\s*11|\bwin\s*11\b|\bwin11\b/.test(value)) return 'windows-11'
+    if (/windows\s*10|\bwin\s*10\b|\bwin10\b/.test(value)) return 'windows-10'
+    if (/windows\s*7|\bwin\s*7\b|\bwin7\b/.test(value)) return 'windows-7'
     return 'windows'
   }
 

@@ -11,6 +11,9 @@ fn main() {
     // target 缓存（本地 rust-cache、CI rust-cache）下仅变化该 env 不会触发
     // 重编译，会产出携带旧版本号的二进制
     println!("cargo:rerun-if-env-changed=P2PREMOTE_CLIENT_VERSION");
+    // Package target also determines the device type reported at registration.
+    // Keep cached builds from retaining another package's baked-in type.
+    println!("cargo:rerun-if-env-changed=P2PREMOTE_RELEASE_TARGET");
     let resources_dir = env::var_os("P2PREMOTE_PUNCH_LIB_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.join("..").join("src-tauri").join("resources"));

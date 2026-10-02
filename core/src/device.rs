@@ -91,13 +91,31 @@ use device_windows::{current_remote_access, get_system_version};
 pub(crate) use device_windows::{get_rdp_port_from_registry, is_rdp_enabled};
 
 fn current_device_type() -> String {
-    match std::env::consts::OS {
-        "windows" => "Windows",
-        "linux" => "Linux",
-        "macos" => "macOS",
-        other => other,
-    }
+    resolve_device_type(
+        option_env!("P2PREMOTE_RELEASE_TARGET"),
+        std::env::consts::OS,
+    )
     .to_string()
+}
+
+fn resolve_device_type<'a>(release_target: Option<&str>, host_os: &'a str) -> &'a str {
+    match release_target {
+        Some("windows-win7-x64") => "win7",
+        Some("linux-gui-x64") => "linux-gui",
+        Some(target)
+            if target.starts_with("linux-headless-") || target.starts_with("linux-docker-") =>
+        {
+            "linux-headless"
+        }
+        _ => match host_os {
+            // The regular Windows package targets Windows 10+; keep the requested
+            // client category stable even when it runs on Windows 11.
+            "windows" => "win10",
+            "linux" => "linux-headless",
+            "macos" => "macOS",
+            other => other,
+        },
+    }
 }
 
 fn current_client_version() -> String {
@@ -1051,6 +1069,27 @@ mod tests {
     use super::device_windows::get_windows_version_from_wmi;
     use super::device_windows::normalize_windows_product_name;
     use super::*;
+
+    #[test]
+    fn resolves_package_specific_device_types() {
+        assert_eq!(
+            resolve_device_type(Some("windows-win7-x64"), "windows"),
+            "win7"
+        );
+        assert_eq!(resolve_device_type(None, "windows"), "win10");
+        assert_eq!(
+            resolve_device_type(Some("linux-gui-x64"), "linux"),
+            "linux-gui"
+        );
+        assert_eq!(
+            resolve_device_type(Some("linux-headless-aarch64"), "linux"),
+            "linux-headless"
+        );
+        assert_eq!(
+            resolve_device_type(Some("linux-docker-x64"), "linux"),
+            "linux-headless"
+        );
+    }
 
     #[test]
     fn formats_pconline_without_repeating_province_and_city() {
