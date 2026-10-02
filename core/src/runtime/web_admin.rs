@@ -19,11 +19,12 @@ use axum::{
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
+use ipnet::Ipv4Net;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
@@ -50,7 +51,7 @@ struct WebAdminState {
 }
 
 struct WebSecurityState {
-    allowed_remote_ip: Mutex<Option<IpAddr>>,
+    allowed_remote_ip: Mutex<Option<Ipv4Net>>,
     security_code_hash: Mutex<Option<[u8; 32]>>,
     session: Mutex<Option<WebSession>>,
     session_revision: watch::Sender<u64>,
@@ -88,14 +89,15 @@ struct WebChangeSecurityCodeRequest {
 #[derive(Deserialize)]
 struct WebFirstTrustSetupRequest {
     new_security_code: String,
-    allowed_ip: String,
+    #[serde(alias = "allowed_ip")]
+    allowed_cidr: String,
 }
 
 #[derive(Deserialize)]
 struct WebAccessConfigRequest {
     mode: String,
-    #[serde(default)]
-    allowed_ip: Option<String>,
+    #[serde(default, alias = "allowed_ip")]
+    allowed_cidr: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -147,13 +149,9 @@ impl WebSecurityState {
     fn from_values(allowed_remote_ip: Option<&str>, security_code: Option<&str>) -> Result<Self> {
         let allowed_remote_ip = allowed_remote_ip
             .map(str::trim)
-            .map(ToOwned::to_owned)
             .filter(|value| !value.is_empty())
-            .map(|value| {
-                value
-                    .parse::<IpAddr>()
-                    .with_context(|| format!("invalid web_admin_allowed_ip: {value}"))
-            })
+            .map(|value| parse_allowed_cidr(value)
+                .with_context(|| format!("invalid web_admin_allowed_ip: {value}")))
             .transpose()?;
         let security_code = security_code
             .map(str::trim)
@@ -173,7 +171,9 @@ impl WebSecurityState {
         let (session_revision, _) = watch::channel(0);
         Ok(Self {
             allowed_remote_ip: Mutex::new(allowed_remote_ip),
-            security_code_hash: Mutex::new(security_code.as_deref().map(hash_security_code)),
+            security_code_hash: Mutex::new(
+                security_code.as_deref().map(parse_persisted_security_code).transpose()?,
+            ),
             session: Mutex::new(None),
             session_revision,
             failures: Mutex::new(HashMap::new()),
@@ -199,9 +199,7 @@ impl WebSecurityState {
         let ip = normalize_ip(ip);
         ip.is_loopback()
             || self.allowed_remote_ip.lock().is_some_and(|allowed| {
-                allowed == ip
-                    || matches!(allowed, IpAddr::V4(value) if value.is_unspecified())
-                        && matches!(ip, IpAddr::V4(_))
+                matches!(ip, IpAddr::V4(value) if allowed.contains(&value))
             })
     }
 
@@ -339,6 +337,32 @@ impl WebSecurityState {
 
 fn hash_security_code(code: &str) -> [u8; 32] {
     Sha256::digest(code.as_bytes()).into()
+}
+
+fn encode_security_code_hash(hash: &[u8; 32]) -> String {
+    let mut value = String::with_capacity(7 + hash.len() * 2);
+    value.push_str("sha256:");
+    for byte in hash {
+        use std::fmt::Write as _;
+        let _ = write!(value, "{byte:02x}");
+    }
+    value
+}
+
+fn parse_persisted_security_code(value: &str) -> Result<[u8; 32]> {
+    let Some(encoded) = value.strip_prefix("sha256:") else {
+        // Backward compatibility: old versions persisted the code as plaintext.
+        return Ok(hash_security_code(value));
+    };
+    if encoded.len() != 64 {
+        anyhow::bail!("invalid persisted Web security code hash");
+    }
+    let mut hash = [0_u8; 32];
+    for (index, slot) in hash.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&encoded[index * 2..index * 2 + 2], 16)
+            .context("invalid persisted Web security code hash")?;
+    }
+    Ok(hash)
 }
 
 fn normalize_ip(ip: IpAddr) -> IpAddr {
@@ -665,15 +689,15 @@ async fn web_auth_complete_first_trust(
         return StatusCode::CONFLICT.into_response();
     }
     let security_code = request.new_security_code.trim();
-    if security_code.len() < 4 || security_code.len() > 256 {
+    if security_code.len() < 4 || security_code.len() > 256 || security_code == "0000" {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "ok": false, "error": "invalid_new_security_code" })),
         )
             .into_response();
     }
-    let allowed_ip = match parse_web_access_config("remote", Some(&request.allowed_ip)) {
-        Ok(Some(ip)) => ip,
+    let allowed_cidr = match parse_web_access_config("remote", Some(&request.allowed_cidr)) {
+        Ok(Some(cidr)) => cidr,
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -692,19 +716,21 @@ async fn web_auth_complete_first_trust(
     if config.web_admin_security_code.is_some() || config.web_admin_allowed_ip.is_some() {
         return StatusCode::CONFLICT.into_response();
     }
-    config.web_admin_security_code = Some(security_code.to_string());
-    config.web_admin_allowed_ip = Some(allowed_ip.clone());
+    config.web_admin_security_code = Some(encode_security_code_hash(&hash_security_code(security_code)));
+    config.web_admin_allowed_ip = Some(allowed_cidr.clone());
     if let Err(err) = save_machine_config(&config) {
         error!("[WebAdmin] failed to save first-use settings: {err}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     *state.security.security_code_hash.lock() = Some(hash_security_code(security_code));
-    *state.security.allowed_remote_ip.lock() = Some(allowed_ip.parse().expect("validated IPv4"));
+    *state.security.allowed_remote_ip.lock() = Some(
+        parse_allowed_cidr(&allowed_cidr).expect("validated IPv4 CIDR"),
+    );
     *state.security.bootstrap_trusted_ip.lock() = None;
     state.security.clear_session();
     let source_ip = normalize_ip(peer.ip());
-    let source_allowed = allowed_ip == "0.0.0.0" || allowed_ip == source_ip.to_string();
-    Json(serde_json::json!({ "ok": true, "allowed_ip": allowed_ip, "source_allowed": source_allowed })).into_response()
+    let source_allowed = state.security.source_allowed(source_ip);
+    Json(serde_json::json!({ "ok": true, "allowed_cidr": allowed_cidr, "source_allowed": source_allowed })).into_response()
 }
 
 async fn web_auth_unlock(
@@ -813,7 +839,7 @@ async fn web_auth_change_security_code(
     }
 
     let security_code = request.new_security_code.trim();
-    if security_code.len() < 4 || security_code.len() > 256 {
+    if security_code.len() < 4 || security_code.len() > 256 || security_code == "0000" {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "ok": false, "error": "invalid_new_security_code" })),
@@ -836,7 +862,7 @@ async fn web_auth_change_security_code(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    config.web_admin_security_code = Some(security_code.to_string());
+    config.web_admin_security_code = Some(encode_security_code_hash(&new_hash));
     if let Err(err) = save_machine_config(&config) {
         error!("[WebAdmin] failed to save changed security code: {err}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -866,15 +892,15 @@ async fn web_admin_settings(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    let allowed_ip = config
+    let allowed_cidr = config
         .web_admin_allowed_ip
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .and_then(|value| parse_allowed_cidr(value).ok())
+        .map(|network| network.to_string());
     Json(serde_json::json!({
-        "mode": if allowed_ip.is_some() { "remote" } else { "local" },
-        "allowed_ip": allowed_ip,
-        "listen_addr": if allowed_ip.is_some()
+        "mode": if allowed_cidr.is_some() { "remote" } else { "local" },
+        "allowed_cidr": allowed_cidr,
+        "listen_addr": if allowed_cidr.is_some()
             || state.security.first_trust_bootstrap_pending()
         {
             format!("0.0.0.0:{DEFAULT_WEB_ADMIN_PORT}")
@@ -899,8 +925,8 @@ async fn web_admin_update_access(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    let requested_ip = match parse_web_access_config(&request.mode, request.allowed_ip.as_deref()) {
-        Ok(ip) => ip,
+    let requested_cidr = match parse_web_access_config(&request.mode, request.allowed_cidr.as_deref()) {
+        Ok(cidr) => cidr,
         Err(error) => return web_access_error(error),
     };
 
@@ -911,7 +937,7 @@ async fn web_admin_update_access(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    if requested_ip.is_some()
+    if requested_cidr.is_some()
         && config
             .web_admin_security_code
             .as_deref()
@@ -920,7 +946,10 @@ async fn web_admin_update_access(
     {
         return web_access_error("security_code_required");
     }
-    if config.web_admin_allowed_ip == requested_ip {
+    let current_cidr = config.web_admin_allowed_ip.as_deref()
+        .and_then(|value| parse_allowed_cidr(value).ok())
+        .map(|network| network.to_string());
+    if current_cidr == requested_cidr {
         return Json(serde_json::json!({
             "ok": true,
             "changed": false,
@@ -929,7 +958,7 @@ async fn web_admin_update_access(
         .into_response();
     }
 
-    config.web_admin_allowed_ip = requested_ip.clone();
+    config.web_admin_allowed_ip = requested_cidr.clone();
     if let Err(err) = save_machine_config(&config) {
         error!("[WebAdmin] failed to save Web access settings: {err}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -937,9 +966,13 @@ async fn web_admin_update_access(
 
     let source_ip = normalize_ip(peer.ip());
     let source_allowed = source_ip.is_loopback()
-        || requested_ip
+        || requested_cidr
             .as_deref()
-            .is_some_and(|value| value == "0.0.0.0" || value == source_ip.to_string());
+            .and_then(|value| parse_allowed_cidr(value).ok())
+            .is_some_and(|network| matches!(source_ip, IpAddr::V4(ip) if network.contains(&ip)));
+    *state.security.allowed_remote_ip.lock() = requested_cidr
+        .as_deref()
+        .and_then(|value| parse_allowed_cidr(value).ok());
     state.security.clear_session();
     state
         .listener_revision
@@ -948,8 +981,8 @@ async fn web_admin_update_access(
         "ok": true,
         "changed": true,
         "source_allowed": source_allowed,
-        "mode": if requested_ip.is_some() { "remote" } else { "local" },
-        "allowed_ip": requested_ip,
+        "mode": if requested_cidr.is_some() { "remote" } else { "local" },
+        "allowed_cidr": requested_cidr,
         "listen_addr": if config.web_admin_allowed_ip.is_some() {
             format!("0.0.0.0:{DEFAULT_WEB_ADMIN_PORT}")
         } else {
@@ -970,22 +1003,39 @@ fn web_access_error(error: &str) -> Response {
 
 fn parse_web_access_config(
     mode: &str,
-    allowed_ip: Option<&str>,
+    allowed_cidr: Option<&str>,
 ) -> std::result::Result<Option<String>, &'static str> {
     match mode {
         "local" => Ok(None),
         "remote" => {
-            let value = allowed_ip.map(str::trim).unwrap_or("");
-            let ip = value
-                .parse::<std::net::Ipv4Addr>()
-                .map_err(|_| "invalid_allowed_ip")?;
-            if ip.is_loopback() || ip.is_multicast() || ip.is_broadcast() {
-                return Err("invalid_allowed_ip");
-            }
-            Ok(Some(ip.to_string()))
+            let value = allowed_cidr.map(str::trim).unwrap_or("");
+            parse_allowed_cidr(value)
+                .map(|network| Some(network.to_string()))
+                .map_err(|_| "invalid_allowed_ip")
         }
         _ => Err("invalid_access_mode"),
     }
+}
+
+/// Parse the persisted access rule. Legacy single IPv4 values become /32 and
+/// the old wildcard 0.0.0.0 becomes 0.0.0.0/0.
+fn parse_allowed_cidr(value: &str) -> Result<Ipv4Net> {
+    let value = value.trim();
+    let network = if value.contains('/') {
+        value.parse::<Ipv4Net>()?
+    } else {
+        let ip = value.parse::<Ipv4Addr>()?;
+        Ipv4Net::new(ip, if ip.is_unspecified() { 0 } else { 32 })?
+    };
+    let network = Ipv4Net::new(network.network(), network.prefix_len())?;
+    if network.prefix_len() != 0
+        && (network.network().is_loopback()
+            || network.network().is_multicast()
+            || network.network().is_broadcast())
+    {
+        anyhow::bail!("unsupported Web access network");
+    }
+    Ok(network)
 }
 
 async fn web_auth_logout(
@@ -1813,8 +1863,12 @@ mod tests {
     }
 
     #[test]
-    fn remote_access_requires_valid_ip_and_non_empty_code() {
+    fn remote_access_requires_valid_cidr_and_non_empty_code() {
         assert!(WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).is_ok());
+        let subnet = WebSecurityState::from_values(Some("192.0.2.0/24"), Some("1")).unwrap();
+        assert!(subnet.source_allowed("192.0.2.191".parse().unwrap()));
+        assert!(!subnet.source_allowed("192.0.3.1".parse().unwrap()));
+        assert!(subnet.source_allowed("127.0.0.1".parse().unwrap()));
         assert!(WebSecurityState::from_values(Some("192.0.2.191"), None).is_err());
         let wildcard = WebSecurityState::from_values(Some("0.0.0.0"), Some("1")).unwrap();
         assert!(wildcard.source_allowed("192.0.2.191".parse().unwrap()));
@@ -1824,15 +1878,28 @@ mod tests {
     }
 
     #[test]
-    fn web_access_config_accepts_local_and_unicast_ipv4() {
+    fn persisted_security_code_hash_round_trips_and_legacy_plaintext_still_loads() {
+        let expected = hash_security_code("safe-code");
+        let encoded = encode_security_code_hash(&expected);
+        assert_eq!(parse_persisted_security_code(&encoded).unwrap(), expected);
+        assert_eq!(parse_persisted_security_code("safe-code").unwrap(), expected);
+        assert!(parse_persisted_security_code("sha256:not-hex").is_err());
+    }
+
+    #[test]
+    fn web_access_config_accepts_and_normalizes_ipv4_cidr() {
         assert_eq!(parse_web_access_config("local", Some("10.0.0.8")), Ok(None));
         assert_eq!(
             parse_web_access_config("remote", Some(" 10.0.0.8 ")),
-            Ok(Some("10.0.0.8".to_string()))
+            Ok(Some("10.0.0.8/32".to_string()))
         );
         assert_eq!(
             parse_web_access_config("remote", Some("0.0.0.0")),
-            Ok(Some("0.0.0.0".to_string()))
+            Ok(Some("0.0.0.0/0".to_string()))
+        );
+        assert_eq!(
+            parse_web_access_config("remote", Some("192.168.1.25/24")),
+            Ok(Some("192.168.1.0/24".to_string()))
         );
     }
 

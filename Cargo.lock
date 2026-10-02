@@ -3247,7 +3247,7 @@ dependencies = [
 
 [[package]]
 name = "p2premote"
-version = "1.12.4-fb23c3"
+version = "1.13.5"
 dependencies = [
  "chrono",
  "once_cell",
@@ -3288,6 +3288,7 @@ dependencies = [
  "encoding_rs",
  "futures-util",
  "hostname",
+ "ipnet",
  "json5",
  "libc",
  "local-ip-address",

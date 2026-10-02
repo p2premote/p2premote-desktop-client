@@ -14,7 +14,7 @@ export interface WebAuthStatus {
 
 export interface WebAdminSettings {
   mode: 'local' | 'remote'
-  allowed_ip: string | null
+  allowed_cidr: string | null
   listen_addr: string
   source_ip: string
 }
@@ -24,7 +24,7 @@ export interface WebAccessUpdateResponse {
   changed: boolean
   source_allowed: boolean
   mode?: 'local' | 'remote'
-  allowed_ip?: string | null
+  allowed_cidr?: string | null
   listen_addr?: string
   config_path?: string
 }
@@ -132,13 +132,13 @@ export async function claimWebFirstTrust(): Promise<void> {
 
 export async function completeWebFirstTrust(
   newSecurityCode: string,
-  allowedIp: string,
-): Promise<{ source_allowed: boolean; allowed_ip: string }> {
+  allowedCidr: string,
+): Promise<{ source_allowed: boolean; allowed_cidr: string }> {
   const response = await fetch('/api/web-auth/complete-first-trust', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ new_security_code: newSecurityCode, allowed_ip: allowedIp }),
+    body: JSON.stringify({ new_security_code: newSecurityCode, allowed_cidr: allowedCidr }),
   })
   const payload = await response.json().catch(() => null)
   if (!response.ok || !payload?.ok) {
@@ -195,13 +195,13 @@ export async function getWebAdminSettings(): Promise<WebAdminSettings> {
 
 export async function updateWebAdminAccess(
   mode: 'local' | 'remote',
-  allowedIp: string | null,
+  allowedCidr: string | null,
 ): Promise<WebAccessUpdateResponse> {
   const response = await fetch('/api/web-admin/access', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode, allowed_ip: allowedIp }),
+    body: JSON.stringify({ mode, allowed_cidr: allowedCidr }),
   })
   const payload = await response.json().catch(() => null)
   if (!response.ok || !payload?.ok) {

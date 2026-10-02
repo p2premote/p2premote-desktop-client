@@ -23,11 +23,29 @@
           )
         }}</p>
         <template v-if="!webFirstTrustClaimedByOther && (webFirstTrustPending || webSecurityCodeMissing)">
-          <el-input
-            v-if="webFirstTrustPending"
-            v-model="firstTrustAllowedIp"
-            :placeholder="$t('app.web_auth.first_trust_allowed_ip')"
-          />
+          <div v-if="webFirstTrustPending" class="web-auth-field">
+            <label class="web-auth-control-label" for="first-trust-access-scope">{{ $t('app.web_auth.access_scope') }}</label>
+            <el-select id="first-trust-access-scope" v-model="firstTrustAccessScope">
+              <el-option :label="$t('app.web_auth.scope_single_ip')" value="single_ip" />
+              <el-option :label="$t('app.web_auth.scope_subnet')" value="subnet" />
+              <el-option :label="$t('app.web_auth.scope_any')" value="any" />
+            </el-select>
+          </div>
+          <div v-if="webFirstTrustPending && firstTrustAccessScope !== 'any'" class="web-auth-field">
+            <div class="web-auth-field-label">
+              <label for="first-trust-allowed-ip">{{ $t(firstTrustAccessScope === 'single_ip' ? 'app.web_auth.first_trust_allowed_ip' : 'app.web_auth.first_trust_allowed_subnet') }}</label>
+              <span v-if="firstTrustAccessScope === 'single_ip'">{{ $t('app.web_auth.first_trust_detected') }}</span>
+            </div>
+            <el-input
+              id="first-trust-allowed-ip"
+              v-model="firstTrustAccessValue"
+              inputmode="decimal"
+              autocomplete="off"
+              :placeholder="$t(firstTrustAccessScope === 'single_ip' ? 'app.web_auth.single_ip_placeholder' : 'app.web_auth.subnet_placeholder')"
+            />
+            <p class="web-auth-field-hint">{{ $t(firstTrustAccessScope === 'single_ip' ? 'app.web_auth.first_trust_allowed_ip_hint' : 'app.web_auth.first_trust_allowed_subnet_hint') }}</p>
+          </div>
+          <el-alert v-if="webFirstTrustPending && firstTrustAccessScope === 'any'" type="warning" :closable="false" :title="$t('app.web_auth.any_ip_warning')" />
           <el-input
             v-model="newWebSecurityCode"
             type="password"
@@ -40,8 +58,9 @@
             type="password"
             show-password
             :placeholder="$t('app.web_auth.confirm_placeholder')"
-            @keyup.enter="handleWebSecurityCodeChange"
+            @keyup.enter="prepareWebSecurityCodeChange"
           />
+          <p class="security-code-warning">{{ $t('app.web_auth.security_code_unrecoverable') }}</p>
         </template>
         <el-input
           v-else-if="!webFirstTrustClaimedByOther"
@@ -57,11 +76,26 @@
           type="primary"
           size="large"
           :loading="webAuthLoading"
-          @click="webFirstTrustClaimedByOther ? refreshWebAuthStatus() : (webFirstTrustPending || webSecurityCodeMissing) ? handleWebSecurityCodeChange() : handleWebUnlock()"
+          @click="webFirstTrustClaimedByOther ? refreshWebAuthStatus() : (webFirstTrustPending || webSecurityCodeMissing) ? prepareWebSecurityCodeChange() : handleWebUnlock()"
         >
           {{ $t(webFirstTrustClaimedByOther ? 'app.web_auth.first_trust_retry' : webFirstTrustPending ? 'app.web_auth.first_trust_set' : webSecurityCodeMissing ? 'app.web_auth.initial_setup' : 'app.web_auth.enter') }}
         </el-button>
       </div>
+      <el-dialog v-model="firstTrustConfirmVisible" :title="$t('app.web_auth.confirm_title')" width="480px" append-to-body :close-on-click-modal="false">
+        <div class="first-trust-summary">
+          <p>{{ $t('app.web_auth.confirm_intro') }}</p>
+          <dl>
+            <div><dt>{{ $t('app.web_auth.access_scope') }}</dt><dd>{{ firstTrustScopeSummary }}</dd></div>
+            <div><dt>{{ $t('app.web_auth.security_code') }}</dt><dd>{{ $t('app.web_auth.security_code_set_unrecoverable') }}</dd></div>
+          </dl>
+          <el-alert type="warning" :closable="false" :title="$t('app.web_auth.confirm_warning')" />
+          <el-checkbox v-model="firstTrustRiskConfirmed">{{ $t('app.web_auth.confirm_checkbox') }}</el-checkbox>
+        </div>
+        <template #footer>
+          <el-button @click="firstTrustConfirmVisible = false">{{ $t('app.web_auth.back_to_edit') }}</el-button>
+          <el-button type="primary" :disabled="!firstTrustRiskConfirmed" :loading="webAuthLoading" @click="handleWebSecurityCodeChange">{{ $t('app.web_auth.confirm_save') }}</el-button>
+        </template>
+      </el-dialog>
     </div>
     <div v-else class="app-container">
     <div v-if="forceUpdateVisible" class="force-update-overlay">
@@ -376,13 +410,23 @@
         <el-form-item :label="$t('app.web_admin.access_mode')">
           <el-radio-group v-model="webAccessMode">
             <el-radio value="local">{{ $t('app.web_admin.local_only') }}</el-radio>
-            <el-radio value="remote">{{ $t('app.web_admin.specific_ip') }}</el-radio>
+            <el-radio value="remote">{{ $t('app.web_admin.remote_access') }}</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item v-if="webAccessMode === 'remote'" :label="$t('app.web_admin.allowed_ip')">
-          <el-input v-model="webAllowedIp" placeholder="192.168.1.100" />
-          <p class="settings-tip">{{ $t('app.web_admin.allowed_ip_hint') }}</p>
-        </el-form-item>
+        <template v-if="webAccessMode === 'remote'">
+          <el-form-item :label="$t('app.web_auth.access_scope')">
+            <el-select v-model="webRemoteAccessScope" style="width: 100%">
+              <el-option :label="$t('app.web_auth.scope_single_ip')" value="single_ip" />
+              <el-option :label="$t('app.web_auth.scope_subnet')" value="subnet" />
+              <el-option :label="$t('app.web_auth.scope_any')" value="any" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="webRemoteAccessScope !== 'any'" :label="$t(webRemoteAccessScope === 'single_ip' ? 'app.web_auth.first_trust_allowed_ip' : 'app.web_auth.first_trust_allowed_subnet')">
+            <el-input v-model="webAllowedIp" :placeholder="$t(webRemoteAccessScope === 'single_ip' ? 'app.web_auth.single_ip_placeholder' : 'app.web_auth.subnet_placeholder')" />
+            <p class="settings-tip">{{ $t(webRemoteAccessScope === 'single_ip' ? 'app.web_auth.first_trust_allowed_ip_hint' : 'app.web_auth.first_trust_allowed_subnet_hint') }}</p>
+          </el-form-item>
+          <el-alert v-else type="warning" :closable="false" :title="$t('app.web_auth.any_ip_warning')" />
+        </template>
         <div class="web-admin-status-list">
           <div><span>{{ $t('app.web_admin.listen_addr') }}</span><code>{{ webListenAddr }}</code></div>
           <div><span>{{ $t('app.web_admin.current_source_ip') }}</span><code>{{ webCurrentSourceIp }}</code></div>
@@ -540,7 +584,19 @@ const webAuthenticated = ref(isTauriRuntime())
 const webSecurityCodeMissing = ref(false)
 const webFirstTrustPending = ref(false)
 const webFirstTrustClaimedByOther = ref(false)
+type WebAccessScope = 'single_ip' | 'subnet' | 'any'
+const firstTrustAccessScope = ref<WebAccessScope>('single_ip')
 const firstTrustAllowedIp = ref('')
+const firstTrustAllowedSubnet = ref('')
+const firstTrustConfirmVisible = ref(false)
+const firstTrustRiskConfirmed = ref(false)
+const firstTrustAccessValue = computed({
+  get: () => firstTrustAccessScope.value === 'subnet' ? firstTrustAllowedSubnet.value : firstTrustAllowedIp.value,
+  set: value => {
+    if (firstTrustAccessScope.value === 'subnet') firstTrustAllowedSubnet.value = value
+    else firstTrustAllowedIp.value = value
+  },
+})
 const webSecurityCode = ref('')
 const newWebSecurityCode = ref('')
 const confirmWebSecurityCode = ref('')
@@ -556,11 +612,53 @@ const webSecuritySettingsError = ref('')
 const webSecuritySettingsSaving = ref(false)
 const webAccessDialogVisible = ref(false)
 const webAccessMode = ref<'local' | 'remote'>('local')
+const webRemoteAccessScope = ref<WebAccessScope>('single_ip')
 const webAllowedIp = ref('')
 const webListenAddr = ref('127.0.0.1:48083')
 const webCurrentSourceIp = ref('')
 const webAccessSettingsError = ref('')
 const webAccessSettingsSaving = ref(false)
+
+function parseIpv4(value: string): number[] | null {
+  const parts = value.trim().split('.')
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part))) return null
+  const numbers = parts.map(Number)
+  return numbers.every(part => part >= 0 && part <= 255) ? numbers : null
+}
+
+function normalizeAccessCidr(scope: WebAccessScope, value: string): string | null {
+  if (scope === 'any') return '0.0.0.0/0'
+  if (scope === 'single_ip') {
+    const parts = parseIpv4(value)
+    return parts ? `${parts.join('.')}/32` : null
+  }
+  const [ipText, prefixText, ...extra] = value.trim().split('/')
+  const parts = parseIpv4(ipText || '')
+  const prefix = Number(prefixText)
+  if (!parts || extra.length || !/^\d{1,2}$/.test(prefixText || '') || prefix < 0 || prefix > 32) return null
+  const address = parts.reduce((total, part) => ((total << 8) | part) >>> 0, 0)
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+  const network = (address & mask) >>> 0
+  return `${[(network >>> 24) & 255, (network >>> 16) & 255, (network >>> 8) & 255, network & 255].join('.')}/${prefix}`
+}
+
+function cidrContains(cidr: string, ipText: string): boolean {
+  const [networkText, prefixText] = cidr.split('/')
+  const networkParts = parseIpv4(networkText)
+  const ipParts = parseIpv4(ipText)
+  const prefix = Number(prefixText)
+  if (!networkParts || !ipParts || prefix < 0 || prefix > 32) return false
+  const toNumber = (parts: number[]) => parts.reduce((total, part) => ((total << 8) | part) >>> 0, 0)
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+  return (toNumber(networkParts) & mask) === (toNumber(ipParts) & mask)
+}
+
+const firstTrustAllowedCidr = computed(() => normalizeAccessCidr(firstTrustAccessScope.value, firstTrustAccessValue.value))
+const firstTrustScopeSummary = computed(() => {
+  if (firstTrustAccessScope.value === 'any') return t('app.web_auth.scope_summary_any')
+  const cidr = firstTrustAllowedCidr.value || firstTrustAccessValue.value
+  return t(firstTrustAccessScope.value === 'single_ip' ? 'app.web_auth.scope_summary_single' : 'app.web_auth.scope_summary_subnet', { cidr })
+})
 let appBootstrapped = false
 const webAuthGateVisible = computed(
   () => !isTauriRuntime() && (
@@ -614,19 +712,40 @@ async function refreshWebAuthStatus() {
   }
 }
 
-async function handleWebSecurityCodeChange() {
+function prepareWebSecurityCodeChange() {
   if (webAuthLoading.value) return
   webAuthError.value = ''
   if (newWebSecurityCode.value !== confirmWebSecurityCode.value) {
     webAuthError.value = t('app.web_auth.code_mismatch')
     return
   }
+  if (newWebSecurityCode.value.length < 4 || newWebSecurityCode.value === '0000') {
+    webAuthError.value = t('app.web_auth.invalid_new_code')
+    return
+  }
+  if (webFirstTrustPending.value) {
+    if (!firstTrustAllowedCidr.value) {
+      webAuthError.value = t(firstTrustAccessScope.value === 'subnet'
+        ? 'app.web_auth.invalid_subnet'
+        : 'app.web_auth.first_trust_invalid_ip')
+      return
+    }
+    firstTrustRiskConfirmed.value = false
+    firstTrustConfirmVisible.value = true
+    return
+  }
+  void handleWebSecurityCodeChange()
+}
+
+async function handleWebSecurityCodeChange() {
+  if (webAuthLoading.value) return
   webAuthLoading.value = true
   try {
     if (webFirstTrustPending.value) {
-      const result = await completeWebFirstTrust(newWebSecurityCode.value, firstTrustAllowedIp.value.trim())
+      const result = await completeWebFirstTrust(newWebSecurityCode.value, firstTrustAllowedCidr.value!)
+      firstTrustConfirmVisible.value = false
       if (!result.source_allowed) {
-        webAccessReconnectMessage.value = t('app.web_admin.reconnect_remote', { ip: result.allowed_ip })
+        webAccessReconnectMessage.value = t('app.web_admin.reconnect_remote', { ip: result.allowed_cidr })
         webAccessDisconnected.value = true
         return
       }
@@ -695,7 +814,17 @@ async function openWebAccessDialog() {
   try {
     const settings = await getWebAdminSettings()
     webAccessMode.value = settings.mode
-    webAllowedIp.value = settings.allowed_ip || ''
+    const cidr = settings.allowed_cidr || ''
+    if (cidr === '0.0.0.0/0') {
+      webRemoteAccessScope.value = 'any'
+      webAllowedIp.value = ''
+    } else if (cidr.endsWith('/32')) {
+      webRemoteAccessScope.value = 'single_ip'
+      webAllowedIp.value = cidr.slice(0, -3)
+    } else {
+      webRemoteAccessScope.value = 'subnet'
+      webAllowedIp.value = cidr
+    }
     webListenAddr.value = settings.listen_addr
     webCurrentSourceIp.value = settings.source_ip
     webAccessDialogVisible.value = true
@@ -707,10 +836,16 @@ async function openWebAccessDialog() {
 async function submitWebAccessChange() {
   if (webAccessSettingsSaving.value) return
   webAccessSettingsError.value = ''
-  const allowedIp = webAccessMode.value === 'remote' ? webAllowedIp.value.trim() : null
+  const allowedCidr = webAccessMode.value === 'remote'
+    ? normalizeAccessCidr(webRemoteAccessScope.value, webAllowedIp.value)
+    : null
+  if (webAccessMode.value === 'remote' && !allowedCidr) {
+    webAccessSettingsError.value = t(webRemoteAccessScope.value === 'subnet' ? 'app.web_auth.invalid_subnet' : 'app.web_auth.first_trust_invalid_ip')
+    return
+  }
   const sourceWillBeAllowed = webAccessMode.value === 'local'
     ? ['127.0.0.1', '::1'].includes(webCurrentSourceIp.value)
-    : allowedIp === '0.0.0.0' || allowedIp === webCurrentSourceIp.value
+    : cidrContains(allowedCidr!, webCurrentSourceIp.value)
   if (!sourceWillBeAllowed) {
     try {
       await ElMessageBox.confirm(
@@ -725,7 +860,7 @@ async function submitWebAccessChange() {
 
   webAccessSettingsSaving.value = true
   try {
-    const result = await updateWebAdminAccess(webAccessMode.value, allowedIp)
+    const result = await updateWebAdminAccess(webAccessMode.value, allowedCidr)
     webAccessDialogVisible.value = false
     if (!result.changed) {
       ElMessage.success(t('app.web_admin.no_change'))
@@ -745,7 +880,7 @@ async function submitWebAccessChange() {
     } else {
       webAccessReconnectMessage.value = result.mode === 'local'
         ? t('app.web_admin.reconnect_local')
-        : t('app.web_admin.reconnect_remote', { ip: result.allowed_ip || '' })
+        : t('app.web_admin.reconnect_remote', { ip: result.allowed_cidr || '' })
       webAccessDisconnected.value = true
     }
   } catch (error) {
@@ -1878,6 +2013,93 @@ watch(
 .web-auth-card .el-button,
 .web-auth-card .el-input {
   width: 100%;
+}
+
+.web-auth-field {
+  width: 100%;
+}
+
+.web-auth-field .el-select {
+  width: 100%;
+}
+
+.web-auth-control-label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--fluent-text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.web-auth-field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  color: var(--fluent-text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.web-auth-field-label label {
+  font-weight: 600;
+}
+
+.web-auth-field-label span {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: var(--fluent-radius-pill);
+  background: var(--fluent-accent-light);
+  color: var(--fluent-accent-text);
+  font-size: 11px;
+}
+
+.web-auth-card .web-auth-field-hint {
+  margin-top: 7px;
+  color: var(--fluent-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.web-auth-card .security-code-warning {
+  width: 100%;
+  margin-top: -8px;
+  color: var(--fluent-warning);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.first-trust-summary {
+  display: grid;
+  gap: 16px;
+}
+
+.first-trust-summary dl {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--fluent-radius-md);
+  background: var(--fluent-bg-subtle);
+}
+
+.first-trust-summary dl > div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.first-trust-summary dt {
+  color: var(--fluent-text-secondary);
+}
+
+.first-trust-summary dd {
+  color: var(--fluent-text);
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .text-context-menu {

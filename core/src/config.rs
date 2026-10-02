@@ -55,10 +55,11 @@ pub struct MachineConfig {
     /// service 侧仅持久化与缓存，供批次4 后端 message 按语言选词。
     #[serde(default)]
     pub locale: Option<String>,
-    /// 允许访问 Web UI 的单个远端 IP。空值表示仅允许本机回环地址。
+    /// 允许访问 Web UI 的远端 IPv4 CIDR。空值表示仅允许本机回环地址。
+    /// 兼容旧配置中的单个 IPv4；加载时按 /32 处理。
     #[serde(default)]
     pub web_admin_allowed_ip: Option<String>,
-    /// Web UI 安全码。启用远端访问时必须配置；不限制复杂度。
+    /// Web UI 安全码摘要（新配置为 `sha256:<hex>`；兼容读取旧版明文）。
     #[serde(default)]
     pub web_admin_security_code: Option<String>,
     /// 是否启动 Web UI 监听。默认开启，关闭后需重启 service 才会生效。
