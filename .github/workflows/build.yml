@@ -30,9 +30,9 @@
 # 签名与公证需导入证书 secrets（APPLE_SIGNING_IDENTITY /
 # APPLE_NOTARY_KEYCHAIN_PROFILE）后去掉 --unsigned，或继续用专用 Mac 编译机。
 #
-# 未包含的平台（按需自行添加 job）：
-#   - Linux aarch64：build-linux.sh --arch aarch64，前置
-#     docker/setup-qemu-action@v3 注册 binfmt（QEMU 全模拟编译很慢）。
+# Linux aarch64 使用 build-linux.sh --arch aarch64 走与本地相同的交叉架构
+# 容器构建链路，并由 setup-qemu-action 注册 binfmt；构建后分别启动裸二进制和
+# Docker 镜像做 QEMU smoke test。QEMU 全模拟编译较慢，因此独立于 x86_64 job。
 #
 # Windows 7 包（windows-win7-x64 job）：独立工具链线（rust 1.77.2 +
 # tauri.win7.conf.json + WebView2 v109 离线安装器 + RustDeskTinyLegacy）。
@@ -301,6 +301,115 @@ jobs:
             artifacts/linux-docker/*.tar
           if-no-files-found: error
 
+  linux-headless-aarch64:
+    name: Linux headless + Docker ARM64（QEMU）
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      RUSTUP_DIST_SERVER: https://static.rust-lang.org
+      RUSTUP_UPDATE_ROOT: https://static.rust-lang.org/rustup
+      COMPILE_IMAGE: p2premote-linux-compile:debian10-rust1.77-v1-arm64
+    steps:
+      - name: Checkout p2premote-desktop-client
+        uses: actions/checkout@v4
+
+      - name: Checkout p2premote-punch-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-punch-rs
+          path: p2premote-punch-rs
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Checkout p2premote-wg-ffi
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-wg-ffi
+          path: p2premote-wg-ffi
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Move sibling repos to ../
+        run: |
+          mv "$GITHUB_WORKSPACE/p2premote-punch-rs" "$GITHUB_WORKSPACE/../p2premote-punch-rs"
+          mv "$GITHUB_WORKSPACE/p2premote-wg-ffi" "$GITHUB_WORKSPACE/../p2premote-wg-ffi"
+
+      # 同时供 builder 容器、裸 ARM64 ELF 和最终运行镜像使用。
+      - name: Enable ARM64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Cache ARM64 compile image
+        id: compile-image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/p2premote-linux-compile-image-arm64.tar
+          key: compile-image-arm64-${{ hashFiles('packaging/linux/builder/**', 'scripts/make_compile_image.sh') }}
+
+      - name: Restore ARM64 compile image
+        if: steps.compile-image.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/p2premote-linux-compile-image-arm64.tar
+
+      - name: Build ARM64 binary packages and Docker image
+        env:
+          RUST_CACHE_ROOT: ${{ runner.temp }}/rust-cache-arm64
+        run: ./scripts/build-linux.sh -v "${{ needs.resolve-version.outputs.version }}" --arch aarch64
+
+      - name: Save ARM64 compile image for next run
+        if: steps.compile-image.outputs.cache-hit != 'true'
+        run: docker save -o /tmp/p2premote-linux-compile-image-arm64.tar "$COMPILE_IMAGE"
+
+      - name: QEMU smoke test ARM64 binary tarball
+        run: |
+          mapfile -t tarballs < <(find artifacts/linux-headless -maxdepth 1 -type f \
+            -name 'p2premote-headless_*_aarch64-linux-gnu.tar.gz')
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one ARM64 headless tarball, found ${#tarballs[@]}"
+            exit 1
+          fi
+          smoke_root="$(mktemp -d)"
+          tar -xzf "${tarballs[0]}" -C "$smoke_root"
+          service="$smoke_root/p2premote-headless/resources/p2premote-service"
+          file "$service" | tee /tmp/p2premote-arm64-file.txt
+          grep -q 'ARM aarch64' /tmp/p2premote-arm64-file.txt
+          set +e
+          P2PREMOTE_INSTALL_ROOT="$smoke_root/p2premote-headless" \
+            timeout --signal=TERM 10s "$service" --foreground \
+            > /tmp/p2premote-arm64-service.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/p2premote-arm64-service.log
+          if [[ $status -ne 124 ]]; then
+            echo "::error::ARM64 service exited before the QEMU smoke-test timeout (status $status)"
+            exit 1
+          fi
+
+      - name: QEMU smoke test ARM64 Docker image
+        env:
+          IMAGE_TAG: p2premote/client:${{ needs.resolve-version.outputs.version }}
+        run: |
+          container=p2premote-arm64-smoke
+          cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker image inspect "$IMAGE_TAG" --format '{{.Architecture}}' | grep -Fx arm64
+          docker run -d --name "$container" --platform linux/arm64 "$IMAGE_TAG"
+          sleep 10
+          docker logs "$container"
+          if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != true ]]; then
+            docker inspect -f 'exit={{.State.ExitCode}} error={{.State.Error}}' "$container"
+            echo "::error::ARM64 Docker container exited during the QEMU smoke test"
+            exit 1
+          fi
+
+      - name: Upload ARM64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-headless-aarch64
+          path: |
+            artifacts/linux-headless/
+            artifacts/linux-docker/*.tar
+          if-no-files-found: error
+
   linux-gui-x86_64:
     name: Linux GUI x86_64（deb）
     needs: resolve-version
@@ -448,6 +557,7 @@ jobs:
       - windows-x64
       - windows-win7-x64
       - linux-headless-x86_64
+      - linux-headless-aarch64
       - linux-gui-x86_64
       - macos-universal
     runs-on: ubuntu-latest
