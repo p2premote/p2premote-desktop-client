@@ -102,11 +102,8 @@ fn resolve_device_type<'a>(release_target: Option<&str>, host_os: &'a str) -> &'
     match release_target {
         Some("windows-win7-x64") => "win7",
         Some("linux-gui-x64") => "linux-gui",
-        Some(target)
-            if target.starts_with("linux-headless-") || target.starts_with("linux-docker-") =>
-        {
-            "linux-headless"
-        }
+        Some(target) if target.starts_with("linux-docker-") => "linux-headless-docker",
+        Some(target) if target.starts_with("linux-headless-") => "linux-headless",
         _ => match host_os {
             // The regular Windows package targets Windows 10+; keep the requested
             // client category stable even when it runs on Windows 11.
@@ -1087,7 +1084,11 @@ mod tests {
         );
         assert_eq!(
             resolve_device_type(Some("linux-docker-x64"), "linux"),
-            "linux-headless"
+            "linux-headless-docker"
+        );
+        assert_eq!(
+            resolve_device_type(Some("linux-docker-aarch64"), "linux"),
+            "linux-headless-docker"
         );
     }
 

@@ -110,6 +110,7 @@ case "$TARGET_ARCH" in
     TARGET_LABEL="aarch64-linux-gnu"
     DEB_ARCH="arm64"
     RPM_ARCH="aarch64"
+    RELEASE_TARGET="linux-headless-aarch64"
     ;;
   x86_64|amd64)
     LINUX_ARCH="amd64"
@@ -117,6 +118,7 @@ case "$TARGET_ARCH" in
     TARGET_LABEL="x86_64-linux-gnu"
     DEB_ARCH="amd64"
     RPM_ARCH="x86_64"
+    RELEASE_TARGET="linux-headless-x64"
     ;;
   *)
     echo "Unsupported Linux host architecture: $(uname -m)" >&2
@@ -261,7 +263,9 @@ fi
 echo "==> Building Rust headless binaries ($RUST_TARGET)"
 (
   cd "$REPO_ROOT"
-  P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" cargo build --release --target "$RUST_TARGET" -p p2premote-service -p p2premote-cli
+  P2PREMOTE_CLIENT_VERSION="$BUILD_VERSION" \
+    P2PREMOTE_RELEASE_TARGET="$RELEASE_TARGET" \
+    cargo build --release --target "$RUST_TARGET" -p p2premote-service -p p2premote-cli
 )
 
 rust_release_dir() {

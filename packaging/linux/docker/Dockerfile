@@ -1,20 +1,19 @@
-# p2premote Linux 客户端 Docker 镜像（多阶段构建 + distroless 运行时）
+# p2premote Linux 客户端 Docker 镜像（独立编译 + distroless 运行时）
 #
-# 阶段 1（alpine）负责解包 headless tgz 并装配静态 busybox 命令集（含 ip
+# 阶段 1（alpine）负责装配 Docker 专用产物和静态 busybox 命令集（含 ip
 # 与 sh）；阶段 2（distroless cc-debian13）只保留运行时必需文件，基底不含
 # shell 与包管理器，常用命令由静态 busybox 提供，体积较 ubuntu:22.04
 # 单阶段方案（~140MB）减少约六成。
 #
-# 复用 _build-linux-headless.sh 产出的 GNU/glibc tgz 产物，避免在 Docker
-# builder 里重新装配 Rust + Node + musl 工具链。仅支持 host 网络模式：
+# 二进制由 _build-linux-docker.sh 使用 linux-docker-* release target 独立
+# 编译，不复用裸机 headless 包。仅支持 host 网络模式：
 # bridge 模式下 Web Admin 看到的来源 IP 会塌缩为 docker0 网关地址，导致
 # web_admin_allowed_ip 白名单依赖容器看到的真实来源地址。
 #
-# 构建上下文需放置 tgz 产物，默认文件名 p2premote-headless.tar.gz，
-# 可通过 --build-arg P2P_HEADLESS_TGZ=<文件名> 覆盖。建议使用
-# scripts/build-linux.sh 自动完成编译、四格式打包与上下文准备。
+# 构建上下文中的 package/ 由 _build-linux-docker.sh 生成。建议使用
+# scripts/build-linux.sh 或 scripts/_build-linux-docker.sh 构建。
 
-# 阶段 1：解包与装配。产物为 /opt/p2premote 目录树与静态 busybox。
+# 阶段 1：装配 Docker 专用编译产物与静态 busybox。
 FROM alpine:3.20 AS assemble
 
 ARG http_proxy
@@ -29,14 +28,12 @@ ARG HTTPS_PROXY
 # 不依赖系统。
 RUN apk add --no-cache busybox-static
 
-ARG P2P_HEADLESS_TGZ=p2premote-headless.tar.gz
-COPY ${P2P_HEADLESS_TGZ} /tmp/p2premote-headless.tar.gz
+RUN set -eux; \
+    mkdir -p /opt/p2premote
+
+COPY package/ /opt/p2premote/
 
 RUN set -eux; \
-    mkdir -p /opt/p2premote; \
-    tar -xzf /tmp/p2premote-headless.tar.gz -C /tmp; \
-    cp -a /tmp/p2premote-headless/. /opt/p2premote/; \
-    rm -rf /tmp/p2premote-headless /tmp/p2premote-headless.tar.gz; \
     # 必需二进制缺失应当让 build 失败，而不是吞掉错误
     chmod 755 \
         /opt/p2premote/resources/p2premote-service \
@@ -70,10 +67,6 @@ WORKDIR /opt/p2premote
 # 固定安装根目录，保证 core 的资源、配置、日志、run 目录解析稳定。
 # 参考 core/src/config.rs 的 linux_install_root_dir。
 ENV P2PREMOTE_INSTALL_ROOT=/opt/p2premote
-
-# Docker 与直接安装的 Headless 包使用同一二进制，通过运行时目标区分版本策略。
-ARG P2PREMOTE_UPDATE_TARGET=linux-docker-x64
-ENV P2PREMOTE_UPDATE_TARGET=${P2PREMOTE_UPDATE_TARGET}
 
 # 首次信任（TOFU）引导：无 GUI 的 NAS 场景没有本机浏览器可用，全新部署
 # （未配置安全码且未配置白名单）时 Web Admin 直接监听 0.0.0.0，首个远程

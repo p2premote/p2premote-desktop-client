@@ -232,7 +232,7 @@ jobs:
           if-no-files-found: error
 
   linux-headless-x86_64:
-    name: Linux headless x86_64（tar.gz/deb/rpm/docker）
+    name: Linux headless + Docker x86_64（独立编译）
     needs: resolve-version
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -279,9 +279,9 @@ jobs:
         if: steps.compile-image.outputs.cache-hit == 'true'
         run: docker load -i /tmp/p2premote-linux-compile-image.tar
 
-      # 宿主机只需 git + docker；前端/Go/Rust 全部在容器内完成，
-      # 一次编译派生 tar.gz、deb、rpm、docker 镜像 tar 四种格式
-      - name: Build all four formats
+      # 裸机 headless 与 Docker 使用不同的 P2PREMOTE_RELEASE_TARGET，分别
+      # 编译 service/CLI；依赖下载缓存仍然共享。
+      - name: Build native packages and Docker image
         env:
           # 脚本默认 /mnt/n/rust-cache 是本机 WSL 的 N 盘挂载，CI 改用 runner
           # 临时目录（runner 上下文只能用于 step 级 env）
@@ -296,7 +296,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-headless-x86_64
-          path: artifacts/linux-headless/
+          path: |
+            artifacts/linux-headless/
+            artifacts/linux-docker/*.tar
           if-no-files-found: error
 
   linux-gui-x86_64:

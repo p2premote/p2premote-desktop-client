@@ -73,7 +73,18 @@ pub fn detect_clone_with(
 }
 
 pub fn detect_clone(config: &mut MachineConfig) -> CloneDetectionResult {
+    // Docker images have their own compile-time release target. Their stable
+    // identity lives in the mounted data volume; host DMI is neither a container
+    // identity nor stable when a container is moved to another node.
+    if is_docker_release() {
+        return CloneDetectionResult::Unsupported;
+    }
     detect_clone_with(config, collect_clone_fingerprint())
+}
+
+fn is_docker_release() -> bool {
+    option_env!("P2PREMOTE_RELEASE_TARGET")
+        .is_some_and(|target| target.starts_with("linux-docker-"))
 }
 
 #[cfg(windows)]

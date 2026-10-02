@@ -19,6 +19,8 @@ target/windows-win7-x64/        artifacts/windows-win7-x64/
 target/linux-gui-x64/           artifacts/linux-gui-x64/
 target/linux-headless-amd64/    artifacts/linux-headless/
 target/linux-headless-arm64/    artifacts/linux-headless/
+target/linux-docker-amd64/      artifacts/linux-docker/
+target/linux-docker-arm64/      artifacts/linux-docker/
 target/macos-universal/         artifacts/macos-universal/
 ```
 
@@ -103,7 +105,7 @@ GUI 的设备详情上报 `<version>-<commit-id>`；deb 的包版本仍为 `<ver
 ./scripts/build-linux.sh -v 1.6.4
 ```
 
-本机只需要 Docker：脚本会自动在 Debian 10 / glibc 2.28 基线的 builder 容器内完成唯一一次前端、Go、Rust 编译，宿主机工具链不参与编译；同一份 headless 产物随后派生出 tar.gz、deb、rpm，并复用 tar.gz 构建 Docker 镜像后导出 tar。首次运行会自动构建 builder 镜像，工具链下载较慢时可通过 `--proxy http://127.0.0.1:<port>` 指定代理，脚本会自动把 WSL localhost 映射到 Docker 宿主机。也可以使用 `P2PREMOTE_BUILDER_PROXY` 或标准的 `HTTPS_PROXY`、`HTTP_PROXY` 环境变量。
+本机只需要 Docker：脚本会自动在 Debian 10 builder 容器内构建。裸机 headless 与 Docker 使用不同的 `P2PREMOTE_RELEASE_TARGET` 独立编译 service/CLI；Docker 不再复用 headless tar。两种构建共享依赖下载缓存，连续构建时复用已经生成的前端。首次运行会自动构建 builder 镜像，工具链下载较慢时可通过 `--proxy http://127.0.0.1:<port>` 指定代理，脚本会自动把 WSL localhost 映射到 Docker 宿主机。也可以使用 `P2PREMOTE_BUILDER_PROXY` 或标准的 `HTTPS_PROXY`、`HTTP_PROXY` 环境变量。
 
 如果官方 Go 或 Node.js 下载站点连接不稳定，也可以分别设置 `P2PREMOTE_GO_DOWNLOAD_BASE` 和 `P2PREMOTE_NODE_DOWNLOAD_BASE` 覆盖下载根地址。下载命令默认强制 HTTP/1.1，并启用重试、断点续传和低速超时，避免 HTTP/2 中断后长时间卡住。
 
@@ -111,19 +113,19 @@ GUI 的设备详情上报 `<version>-<commit-id>`；deb 的包版本仍为 `<ver
 artifacts/linux-headless/p2premote-headless_<version>-<git-sha>_x86_64-linux-gnu.tar.gz
 artifacts/linux-headless/p2premote-headless_<version>-<git-sha>_amd64.deb
 artifacts/linux-headless/p2premote-headless-<version>-1.<git-sha>.x86_64.rpm
-artifacts/linux-headless/p2premote-headless-docker_<version>-<git-sha>_x86_64-linux-gnu.tar
+artifacts/linux-docker/p2premote-headless-docker_<version>-<git-sha>_x86_64-linux-gnu.tar
 ```
 
 镜像默认标签为 `p2premote/client:<version>`，可通过 `--tag` 覆盖。aarch64 构建会把文件名中的架构替换为 `aarch64-linux-gnu`、`arm64` 和 `aarch64`。
 
-如果只需要复用已经生成的 headless 压缩包构建镜像，可使用兼容参数：
+可以只构建其中一种发布形式：
 
 ```bash
-./scripts/build-linux.sh -v 1.6.4 --no-tgz-build \
-  --tgz-path artifacts/linux-headless/p2premote-headless_1.6.4-<git-sha>_x86_64-linux-gnu.tar.gz
+./scripts/build-linux.sh -v 1.6.4 --headless-only
+./scripts/build-linux.sh -v 1.6.4 --docker-only
 ```
 
-`_build-linux-headless.sh` 仍保留为只生成 tar.gz、deb、rpm 的底层构建入口；新发布流程统一使用 `build-linux.sh`。
+`_build-linux-headless.sh` 生成 tar.gz、deb、rpm；`_build-linux-docker.sh` 独立编译并生成镜像 tar；完整发布流程统一使用 `build-linux.sh`。
 
 ### aarch64
 
