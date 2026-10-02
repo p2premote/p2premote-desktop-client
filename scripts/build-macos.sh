@@ -239,39 +239,31 @@ lipo "$app_path/Contents/Resources/resources/RustDeskTiny.app/Contents/MacOS/Rus
 codesign --verify --deep --strict --verbose=2 "$app_path"
 
 mkdir -p "$dist_dir"
-dmg_path="$dist_dir/p2pRemote_${version}_macos-universal.dmg"
-rm -f "$dmg_path"
-hdiutil create -volname p2pRemote -srcfolder "$app_path" -ov -format UDZO "$dmg_path"
 
 if [[ "$unsigned" == 1 ]]; then
   echo "Unsigned test build requested; skipping Apple notarization and Gatekeeper assessment."
-elif [[ -n "${APPLE_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
-  xcrun notarytool submit "$dmg_path" \
-    --keychain-profile "$APPLE_NOTARY_KEYCHAIN_PROFILE" --wait
 else
-  : "${APPLE_ID:?Set APPLE_NOTARY_KEYCHAIN_PROFILE or APPLE_ID}"
-  : "${APPLE_TEAM_ID:?Set APPLE_TEAM_ID for notarization}"
-  : "${APPLE_APP_PASSWORD:?Set APPLE_APP_PASSWORD for notarization}"
-  xcrun notarytool submit "$dmg_path" \
-    --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-    --password "$APPLE_APP_PASSWORD" --wait
-fi
-
-if [[ "$unsigned" == 0 ]]; then
-  xcrun stapler staple "$dmg_path"
-  xcrun stapler validate "$dmg_path"
-  if [[ -n "$app_path" ]]; then
-    xcrun stapler staple "$app_path"
-    xcrun stapler validate "$app_path"
-    spctl --assess --type execute -v "$app_path"
+  # notarytool 不收裸 .app bundle，须以 zip 提交；公证通过后 staple 回 app 本体。
+  notary_zip="$build_dir/p2pRemote_notary.zip"
+  ditto -c -k --keepParent "$app_path" "$notary_zip"
+  if [[ -n "${APPLE_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
+    xcrun notarytool submit "$notary_zip" \
+      --keychain-profile "$APPLE_NOTARY_KEYCHAIN_PROFILE" --wait
+  else
+    : "${APPLE_ID:?Set APPLE_NOTARY_KEYCHAIN_PROFILE or APPLE_ID}"
+    : "${APPLE_TEAM_ID:?Set APPLE_TEAM_ID for notarization}"
+    : "${APPLE_APP_PASSWORD:?Set APPLE_APP_PASSWORD for notarization}"
+    xcrun notarytool submit "$notary_zip" \
+      --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_APP_PASSWORD" --wait
   fi
-  spctl --assess --type open --context context:primary-signature -v "$dmg_path"
+  xcrun stapler staple "$app_path"
+  xcrun stapler validate "$app_path"
+  spctl --assess --type execute -v "$app_path"
 fi
 
-echo "Created $dmg_path"
-
-# ---- pkg 安装包（正式分发格式：app + LaunchDaemon，postinstall 以 root 完成
-# machine 目录/服务安装并启动；DMG 仅保留作内部测试） ----
+# ---- pkg 安装包（唯一分发格式：app + LaunchDaemon，postinstall 以 root 完成
+# machine 目录/服务安装并启动） ----
 # 执行位兜底：Windows 检出的工作树可能丢失 postinstall 的 +x，pkgbuild 原样
 # 打包会让安装器无法执行脚本（PKInstallErrorDomain 112）。
 chmod +x "$repo_dir/scripts/macos-pkg/postinstall"

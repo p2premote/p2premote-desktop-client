@@ -7,7 +7,7 @@
 | 产物 | 架构 | 编译入口 |
 | --- | --- | --- |
 | Windows GUI 安装包 | 当前 Windows 主机架构（通常为 x64） | `scripts/build-windows.ps1` |
-| macOS GUI DMG | Universal（x86_64 + arm64） | `scripts/build-macos.sh` |
+| macOS GUI PKG | Universal（x86_64 + arm64） | `scripts/build-macos.sh` |
 | Linux GUI DEB、AppImage | x86_64 | `scripts/build-linux-gui.sh -v <version>` |
 | Linux Headless 裸压缩包、DEB、RPM、Docker 镜像 tar | x86_64 / aarch64 | `scripts/build-linux.sh` |
 
@@ -58,7 +58,7 @@ export APPLE_NOTARY_KEYCHAIN_PROFILE='p2premote-notary'
 ./scripts/build-macos.sh -v 1.11.2
 ```
 
-脚本会构建 x86_64 与 arm64 的 service、CLI、WireGuard 数据面动态库（`libp2premote-wg.dylib`）及 Tauri GUI，合并为 Universal App，随后签名、公证并生成 `artifacts/macos-universal/p2pRemote_<version>_macos-universal.dmg`。编译缓存位于 `target/macos-universal`。没有发布证书的内部测试机可使用 `--unsigned` 生成 ad-hoc 签名、未经公证的 DMG；该产物只用于测试，不应对外分发：
+脚本会构建 x86_64 与 arm64 的 service、CLI、WireGuard 数据面动态库（`libp2premote-wg.dylib`）及 Tauri GUI，合并为 Universal App，随后签名、公证并打包生成 `artifacts/macos-universal/p2pRemote_<version>_macos-universal.pkg`。编译缓存位于 `target/macos-universal`。没有发布证书的内部测试机可使用 `--unsigned` 生成 ad-hoc 签名、未经公证的 PKG；该产物只用于测试，不应对外分发：
 
 ```bash
 ./scripts/build-macos.sh -v 1.11.2 --no-sccache --unsigned

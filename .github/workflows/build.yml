@@ -374,7 +374,7 @@ jobs:
           if-no-files-found: error
 
   macos-universal:
-    name: macOS universal DMG（unsigned 测试包）
+    name: macOS universal PKG（unsigned 测试包）
     needs: resolve-version
     runs-on: macos-15
     timeout-minutes: 90
@@ -426,10 +426,10 @@ jobs:
       # 自动按 scripts/rustdesktiny-artifacts.env 钉版下载并校验 SHA-256
       # （1.5.1 的 aarch64 Release 资产损坏，macOS 目前钉在 1.5.0）。
       # CI 无证书，只能出 --unsigned 测试包
-      - name: Build unsigned DMG
+      - name: Build unsigned PKG
         run: ./scripts/build-macos.sh -v "${{ needs.resolve-version.outputs.version }}" --no-sccache --unsigned
 
-      - name: Upload DMG
+      - name: Upload PKG
         uses: actions/upload-artifact@v4
         with:
           name: macos-universal-unsigned

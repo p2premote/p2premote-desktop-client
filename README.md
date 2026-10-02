@@ -35,7 +35,7 @@ p2pRemote 桌面客户端是 p2pRemote P2P 远程访问产品中功能最完整�
 | 平台 | 形态 |
 | --- | --- |
 | Windows 10 / 11(另提供 Win7 兼容包) | NSIS 安装包 |
-| macOS(Intel + Apple Silicon) | Universal DMG |
+| macOS(Intel + Apple Silicon) | Universal PKG 安装包 |
 | Linux 桌面 | DEB / AppImage(x86_64) |
 | Linux 无头服务器 | tar.gz / DEB / RPM / Docker 镜像(x86_64 / aarch64) |
 
@@ -115,7 +115,7 @@ p2pRemote is a P2P remote-access product; this desktop client can both initiate 
 
 **Features**: UDP hole punching with TCP fallback · WireGuard virtual LAN with virtual IPs · embedded remote desktop (RustDeskTiny) · invite codes / one-time device passwords · LAN subnet exposure · TCP service forwarding · browser-based web admin · iperf3-based speed test · system service, CLI and notifier · bilingual (简体中文 / English) UI with dark theme.
 
-**Platforms**: Windows 10/11 (plus a Win7 build), macOS universal DMG, Linux desktop (DEB / AppImage), headless Linux (tar.gz / DEB / RPM / Docker, x86_64 & aarch64).
+**Platforms**: Windows 10/11 (plus a Win7 build), macOS universal PKG installer, Linux desktop (DEB / AppImage), headless Linux (tar.gz / DEB / RPM / Docker, x86_64 & aarch64).
 
 **Ports (inbound)**: 48083/TCP web admin (loopback by default, 0.0.0.0 when remote access is allowed) · 41119/TCP + 48082/TCP tunnel health/control (legacy compat) · 48084/TCP speed-test server (during tests only) · 41118/UDP WireGuard data plane (loopback userspace engine on Windows) · 21121/TCP is RustDeskTiny's own listener. GUI↔service IPC uses named pipes / Unix sockets.
 
