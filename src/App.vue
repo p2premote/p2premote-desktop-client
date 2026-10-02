@@ -233,6 +233,9 @@
                   <button type="button" class="settings-item clickable" @click="handleOpenWebsite">
                     <span>{{ $t('app.settings.visit_website') }}</span><el-icon><LinkIcon /></el-icon>
                   </button>
+                  <button type="button" class="settings-item clickable" @click="handleOpenGitHub">
+                    <span>{{ $t('app.settings.visit_github') }}</span><el-icon><LinkIcon /></el-icon>
+                  </button>
                   <button v-if="!isTauriRuntime() && webAuthRequired" type="button" class="settings-item clickable" @click="handleWebAdminLogout">
                     <span>{{ $t('app.web_auth.logout') }}</span>
                   </button>
@@ -1613,6 +1616,14 @@ async function handleOpenWebsite() {
     await openExternal(SITE_ORIGIN)
   } catch (e) {
     ElMessage.error(t('app.actions.open_website_failed', { error: e }))
+  }
+}
+
+async function handleOpenGitHub() {
+  try {
+    await openExternal('https://github.com/p2premote/p2premote-desktop-client')
+  } catch (e) {
+    ElMessage.error(t('app.actions.open_github_failed', { error: e }))
   }
 }
 
