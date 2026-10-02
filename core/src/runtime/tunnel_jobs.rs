@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// 被动端关闭 health 连接（FIN 已写入本机内核）后，留给 FIN 穿过 userspace
+/// WG/gonc UDP 数据面的时间；立即拆数据面会把 FIN 一起丢掉，主动端就只能等
+/// 60s Degraded + 300s 宽限超时。单会话（stop_wgvpn_job）与批量停止
+/// （cancel_all_wgvpn_jobs：登出/服务停止）共用同一取值。
+const FIN_DRAIN_WAIT_SECS: u64 = 3;
+
 /// 启动 wgvpn job（fire-and-forget）：去重 + 建 watch + spawn 重试任务。
 pub(super) fn start_wgvpn_job(
     shared: &Arc<Mutex<SharedRuntimeState>>,
@@ -634,8 +640,8 @@ pub(super) async fn stop_wgvpn_job(
             if handle.close_peer_connection(peer_device_id).await {
                 // FIN 此刻只写入了本机内核，还要穿过 userspace WG/gonc UDP 数据面
                 // 才能到达主动端；立即拆除数据面会把 FIN 一起丢掉，主动端只能
-                // 等 60s Degraded + 300s 宽限超时清理。等待 3s 让 FIN 先行通过。
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                // 等 60s Degraded + 300s 宽限超时清理。等待让 FIN 先行通过。
+                tokio::time::sleep(std::time::Duration::from_secs(FIN_DRAIN_WAIT_SECS)).await;
             }
         }
     }
@@ -768,10 +774,39 @@ pub(super) async fn cancel_all_wgvpn_jobs(shared: &Arc<Mutex<SharedRuntimeState>
     }
     // 同步停止所有活跃会话，确保登出后隧道立即断开。
     if let Ok(config) = load_machine_config() {
-        let peer_ids: Vec<i64> = wgvpn_flow::snapshot_sessions()
-            .into_iter()
-            .map(|s| s.peer_device_id)
+        let sessions = wgvpn_flow::snapshot_sessions();
+        // 被动会话没有 Stop 消息通道（stop_wgvpn 只替主动端通知对端）。service
+        // 停止/重启/关机/登出都会走到这里：必须先在 health server 上关闭对端
+        // 连接，让 TCP FIN 穿过数据面到达主动端——对端立即断开，而不是显示
+        // "恢复隧道中"等 60s 心跳超时 + 300s 宽限后才自愈。FIN 先行、再统一
+        // 拆数据面，与 stop_wgvpn_job 的单会话路径一致（立即拆会把 FIN 一起丢掉）。
+        // 多个被动会话必须并行关闭：close_peer_connection 各带 3s shutdown
+        // 确认超时，串行会把最坏等待叠成 3s × N，明显拖慢登出与服务停止。
+        let health_server = shared.lock().health_server_handle.clone();
+        let passive_peers: Vec<i64> = sessions
+            .iter()
+            .filter(|session| !session.is_active)
+            .map(|session| session.peer_device_id)
             .collect();
+        let mut pending_fin = false;
+        if let Some(handle) = health_server.as_ref() {
+            if !passive_peers.is_empty() {
+                let results = futures_util::future::join_all(
+                    passive_peers
+                        .iter()
+                        .map(|peer_id| handle.close_peer_connection(*peer_id)),
+                )
+                .await;
+                pending_fin = results.into_iter().any(|closed| closed);
+            }
+        }
+        if pending_fin {
+            tokio::time::sleep(std::time::Duration::from_secs(FIN_DRAIN_WAIT_SECS)).await;
+        }
+        let peer_ids: Vec<i64> = sessions.into_iter().map(|s| s.peer_device_id).collect();
+        // 拆除保持串行：卸载 wg0 依赖"当前会话是最后一个"的判定（本地 session
+        // 表与接口 peer 数双重检查），并行拆除的交错会让双方都看到残留 peer 而
+        // 跳过卸载，留下孤儿接口。拆除本身是本地快速操作，不是阻塞大头。
         for peer_id in peer_ids {
             if let Err(err) = wgvpn_flow::stop_wgvpn(&config, peer_id).await {
                 warn!(
