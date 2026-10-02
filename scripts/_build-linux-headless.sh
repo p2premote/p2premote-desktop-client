@@ -7,12 +7,13 @@ umask 022
 RUST_CACHE_ROOT="${RUST_CACHE_ROOT:-/mnt/n/rust-cache}"
 
 usage() {
-  echo "Usage: $0 -v <version> [--arch <x86_64|aarch64>] [--proxy <http-proxy-url>] [--no-sccache]" >&2
+  echo "Usage: $0 -v <version> [--arch <x86_64|aarch64>] [--proxy <http-proxy-url>] [--no-sccache] [--docker-package]" >&2
 }
 
 VERSION=""
 TARGET_ARCH="${P2PREMOTE_LINUX_ARCH:-}"
 BUILDER_PROXY="${P2PREMOTE_BUILDER_PROXY:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}"
+PACKAGE_KIND="headless"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -v)
@@ -47,6 +48,10 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --no-sccache)
+      shift
+      ;;
+    --docker-package)
+      PACKAGE_KIND="docker"
       shift
       ;;
     -h|--help)
@@ -95,7 +100,6 @@ if [[ ! "$GIT_COMMIT" =~ ^[0-9a-f]{6}$ ]]; then
   exit 1
 fi
 BUILD_VERSION="${VERSION}-${GIT_COMMIT}"
-DIST_DIR="$APP_DIR/artifacts/linux-headless"
 # WireGuard-go 从独立的 Go WG 模块构建；打洞库以 Rust path dependency
 # （core/Cargo.toml）编译进客户端，无需预构建产物。
 PUNCH_RS_SOURCE_DIR="$REPO_ROOT/../p2premote-punch-rs"
@@ -110,7 +114,7 @@ case "$TARGET_ARCH" in
     TARGET_LABEL="aarch64-linux-gnu"
     DEB_ARCH="arm64"
     RPM_ARCH="aarch64"
-    RELEASE_TARGET="linux-headless-aarch64"
+    RELEASE_TARGET="linux-${PACKAGE_KIND}-aarch64"
     ;;
   x86_64|amd64)
     LINUX_ARCH="amd64"
@@ -118,7 +122,7 @@ case "$TARGET_ARCH" in
     TARGET_LABEL="x86_64-linux-gnu"
     DEB_ARCH="amd64"
     RPM_ARCH="x86_64"
-    RELEASE_TARGET="linux-headless-x64"
+    RELEASE_TARGET="linux-${PACKAGE_KIND}-x64"
     ;;
   *)
     echo "Unsupported Linux host architecture: $(uname -m)" >&2
@@ -128,7 +132,12 @@ esac
 DOCKER_PLATFORM="linux/${LINUX_ARCH}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$RUST_CACHE_ROOT/wsl}"
 export CARGO_TARGET_DIR
-OUT_DIR="$CARGO_TARGET_DIR/package-assets/linux-headless-${LINUX_ARCH}"
+if [[ "$PACKAGE_KIND" == "docker" ]]; then
+  DIST_DIR="$APP_DIR/artifacts/linux-docker"
+else
+  DIST_DIR="$APP_DIR/artifacts/linux-headless"
+fi
+OUT_DIR="$CARGO_TARGET_DIR/package-assets/linux-${PACKAGE_KIND}-${LINUX_ARCH}"
 WIREGUARD_GO="$OUT_DIR/wireguard-go"
 WG_CLI="$OUT_DIR/wg"
 
@@ -173,6 +182,8 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
   mkdir -p "$CARGO_TARGET_DIR"
   echo "==> Rust will compile directly; shared target cache: $CARGO_TARGET_DIR"
   echo "==> Building inside $BUILDER_IMAGE (glibc 2.28 baseline, cached toolchains in volumes)"
+  PACKAGE_ARGS=()
+  [[ "$PACKAGE_KIND" != "docker" ]] || PACKAGE_ARGS+=(--docker-package)
   exec docker run --rm \
     --network host \
     --platform "$DOCKER_PLATFORM" \
@@ -187,7 +198,7 @@ if [[ "${P2PREMOTE_IN_BUILDER_CONTAINER:-0}" != "1" ]]; then
     -w /workspace/p2premote-desktop-client \
     "${RUN_ENV[@]}" \
     "$BUILDER_IMAGE" \
-    bash -c "git config --global --add safe.directory '*' && ./scripts/_build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}' --no-sccache"
+    bash -c "git config --global --add safe.directory '*' && ./scripts/_build-linux-headless.sh -v '${VERSION}' --arch '${TARGET_ARCH}' --no-sccache ${PACKAGE_ARGS[*]}"
 fi
 
 export RUSTC_WRAPPER=""
@@ -214,7 +225,11 @@ fi
 PACKAGE_STAGE_DIR=$(mktemp -d "/tmp/p2premote-package.XXXXXX")
 PKG_ROOT="$PACKAGE_STAGE_DIR/tar/p2premote-headless"
 
-CURRENT_TAR="$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz"
+if [[ "$PACKAGE_KIND" == "docker" ]]; then
+  CURRENT_TAR="$DIST_DIR/p2premote-docker_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz"
+else
+  CURRENT_TAR="$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz"
+fi
 CURRENT_DEB="$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${DEB_ARCH}.deb"
 CURRENT_RPM="$DIST_DIR/p2premote-headless-${VERSION}-1.${GIT_COMMIT}.${RPM_ARCH}.rpm"
 rm -rf "$OUT_DIR"
@@ -281,11 +296,11 @@ stage_linux_prefix "$PKG_ROOT" "$(rust_release_dir)" "$WIREGUARD_GO" "$WG_CLI" "
 chown -R 0:0 "$PKG_ROOT"
 
 echo "==> Building tar.gz package"
-tar -C "$PACKAGE_STAGE_DIR/tar" -czf "$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz" p2premote-headless
+tar -C "$PACKAGE_STAGE_DIR/tar" -czf "$CURRENT_TAR" p2premote-headless
 for required_entry in \
   p2premote-headless/p2premote-web.desktop \
   p2premote-headless/p2premote.png; do
-  tar -tzf "$DIST_DIR/p2premote-headless_${BUILD_VERSION}_${TARGET_LABEL}.tar.gz" \
+  tar -tzf "$CURRENT_TAR" \
     "$required_entry" >/dev/null || {
       echo "headless tarball is missing desktop asset: $required_entry" >&2
       exit 1
@@ -295,6 +310,11 @@ grep -Fxq 'Exec=xdg-open http://127.0.0.1:48083' "$PKG_ROOT/p2premote-web.deskto
   echo "headless desktop entry does not open the browser management UI" >&2
   exit 1
 }
+
+if [[ "$PACKAGE_KIND" == "docker" ]]; then
+  echo "==> Docker package input ready: $CURRENT_TAR"
+  exit 0
+fi
 
 echo "==> Building deb package"
 DEB_ROOT="$PACKAGE_STAGE_DIR/deb"

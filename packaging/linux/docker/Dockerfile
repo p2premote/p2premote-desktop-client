@@ -1,6 +1,6 @@
 # p2premote Linux 客户端 Docker 镜像（独立编译 + distroless 运行时）
 #
-# 阶段 1（alpine）负责装配 Docker 专用产物和静态 busybox 命令集（含 ip
+# 阶段 1（alpine）负责解包 Docker 专用 tgz 并装配静态 busybox 命令集（含 ip
 # 与 sh）；阶段 2（distroless cc-debian13）只保留运行时必需文件，基底不含
 # shell 与包管理器，常用命令由静态 busybox 提供，体积较 ubuntu:22.04
 # 单阶段方案（~140MB）减少约六成。
@@ -10,10 +10,11 @@
 # bridge 模式下 Web Admin 看到的来源 IP 会塌缩为 docker0 网关地址，导致
 # web_admin_allowed_ip 白名单依赖容器看到的真实来源地址。
 #
-# 构建上下文中的 package/ 由 _build-linux-docker.sh 生成。建议使用
+# 构建上下文中的 tgz 由 headless 构建流程使用 linux-docker-* target
+# 独立生成。建议使用
 # scripts/build-linux.sh 或 scripts/_build-linux-docker.sh 构建。
 
-# 阶段 1：装配 Docker 专用编译产物与静态 busybox。
+# 阶段 1：解包并装配 Docker 专用编译产物与静态 busybox。
 FROM alpine:3.20 AS assemble
 
 ARG http_proxy
@@ -28,12 +29,14 @@ ARG HTTPS_PROXY
 # 不依赖系统。
 RUN apk add --no-cache busybox-static
 
-RUN set -eux; \
-    mkdir -p /opt/p2premote
-
-COPY package/ /opt/p2premote/
+ARG P2P_DOCKER_TGZ=p2premote-docker.tar.gz
+COPY ${P2P_DOCKER_TGZ} /tmp/p2premote-docker.tar.gz
 
 RUN set -eux; \
+    mkdir -p /opt/p2premote; \
+    tar -xzf /tmp/p2premote-docker.tar.gz -C /tmp; \
+    cp -a /tmp/p2premote-headless/. /opt/p2premote/; \
+    rm -rf /tmp/p2premote-headless /tmp/p2premote-docker.tar.gz; \
     # 必需二进制缺失应当让 build 失败，而不是吞掉错误
     chmod 755 \
         /opt/p2premote/resources/p2premote-service \
