@@ -54,8 +54,15 @@ esac
 [[ "$BUILD_HEADLESS" == "1" || "$BUILD_DOCKER" == "1" ]] || { echo "--headless-only and --docker-only cannot be combined" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMMON_ARGS=(-v "$VERSION" --arch "$TARGET_ARCH")
 [[ -z "$BUILDER_PROXY" ]] || COMMON_ARGS+=(--proxy "$BUILDER_PROXY")
+
+# Builder containers run as root. Create every sibling artifact directory on
+# the host before the first container starts, otherwise the first build can
+# leave artifacts/ root-owned and prevent the later Docker build from creating
+# its own output directory on GitHub runners and non-root Linux hosts.
+mkdir -p "$APP_DIR/artifacts/linux-headless" "$APP_DIR/artifacts/linux-docker"
 
 if [[ "$BUILD_HEADLESS" == "1" ]]; then
   echo "==> Building native Linux headless packages"
