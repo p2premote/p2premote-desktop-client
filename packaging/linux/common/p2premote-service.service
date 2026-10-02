@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 ExecStart=/opt/p2premote/resources/p2premote-service --foreground
 WorkingDirectory=/opt/p2premote
+# 全新安装未配置安全码时启用 Web 管理首次信任(TOFU)引导。
+Environment=P2PREMOTE_WEB_ADMIN_FIRST_TRUST=1
 Restart=always
 RestartSec=3
 

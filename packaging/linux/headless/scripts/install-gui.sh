@@ -64,11 +64,7 @@ fi
 pkexec "$INSTALLER" >"$LOG_FILE" 2>&1
 status=$?
 if [ "$status" -eq 0 ]; then
-  security_hint=""
-  if grep -q "Default Web security code: 0000" "$LOG_FILE"; then
-    security_hint="\n\n首次登录安全码：0000\n登录后请立即修改。"
-  fi
-  show_message info "p2pRemote 安装完成" "p2pRemote 已安装并启动。\n\n管理页面：\nhttp://127.0.0.1:48083/$security_hint"
+  show_message info "p2pRemote 安装完成" "p2pRemote 已安装并启动。\n\n管理页面：\nhttp://127.0.0.1:48083/\n\n首次使用请在页面引导下设置 Web 安全码。"
   if command -v xdg-open >/dev/null 2>&1; then
     xdg-open "http://127.0.0.1:48083/" >/dev/null 2>&1 &
   fi

@@ -61,9 +61,6 @@ pub struct MachineConfig {
     /// Web UI 安全码。启用远端访问时必须配置；不限制复杂度。
     #[serde(default)]
     pub web_admin_security_code: Option<String>,
-    /// 首次安装使用默认 Web 安全码时，进入管理界面前必须修改。
-    #[serde(default)]
-    pub web_admin_security_code_must_change: bool,
     /// 是否启动 Web UI 监听。默认开启，关闭后需重启 service 才会生效。
     #[serde(default = "default_webui_enabled")]
     pub webui_enabled: bool,
@@ -128,7 +125,6 @@ impl Default for MachineConfig {
             locale: None,
             web_admin_allowed_ip: None,
             web_admin_security_code: None,
-            web_admin_security_code_must_change: false,
             webui_enabled: true,
             cached_public_ip: None,
             cached_public_ip_location: None,

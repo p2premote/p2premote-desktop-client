@@ -17,19 +17,12 @@
               ? 'app.web_auth.first_trust_in_use'
               : webFirstTrustPending
               ? 'app.web_auth.first_trust_prompt'
-              : webSecurityCodeChangeRequired
-                ? 'app.web_auth.change_prompt'
-                : 'app.web_auth.prompt'
+              : webSecurityCodeMissing
+              ? 'app.web_auth.initial_setup_prompt'
+              : 'app.web_auth.prompt'
           )
         }}</p>
-        <el-alert
-          v-if="webDefaultSecurityCodeActive && !webAuthenticated"
-          :title="$t('app.web_auth.initial_code_hint')"
-          type="info"
-          :closable="false"
-          show-icon
-        />
-        <template v-if="!webFirstTrustClaimedByOther && webCodeSetupRequired">
+        <template v-if="!webFirstTrustClaimedByOther && (webFirstTrustPending || webSecurityCodeMissing)">
           <el-input
             v-if="webFirstTrustPending"
             v-model="firstTrustAllowedIp"
@@ -64,11 +57,10 @@
           type="primary"
           size="large"
           :loading="webAuthLoading"
-          @click="webFirstTrustClaimedByOther ? refreshWebAuthStatus() : webCodeSetupRequired ? handleWebSecurityCodeChange() : handleWebUnlock()"
+          @click="webFirstTrustClaimedByOther ? refreshWebAuthStatus() : (webFirstTrustPending || webSecurityCodeMissing) ? handleWebSecurityCodeChange() : handleWebUnlock()"
         >
-          {{ $t(webFirstTrustClaimedByOther ? 'app.web_auth.first_trust_retry' : webFirstTrustPending ? 'app.web_auth.first_trust_set' : webCodeSetupRequired ? 'app.web_auth.change' : 'app.web_auth.enter') }}
+          {{ $t(webFirstTrustClaimedByOther ? 'app.web_auth.first_trust_retry' : webFirstTrustPending ? 'app.web_auth.first_trust_set' : webSecurityCodeMissing ? 'app.web_auth.initial_setup' : 'app.web_auth.enter') }}
         </el-button>
-        <p class="web-auth-cert-note">{{ $t('app.web_auth.certificate_note') }}</p>
       </div>
     </div>
     <div v-else class="app-container">
@@ -523,8 +515,7 @@ watch(themeMode, applyTheme, { immediate: true })
 const webAuthChecked = ref(isTauriRuntime())
 const webAuthRequired = ref(false)
 const webAuthenticated = ref(isTauriRuntime())
-const webSecurityCodeChangeRequired = ref(false)
-const webDefaultSecurityCodeActive = ref(false)
+const webSecurityCodeMissing = ref(false)
 const webFirstTrustPending = ref(false)
 const webFirstTrustClaimedByOther = ref(false)
 const firstTrustAllowedIp = ref('')
@@ -552,14 +543,11 @@ let appBootstrapped = false
 const webAuthGateVisible = computed(
   () => !isTauriRuntime() && (
     !webAuthChecked.value
-    || webSecurityCodeChangeRequired.value
     || webFirstTrustPending.value
     || webFirstTrustClaimedByOther.value
+    || webSecurityCodeMissing.value
     || (webAuthRequired.value && !webAuthenticated.value)
   ),
-)
-const webCodeSetupRequired = computed(
-  () => webSecurityCodeChangeRequired.value || webFirstTrustPending.value,
 )
 
 async function refreshWebAuthStatus() {
@@ -585,9 +573,8 @@ async function refreshWebAuthStatus() {
     webFirstTrustClaimedByOther.value = false
     webAuthRequired.value = status.security_code_required
     webAuthenticated.value = status.authenticated
-    webDefaultSecurityCodeActive.value = status.security_code_change_required
-    webSecurityCodeChangeRequired.value = status.security_code_change_required && status.authenticated
     webFirstTrustPending.value = status.first_trust_pending === true && status.authenticated
+    webSecurityCodeMissing.value = !status.security_code_required && !webFirstTrustPending.value
     if (webFirstTrustPending.value && !firstTrustAllowedIp.value) {
       firstTrustAllowedIp.value = status.source_ip
     }
@@ -597,6 +584,7 @@ async function refreshWebAuthStatus() {
     webAuthenticated.value = false
     webFirstTrustPending.value = false
     webFirstTrustClaimedByOther.value = false
+    webSecurityCodeMissing.value = false
     console.warn('[App] Web authentication status unavailable:', error)
     webAuthError.value = t('app.web_auth.service_unavailable')
   } finally {
@@ -621,6 +609,7 @@ async function handleWebSecurityCodeChange() {
         return
       }
     } else {
+      // 本机(loopback)首次使用：无旧码通道直接建立安全码。
       await changeWebAdminSecurityCode(null, newWebSecurityCode.value)
     }
     newWebSecurityCode.value = ''
@@ -633,10 +622,8 @@ async function handleWebSecurityCodeChange() {
       webAuthError.value = t('app.web_auth.first_trust_expired')
       return
     }
-    webAuthError.value = code === 'security_code_unchanged'
-      ? t('app.web_auth.code_unchanged')
-      : code === 'invalid_allowed_ip'
-        ? t('app.web_auth.first_trust_invalid_ip')
+    webAuthError.value = code === 'invalid_allowed_ip'
+      ? t('app.web_auth.first_trust_invalid_ip')
       : t('app.web_auth.invalid_new_code')
   } finally {
     webAuthLoading.value = false
@@ -770,7 +757,7 @@ async function handleWebUnlock() {
     await unlockWebAdmin(webSecurityCode.value)
     webSecurityCode.value = ''
     await refreshWebAuthStatus()
-    if (webAuthenticated.value && !webCodeSetupRequired.value) {
+    if (webAuthenticated.value) {
       resumeWebSocket()
       if (appBootstrapped) startupReady.value = true
       else await bootstrapApp()
@@ -1845,13 +1832,6 @@ watch(
 .web-auth-card .el-button,
 .web-auth-card .el-input {
   width: 100%;
-}
-
-.web-auth-cert-note {
-  color: var(--fluent-text-tertiary);
-  font-size: 12px;
-  line-height: 1.5;
-  text-align: center;
 }
 
 .text-context-menu {

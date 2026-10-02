@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
@@ -53,7 +52,6 @@ struct WebAdminState {
 struct WebSecurityState {
     allowed_remote_ip: Mutex<Option<IpAddr>>,
     security_code_hash: Mutex<Option<[u8; 32]>>,
-    security_code_must_change: AtomicBool,
     session: Mutex<Option<WebSession>>,
     session_revision: watch::Sender<u64>,
     failures: Mutex<HashMap<IpAddr, UnlockFailure>>,
@@ -104,7 +102,6 @@ struct WebAccessConfigRequest {
 struct WebAuthStatus {
     authenticated: bool,
     security_code_required: bool,
-    security_code_change_required: bool,
     /// 首次信任引导等待完成：全新 Docker 部署尚未设置安全码，前端应
     /// 引导首个客户端设置安全码以锁定远程访问。
     first_trust_pending: bool,
@@ -144,15 +141,10 @@ impl WebSecurityState {
         Self::from_values(
             config.web_admin_allowed_ip.as_deref(),
             config.web_admin_security_code.as_deref(),
-            config.web_admin_security_code_must_change,
         )
     }
 
-    fn from_values(
-        allowed_remote_ip: Option<&str>,
-        security_code: Option<&str>,
-        security_code_must_change: bool,
-    ) -> Result<Self> {
+    fn from_values(allowed_remote_ip: Option<&str>, security_code: Option<&str>) -> Result<Self> {
         let allowed_remote_ip = allowed_remote_ip
             .map(str::trim)
             .map(ToOwned::to_owned)
@@ -182,9 +174,6 @@ impl WebSecurityState {
         Ok(Self {
             allowed_remote_ip: Mutex::new(allowed_remote_ip),
             security_code_hash: Mutex::new(security_code.as_deref().map(hash_security_code)),
-            security_code_must_change: AtomicBool::new(
-                security_code.is_some() && security_code_must_change,
-            ),
             session: Mutex::new(None),
             session_revision,
             failures: Mutex::new(HashMap::new()),
@@ -198,7 +187,6 @@ impl WebSecurityState {
         Self {
             allowed_remote_ip: Mutex::new(None),
             security_code_hash: Mutex::new(None),
-            security_code_must_change: AtomicBool::new(false),
             session: Mutex::new(None),
             session_revision,
             failures: Mutex::new(HashMap::new()),
@@ -529,7 +517,6 @@ pub(super) fn web_admin_addr_for_log(config: Option<&crate::config::MachineConfi
         WebSecurityState::from_values(
             config.web_admin_allowed_ip.as_deref(),
             config.web_admin_security_code.as_deref(),
-            config.web_admin_security_code_must_change,
         )
         .ok()
     });
@@ -634,10 +621,6 @@ async fn web_auth_status(
             state.security.source_allowed(ip) || state.security.first_trust_trusted(ip)
         },
         security_code_required: required,
-        security_code_change_required: state
-            .security
-            .security_code_must_change
-            .load(Ordering::Acquire),
         first_trust_pending: state.security.first_trust_bootstrap_pending() && !ip.is_loopback(),
         source_ip: ip.to_string(),
     })
@@ -682,7 +665,7 @@ async fn web_auth_complete_first_trust(
         return StatusCode::CONFLICT.into_response();
     }
     let security_code = request.new_security_code.trim();
-    if security_code.len() < 4 || security_code.len() > 256 || security_code == "0000" {
+    if security_code.len() < 4 || security_code.len() > 256 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "ok": false, "error": "invalid_new_security_code" })),
@@ -710,7 +693,6 @@ async fn web_auth_complete_first_trust(
         return StatusCode::CONFLICT.into_response();
     }
     config.web_admin_security_code = Some(security_code.to_string());
-    config.web_admin_security_code_must_change = false;
     config.web_admin_allowed_ip = Some(allowed_ip.clone());
     if let Err(err) = save_machine_config(&config) {
         error!("[WebAdmin] failed to save first-use settings: {err}");
@@ -809,14 +791,10 @@ async fn web_auth_change_security_code(
     if !state.security.session_valid(&headers, peer.ip(), true) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let must_change = state
-        .security
-        .security_code_must_change
-        .load(Ordering::Acquire);
     let current_hash = *state.security.security_code_hash.lock();
     // 尚未配置任何安全码时视为首次设置：不要求旧码（loopback 首次使用与
     // Docker 首次信任引导都从这里建立初始安全码）。
-    if !must_change && current_hash.is_some() {
+    if current_hash.is_some() {
         let Some(current_security_code) = request.current_security_code.as_deref() else {
             return (
                 StatusCode::BAD_REQUEST,
@@ -835,7 +813,7 @@ async fn web_auth_change_security_code(
     }
 
     let security_code = request.new_security_code.trim();
-    if security_code.len() < 4 || security_code.len() > 256 || security_code == "0000" {
+    if security_code.len() < 4 || security_code.len() > 256 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "ok": false, "error": "invalid_new_security_code" })),
@@ -859,17 +837,12 @@ async fn web_auth_change_security_code(
         }
     };
     config.web_admin_security_code = Some(security_code.to_string());
-    config.web_admin_security_code_must_change = false;
     if let Err(err) = save_machine_config(&config) {
         error!("[WebAdmin] failed to save changed security code: {err}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     *state.security.security_code_hash.lock() = Some(new_hash);
-    state
-        .security
-        .security_code_must_change
-        .store(false, Ordering::Release);
     state.security.clear_session();
     info!(
         "[WebAdmin] security code changed, source_ip={}",
@@ -1050,13 +1023,6 @@ async fn web_events(
     if !state.security.session_valid(&headers, peer.ip(), true) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if state
-        .security
-        .security_code_must_change
-        .load(Ordering::Acquire)
-    {
-        return StatusCode::FORBIDDEN.into_response();
-    }
     let session_token = session_cookie(&headers).map(ToOwned::to_owned);
     ws.on_upgrade(move |socket| web_events_socket(socket, state, peer.ip(), session_token))
         .into_response()
@@ -1164,20 +1130,6 @@ async fn web_invoke(
                 ok: false,
                 value: None,
                 error: Some("web_auth_required".to_string()),
-            }),
-        );
-    }
-    if state
-        .security
-        .security_code_must_change
-        .load(Ordering::Acquire)
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(WebInvokeResponse {
-                ok: false,
-                value: None,
-                error: Some("security_code_change_required".to_string()),
             }),
         );
     }
@@ -1819,7 +1771,7 @@ mod tests {
     #[test]
     fn source_allowlist_accepts_loopback_mapped_loopback_and_configured_ip() {
         let security =
-            WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).unwrap();
+            WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
         assert!(security.source_allowed("127.0.0.1".parse().unwrap()));
         assert!(security.source_allowed("::ffff:127.0.0.1".parse().unwrap()));
         assert!(security.source_allowed("192.0.2.191".parse().unwrap()));
@@ -1829,7 +1781,7 @@ mod tests {
     #[test]
     fn session_is_bound_to_source_and_expires_when_idle() {
         let security =
-            WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).unwrap();
+            WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
         let now = Instant::now();
         security.replace_session(WebSession {
             token: "token".to_string(),
@@ -1847,7 +1799,7 @@ mod tests {
     #[test]
     fn a_new_web_session_replaces_the_previous_session() {
         let security =
-            WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).unwrap();
+            WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
         let now = Instant::now();
         for token in ["first", "second"] {
             security.replace_session(WebSession {
@@ -1863,22 +1815,13 @@ mod tests {
 
     #[test]
     fn remote_access_requires_valid_ip_and_non_empty_code() {
-        assert!(WebSecurityState::from_values(Some("192.0.2.191"), Some("1"), false).is_ok());
-        assert!(WebSecurityState::from_values(Some("192.0.2.191"), None, false).is_err());
-        let wildcard = WebSecurityState::from_values(Some("0.0.0.0"), Some("1"), false).unwrap();
+        assert!(WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).is_ok());
+        assert!(WebSecurityState::from_values(Some("192.0.2.191"), None).is_err());
+        let wildcard = WebSecurityState::from_values(Some("0.0.0.0"), Some("1")).unwrap();
         assert!(wildcard.source_allowed("192.0.2.191".parse().unwrap()));
         assert!(!wildcard.source_allowed("2001:db8::1".parse().unwrap()));
-        assert!(WebSecurityState::from_values(Some("not-an-ip"), Some("1"), false).is_err());
-        assert!(WebSecurityState::from_values(None, Some("1"), false).is_ok());
-    }
-
-    #[test]
-    fn initial_security_code_requires_change_only_when_code_exists() {
-        let security = WebSecurityState::from_values(None, Some("0000"), true).unwrap();
-        assert!(security.security_code_must_change.load(Ordering::Acquire));
-
-        let security = WebSecurityState::from_values(None, None, true).unwrap();
-        assert!(!security.security_code_must_change.load(Ordering::Acquire));
+        assert!(WebSecurityState::from_values(Some("not-an-ip"), Some("1")).is_err());
+        assert!(WebSecurityState::from_values(None, Some("1")).is_ok());
     }
 
     #[test]
@@ -1917,7 +1860,7 @@ mod tests {
 
     #[test]
     fn first_trust_claim_requires_pending_bootstrap_and_first_comer_wins() {
-        let fresh = WebSecurityState::from_values(None, None, false).unwrap();
+        let fresh = WebSecurityState::from_values(None, None).unwrap();
         let remote: IpAddr = "192.168.31.23".parse().unwrap();
         let other: IpAddr = "192.168.31.99".parse().unwrap();
 
@@ -1935,16 +1878,16 @@ mod tests {
         assert!(fresh.claim_first_trust_bootstrap_with(remote, true));
 
         // 已配置安全码或白名单的部署不进入引导窗口。
-        let with_code = WebSecurityState::from_values(None, Some("1234"), false).unwrap();
+        let with_code = WebSecurityState::from_values(None, Some("1234")).unwrap();
         assert!(!with_code.claim_first_trust_bootstrap_with(remote, true));
         let with_allowed =
-            WebSecurityState::from_values(Some("10.0.0.8"), Some("1234"), false).unwrap();
+            WebSecurityState::from_values(Some("10.0.0.8"), Some("1234")).unwrap();
         assert!(!with_allowed.claim_first_trust_bootstrap_with(remote, true));
     }
 
     #[test]
     fn first_trust_bootstrap_client_cannot_use_admin_session_without_code() {
-        let security = WebSecurityState::from_values(None, None, false).unwrap();
+        let security = WebSecurityState::from_values(None, None).unwrap();
         let remote: IpAddr = "192.168.31.23".parse().unwrap();
         let other: IpAddr = "192.168.31.99".parse().unwrap();
         assert!(security.claim_first_trust_bootstrap_with(remote, true));

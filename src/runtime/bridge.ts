@@ -8,7 +8,6 @@ export const CLIENT_DOWNLOAD_URL = `${SITE_ORIGIN}/#download`
 export interface WebAuthStatus {
   authenticated: boolean
   security_code_required: boolean
-  security_code_change_required: boolean
   first_trust_pending?: boolean
   source_ip: string
 }
@@ -105,7 +104,6 @@ export async function getWebAuthStatus(): Promise<WebAuthStatus> {
     return {
       authenticated: true,
       security_code_required: false,
-      security_code_change_required: false,
       source_ip: '127.0.0.1',
     }
   }

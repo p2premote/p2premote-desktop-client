@@ -450,9 +450,6 @@ async fn main() -> Result<()> {
                 "log_level" => println!("{}", cfg.log_level),
                 "web_admin_allowed_ip" => println!("{:?}", cfg.web_admin_allowed_ip),
                 "web_admin_security_code" => println!("{:?}", cfg.web_admin_security_code),
-                "web_admin_security_code_must_change" => {
-                    println!("{}", cfg.web_admin_security_code_must_change)
-                }
                 "webui_enabled" => println!("{}", cfg.webui_enabled),
                 other => return Err(anyhow!("unsupported config key: {}", other)),
             }
@@ -473,14 +470,7 @@ async fn main() -> Result<()> {
                 "p2p_punch_path" => cfg.p2p_punch_path = value,
                 "web_admin_allowed_ip" => cfg.web_admin_allowed_ip = non_empty_config_value(value),
                 "web_admin_security_code" => {
-                    cfg.web_admin_security_code = non_empty_config_value(value);
-                    cfg.web_admin_security_code_must_change = false;
-                }
-                "web_admin_security_code_must_change" => {
-                    cfg.web_admin_security_code_must_change =
-                        value.parse::<bool>().map_err(|_| {
-                            anyhow!("web_admin_security_code_must_change must be true or false")
-                        })?
+                    cfg.web_admin_security_code = non_empty_config_value(value)
                 }
                 "webui_enabled" => {
                     cfg.webui_enabled = value
