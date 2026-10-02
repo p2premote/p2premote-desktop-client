@@ -437,3 +437,33 @@ jobs:
           name: macos-universal-unsigned
           path: artifacts/macos-universal/
           if-no-files-found: error
+
+  # Actions artifacts are always downloaded as zip archives. A tag additionally
+  # creates a GitHub Release and attaches the original installers/packages so
+  # users get direct, stable release download URLs instead of source code only.
+  release:
+    name: Publish compiled release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - windows-x64
+      - windows-win7-x64
+      - linux-headless-x86_64
+      - linux-gui-x86_64
+      - macos-universal
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download all compiled artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Attach compiled files to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/**/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
