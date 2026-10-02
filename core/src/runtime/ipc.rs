@@ -343,6 +343,7 @@ pub(super) async fn handle_data(
                         s.device_id = Some(device.device_id);
                         s.device_uuid = Some(device.device_uuid.clone());
                         s.current_device = Some(device);
+                        s.device_registration_error = None;
                         if heartbeat_result.is_ok() {
                             s.last_heartbeat_at = Some(now_ts());
                         }
@@ -368,11 +369,16 @@ pub(super) async fn handle_data(
                         }
                     }
                 }
-                Err(err) => Some(cmd_response(
-                    false,
-                    &err.to_string(),
-                    Some(shared.lock().status.clone()),
-                )),
+                Err(err) => {
+                    update_status(shared, |s| {
+                        s.device_registration_error = Some(err.to_string());
+                    });
+                    Some(cmd_response(
+                        false,
+                        &err.to_string(),
+                        Some(shared.lock().status.clone()),
+                    ))
+                }
             }
         }
         Data::StartActiveTunnelJob {
@@ -1102,6 +1108,7 @@ pub(super) async fn handle_data(
             update_status(shared, |s| {
                 s.logged_in = false;
                 s.last_error = None;
+                s.device_registration_error = None;
             });
             Some(cmd_response(
                 true,

@@ -133,6 +133,7 @@ export interface BackgroundServiceStatus {
     ws_connected: boolean
     last_heartbeat_at?: number | null
     last_error?: string | null
+    device_registration_error?: string | null
     public_ip?: string | null
     invite_temporary_password?: string | null
     wgvpn_sessions?: Array<{

@@ -913,7 +913,23 @@ async fn bootstrap_service(
 
     let mut current_device = None;
     if config.device_id.is_none() || config.device_uuid.is_none() {
-        current_device = Some(register_current_device_auto(&mut config).await?);
+        match register_current_device_auto(&mut config).await {
+            Ok(device) => {
+                current_device = Some(device);
+                update_status(shared, |s| {
+                    s.device_registration_error = None;
+                });
+            }
+            Err(err) => {
+                // 注册失败（如设备数达到账号上限）不影响登录态，logged_in 仍为
+                // true；错误必须写入专用字段，否则 UI 只会看到本机从设备列表
+                // 消失而没有任何提示。bootstrap 每 60 秒重试，成功后自动清除。
+                update_status(shared, |s| {
+                    s.device_registration_error = Some(err.to_string());
+                });
+                return Err(err);
+            }
+        }
     }
 
     if reconnect_requested || !ws_client.is_connected().await {
@@ -1078,6 +1094,7 @@ async fn handle_bootstrap_error(
         status.logged_in = false;
         status.ws_connected = false;
         status.device_id = None;
+        status.device_registration_error = None;
         status.last_error = Some(localized_message(
             status.locale.as_deref(),
             "auth.token_expired",

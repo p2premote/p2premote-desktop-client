@@ -910,6 +910,30 @@ const backgroundServiceEnabled = computed(() => Boolean(
   backgroundServiceStatus.value?.service?.enabled
   && backgroundServiceStatus.value?.service?.running
 ))
+/// 本机注册失败（如设备数达到账号上限）：登录成功但本机未注册进账号，
+/// 设备列表会看不到本机。错误经专用字段下发；同一消息只告警一次，
+/// 注册成功（后台每分钟自动重试）后复位，再次失败可重新告警。
+const deviceRegistrationError = computed(() => {
+  const runtime = backgroundServiceStatus.value?.runtime
+  if (!runtime?.logged_in) return null
+  const message = runtime.device_registration_error?.trim()
+  return message || null
+})
+let lastNotifiedRegistrationError: string | null = null
+watch(deviceRegistrationError, (message) => {
+  if (!message) {
+    lastNotifiedRegistrationError = null
+    return
+  }
+  if (message === lastNotifiedRegistrationError) return
+  lastNotifiedRegistrationError = message
+  ElNotification({
+    title: t('app.notification.device_registration_failed_title'),
+    message,
+    type: 'error',
+    duration: 0,
+  })
+})
 watch(
   () => backgroundServiceStatus.value?.runtime?.pending_inbound_approvals,
   (approvals, previous) => {

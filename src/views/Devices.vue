@@ -4,6 +4,15 @@
     v-loading="selectedDisconnecting"
     :element-loading-text="$t('devices.message.disconnecting')"
   >
+    <el-alert
+      v-if="registrationError"
+      class="registration-error-alert"
+      type="error"
+      show-icon
+      :closable="false"
+      :title="$t('devices.registration_failed_title')"
+      :description="registrationErrorMessage"
+    />
     <div class="devices-shell">
       <aside class="devices-sidebar fluent-card">
         <div class="sidebar-header">
@@ -385,6 +394,9 @@ const aliasDialogVisible = ref(false)
 const selectedDevice = ref<DeviceInfo | null>(null)
 const detailExpanded = ref(false)
 const currentDeviceUUID = ref('')
+/// 本机注册失败原因（设备数达到账号上限等）。非空时页面顶部显示常驻
+/// 告警条：本机不在设备列表且无法被远程连接，后台每分钟自动重试。
+const registrationError = ref('')
 const tunnelStatusMap = ref<Record<number, TunnelInfo>>({})
 const activeTunnelJobMap = ref<Record<number, TunnelJobStatus>>({})
 const tunnelLifecycleMap = ref<Record<number, TunnelLifecycleStatus>>({})
@@ -779,7 +791,16 @@ async function alignCurrentDeviceUUIDFromService() {
 function applyCurrentDeviceUUIDFromRuntime(runtime: any) {
   const serviceUUID = runtime?.current_device?.device_uuid
   currentDeviceUUID.value = typeof serviceUUID === 'string' ? serviceUUID.trim() : ''
+  const registrationFailure = runtime?.logged_in
+    ? (typeof runtime?.device_registration_error === 'string' ? runtime.device_registration_error.trim() : '')
+    : ''
+  registrationError.value = registrationFailure
 }
+
+const registrationErrorMessage = computed(() => {
+  if (!registrationError.value) return ''
+  return `${registrationError.value} ${t('devices.registration_failed_hint')}`
+})
 
 async function autoRefreshDevicesInForeground() {
   if (!authStore.isLoggedIn) {
@@ -1178,13 +1199,20 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   margin: -20px -32px;
   overflow: hidden;
   background: var(--fluent-bg);
+  /* 顶部注册失败告警条与设备面板纵向排布 */
+  display: flex;
+  flex-direction: column;
+}
+
+.registration-error-alert {
+  margin: 16px 20px 0;
 }
 
 .devices-shell {
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
   gap: 16px;
-  height: 100%;
+  flex: 1;
   min-height: 0;
   padding: 16px 20px 20px;
   box-sizing: border-box;
@@ -1815,6 +1843,10 @@ async function confirmDeleteDevice(device: DeviceInfo) {
     min-height: calc(100% + 40px);
     margin: -20px -32px;
     overflow: visible;
+  }
+
+  .registration-error-alert {
+    margin: 14px 14px 0;
   }
 
   .devices-shell {

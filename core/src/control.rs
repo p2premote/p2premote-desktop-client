@@ -212,6 +212,11 @@ pub struct RuntimeStatus {
     pub ws_connected: bool,
     pub last_heartbeat_at: Option<i64>,
     pub last_error: Option<String>,
+    /// 本机设备注册失败的原因（如设备数达到账号上限）。None 表示注册成功
+    /// 或尚未登录。登录成功但注册失败时 logged_in=true，UI 不能只靠
+    /// last_error 展示（该字段只在登出场景被消费）。
+    #[serde(default)]
+    pub device_registration_error: Option<String>,
     #[serde(default)]
     pub device_identity_rebuilt: bool,
     #[serde(default)]
@@ -986,6 +991,7 @@ mod tests {
                 ws_connected: true,
                 last_heartbeat_at: Some(1234567890),
                 last_error: None,
+                device_registration_error: None,
                 device_identity_rebuilt: false,
                 device_identity_message: None,
                 public_ip: None,

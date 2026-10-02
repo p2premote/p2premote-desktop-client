@@ -189,6 +189,7 @@ export default {
       peer_device_id: '设备 #{deviceId}',
       session_expired_title: '登录已失效',
       session_expired_body: '登录凭证已过期或失效，请重新登录。',
+      device_registration_failed_title: '本机设备注册失败',
     },
     inbound_approval: {
       title: '是否允许远程协助？',
@@ -246,6 +247,8 @@ export default {
 
   // ============ 设备页（Devices.vue） ============
   devices: {
+    registration_failed_title: '本机设备未注册到当前账号',
+    registration_failed_hint: '本机暂时不会出现在下方设备列表中，也无法被远程连接。请删除不用的设备释放名额，系统每分钟会自动重试注册。',
     list: {
       title: '我的设备',
       empty: '暂无设备',

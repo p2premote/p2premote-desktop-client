@@ -177,6 +177,7 @@ const en = {
       peer_device_id: 'Device #{deviceId}',
       session_expired_title: 'Session expired',
       session_expired_body: 'Your sign-in credentials have expired or are no longer valid. Please sign in again.',
+      device_registration_failed_title: 'Device registration failed',
     },
     inbound_approval: {
       title: 'Allow remote assistance?',
@@ -230,6 +231,8 @@ const en = {
   },
 
   devices: {
+    registration_failed_title: 'This device is not registered to your account',
+    registration_failed_hint: 'This computer is temporarily missing from the device list below and cannot be reached remotely. Remove unused devices to free a slot; registration retries automatically every minute.',
     list: {
       title: 'My devices',
       empty: 'No devices',
