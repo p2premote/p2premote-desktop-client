@@ -182,7 +182,8 @@ if ($replaceDesktopResource) {
 Push-Location $projectRoot
 try {
     Set-ClientVersion
-    # node_modules 可能被 WSL/容器内的 Linux 构建重装为 Linux 版本，每次构建前先恢复 Windows 版本
+    # node_modules 可能被 WSL 侧的手工构建重装为 Linux 版本（Linux 容器构建
+    # 已改为临时目录隔离、不再触碰仓库树），每次构建前先恢复 Windows 版本
     if (-not $SkipNpmCi) {
         & npm ci
         if ($LASTEXITCODE -ne 0) {

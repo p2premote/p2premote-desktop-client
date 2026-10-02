@@ -242,11 +242,20 @@ else
     echo "Node.js 22 or newer is required (found $(node --version))." >&2
     exit 1
   fi
+  # 前端在临时目录构建（与 build-linux-gui-container.sh 同款隔离）：npm ci 的
+  # node_modules 是平台相关的，直接在仓库根安装会把挂载进来的 Windows 工作树
+  # 换成 Linux 树，与本地 Windows 构建互踩；这里只把 dist 产物拷回仓库
+  frontend_stage="$(mktemp -d /tmp/p2premote-frontend.XXXXXX)"
+  cp "$APP_DIR"/{package.json,package-lock.json,index.html,tsconfig.json,tsconfig.node.json,vite.config.ts} "$frontend_stage/"
+  cp -a "$APP_DIR/src" "$APP_DIR/public" "$frontend_stage/"
   (
-    cd "$APP_DIR"
+    cd "$frontend_stage"
     npm ci
     npm run build
   )
+  rm -rf "$APP_DIR/dist"
+  cp -a "$frontend_stage/dist/." "$APP_DIR/dist/"
+  rm -rf "$frontend_stage"
 fi
 
 echo "==> Building Rust headless binaries ($RUST_TARGET)"
