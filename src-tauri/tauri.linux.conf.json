@@ -8,7 +8,7 @@
   },
   "tauri": {
     "bundle": {
-      "targets": ["deb", "appimage"],
+      "targets": ["deb"],
       "deb": {
         "depends": ["systemd"],
         "provides": ["p2p-remote"],

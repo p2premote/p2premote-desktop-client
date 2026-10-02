@@ -2,7 +2,6 @@
 set -euo pipefail
 
 deb="$1"
-appimage="$2"
 dpkg-deb --info "$deb" >/dev/null
 dpkg-deb --contents "$deb" | grep -q './usr/share/rustdesktiny/rustdesktiny' || {
   echo "combined deb is missing RustDeskTiny" >&2
@@ -80,4 +79,3 @@ grep -Fq 'verified bundled file: /opt/p2premote/resources/p2premote-cli' /tmp/de
   echo "deb GUI did not resolve its bundled CLI from /opt/p2premote/resources" >&2
   exit 1
 }
-run_gui_smoke_test appimage env APPIMAGE_EXTRACT_AND_RUN=1 "$appimage"

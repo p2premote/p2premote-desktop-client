@@ -14,7 +14,7 @@ wg_ffi_source_dir="../p2premote-wg-ffi"
 }
 
 # artifact_version（如 1.13.2-0ccec0b）是本脚本唯一的版本源：tauri config 决定
-# deb/AppImage 文件名与 deb control Version，Cargo.toml 决定 GUI 应用内
+# deb 文件名与 deb control Version，Cargo.toml 决定 GUI 应用内
 # env!("CARGO_PKG_VERSION")（设置页显示与检查更新上报），两者必须与产物文件名
 # 同源，否则会出现"包文件名是新版本、软件内仍是旧版本"的事故
 artifact_version="${P2PREMOTE_LINUX_GUI_ARTIFACT_VERSION:?P2PREMOTE_LINUX_GUI_ARTIFACT_VERSION is required}"
@@ -99,10 +99,6 @@ mkdir -p "$dist_dir"
 install -m 0644 \
   "$cargo_target_dir/release/bundle/deb/p2premote_${artifact_version}_amd64.deb" \
   "$dist_dir/p2premote_${artifact_version}_amd64.deb"
-install -m 0755 \
-  "$cargo_target_dir/release/bundle/appimage/p2premote_${artifact_version}_amd64.AppImage" \
-  "$dist_dir/p2premote_${artifact_version}_amd64.AppImage"
 rm -f \
-  "$cargo_target_dir/release/bundle/deb/p2premote_${artifact_version}_amd64.deb" \
-  "$cargo_target_dir/release/bundle/appimage/p2premote_${artifact_version}_amd64.AppImage"
+  "$cargo_target_dir/release/bundle/deb/p2premote_${artifact_version}_amd64.deb"
 echo "Artifacts: $dist_dir"

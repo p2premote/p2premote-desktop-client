@@ -300,7 +300,7 @@ jobs:
           if-no-files-found: error
 
   linux-gui-x86_64:
-    name: Linux GUI x86_64（deb/AppImage）
+    name: Linux GUI x86_64（deb）
     needs: resolve-version
     runs-on: ubuntu-latest
     timeout-minutes: 120
