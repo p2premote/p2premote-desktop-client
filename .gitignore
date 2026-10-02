@@ -52,3 +52,6 @@ src-tauri/.generated/
 # Docker 构建临时产物：build-linux.sh 会把 headless tgz 拷贝到这里
 packaging/linux/docker/p2premote-headless.tar.gz
 playwright-report/
+
+# Internal docs live in the private p2premote-internal-docs repo, never here.
+docs/
