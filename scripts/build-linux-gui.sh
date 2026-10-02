@@ -69,6 +69,7 @@ docker_env=(
   -e CARGO_REGISTRIES_CRATES_IO_INDEX="${CARGO_REGISTRIES_CRATES_IO_INDEX:-sparse+https://rsproxy.cn/index/}"
   -e P2PREMOTE_LINUX_GUI_VERSION="$version"
   -e P2PREMOTE_LINUX_GUI_ARTIFACT_VERSION="$artifact_version"
+  -e P2PREMOTE_RELEASE_TARGET=linux-gui-x64
 )
 if [[ -n "${P2PREMOTE_BUILD_PROXY:-}" ]]; then
   for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do

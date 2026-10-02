@@ -73,21 +73,20 @@ pub async fn fetch_version_policy(
         .ok_or(VersionPolicyError::Empty)
 }
 
-/// Returns the version-policy target used by this installation. Container
-/// packaging can override the inferred host target with P2PREMOTE_UPDATE_TARGET.
+/// Returns the version-policy target used by this installation. Package
+/// builds bake their target in at compile time via P2PREMOTE_RELEASE_TARGET
+/// (windows-win7-x64, linux-gui-x64), container packaging overrides the
+/// baked/inferred target at runtime with P2PREMOTE_UPDATE_TARGET, and plain
+/// headless builds fall back to the host triple.
 pub fn client_update_target() -> String {
     if let Ok(target) = std::env::var("P2PREMOTE_UPDATE_TARGET") {
-        if matches!(
-            target.as_str(),
-            "windows"
-                | "linux-headless-x64"
-                | "linux-headless-aarch64"
-                | "linux-docker-x64"
-                | "linux-docker-aarch64"
-                | "macos-universal"
-                | "android"
-        ) {
+        if is_supported_update_target(&target) {
             return target;
+        }
+    }
+    if let Some(target) = option_env!("P2PREMOTE_RELEASE_TARGET") {
+        if is_supported_update_target(target) {
+            return target.to_string();
         }
     }
 
@@ -99,6 +98,24 @@ pub fn client_update_target() -> String {
         _ => "windows",
     }
     .to_string()
+}
+
+/// Must stay aligned with the server's model.SupportedClientTargets; unknown
+/// values are rejected so a stale build falls back to the inferred target
+/// instead of querying a policy row that does not exist.
+fn is_supported_update_target(target: &str) -> bool {
+    matches!(
+        target,
+        "windows"
+            | "windows-win7-x64"
+            | "linux-gui-x64"
+            | "linux-headless-x64"
+            | "linux-headless-aarch64"
+            | "linux-docker-x64"
+            | "linux-docker-aarch64"
+            | "macos-universal"
+            | "android"
+    )
 }
 
 pub fn evaluate_version_policy(current: &str, policy: &VersionPolicyData) -> VersionEvaluation {
@@ -167,15 +184,36 @@ mod tests {
 
     #[test]
     fn selects_a_supported_update_target() {
-        assert!(matches!(
-            client_update_target().as_str(),
-            "windows"
-                | "linux-headless-x64"
-                | "linux-headless-aarch64"
-                | "linux-docker-x64"
-                | "linux-docker-aarch64"
-                | "android"
-        ));
+        assert!(is_supported_update_target(&client_update_target()));
+    }
+
+    #[test]
+    fn baked_release_target_wins_over_host_inference() {
+        // The None arm is a no-op on builds without a baked target (plain
+        // host builds); package CI compiles with P2PREMOTE_RELEASE_TARGET set,
+        // where this guards the runtime-env-over-baked-target precedence.
+        if let Some(target) = option_env!("P2PREMOTE_RELEASE_TARGET") {
+            assert_eq!(client_update_target(), target);
+        }
+    }
+
+    #[test]
+    fn supported_targets_match_server_policy_targets() {
+        for target in [
+            "windows",
+            "windows-win7-x64",
+            "linux-gui-x64",
+            "linux-headless-x64",
+            "linux-headless-aarch64",
+            "linux-docker-x64",
+            "linux-docker-aarch64",
+            "macos-universal",
+            "android",
+        ] {
+            assert!(is_supported_update_target(target), "missing {target}");
+        }
+        assert!(!is_supported_update_target("linux-gui-aarch64"));
+        assert!(!is_supported_update_target(""));
     }
 
     #[test]
