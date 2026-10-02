@@ -334,6 +334,16 @@ fn wait_until_service_gone(timeout: std::time::Duration) {
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
+    // 构建脚本以 `--version` 校验产物内嵌版本（与设备注册上报同源），
+    // 必须放在任何初始化之前，保证无副作用、秒退
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!(
+            "p2premote-service {}",
+            p2premote_core::device::client_version()
+        );
+        return Ok(());
+    }
+
     if args.iter().any(|arg| arg == "--foreground") {
         apply_runtime_args();
         init_logging();
@@ -368,6 +378,17 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(not(windows))]
 fn main() -> anyhow::Result<()> {
+    // 构建脚本以 `--version` 校验产物内嵌版本（与设备注册上报同源），
+    // 必须放在任何初始化之前，保证无副作用、秒退
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!(
+            "p2premote-service {}",
+            p2premote_core::device::client_version()
+        );
+        return Ok(());
+    }
+
     apply_runtime_args();
     init_logging();
     #[cfg(target_os = "linux")]

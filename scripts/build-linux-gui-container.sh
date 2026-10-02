@@ -83,16 +83,18 @@ for resource in \
 done
 "$frontend_dir/node_modules/.bin/tauri" build --config "$config"
 
-# 防回归：GUI 主程序与内嵌 service 必须包含本次构建版本。历史上 tag 触发的
-# 构建曾因 Cargo.toml 未盖章出现"文件名 1.13.x、软件内 1.12.4-fb23c3"
-for embedded_binary in \
-  "$cargo_target_dir/release/p2premote" \
-  src-tauri/resources/p2premote-service; do
-  grep -aqF "$artifact_version" "$embedded_binary" || {
-    echo "binary does not embed build version $artifact_version: $embedded_binary" >&2
-    exit 1
-  }
-done
+# 防回归：GUI 主程序与内嵌 service 必须报告本次构建版本。版本串可能被
+# 优化器拆进指令立即数（字节扫描不可靠），改为运行 --version 取真实值；
+# 历史上 tag 触发的构建曾因 Cargo.toml 未盖章出现"文件名 1.13.x、软件内
+# 1.12.4-fb23c3"
+"$cargo_target_dir/release/p2premote" --version | grep -qF "$artifact_version" || {
+  echo "GUI binary does not report build version $artifact_version" >&2
+  exit 1
+}
+src-tauri/resources/p2premote-service --version | grep -qF "$artifact_version" || {
+  echo "service binary does not report build version $artifact_version" >&2
+  exit 1
+}
 
 bash scripts/repack-linux-gui-deb.sh "$artifact_version"
 mkdir -p "$dist_dir"

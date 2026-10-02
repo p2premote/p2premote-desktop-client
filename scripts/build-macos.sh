@@ -265,14 +265,16 @@ else
     --sign "$APPLE_SIGNING_IDENTITY" "$app_path"
 fi
 lipo "$app_path/Contents/MacOS/p2pRemote" -verify_arch x86_64 arm64
-# 防回归：GUI 主程序与内嵌 service 必须包含本次构建版本。历史上 tag 触发的
-# 构建曾因 Cargo.toml 未盖章出现"文件名 1.13.x、软件内 1.12.4-fb23c3"
-grep -aqF "$build_version" "$app_path/Contents/MacOS/p2pRemote" || {
-  echo "GUI binary does not embed build version $build_version" >&2
+# 防回归：GUI 主程序与内嵌 service 必须报告本次构建版本。版本串可能被
+# 优化器拆进指令立即数（字节扫描不可靠），改为运行 --version 取真实值；
+# 历史上 tag 触发的构建曾因 Cargo.toml 未盖章出现"文件名 1.13.x、软件内
+# 1.12.4-fb23c3"
+"$app_path/Contents/MacOS/p2pRemote" --version | grep -qF "$build_version" || {
+  echo "GUI binary does not report build version $build_version" >&2
   exit 1
 }
-grep -aqF "$build_version" "$app_path/Contents/Resources/resources/p2premote-service" || {
-  echo "service binary does not embed build version $build_version" >&2
+"$app_path/Contents/Resources/resources/p2premote-service" --version | grep -qF "$build_version" || {
+  echo "service binary does not report build version $build_version" >&2
   exit 1
 }
 for artifact in p2premote-service p2premote-cli libp2premote-wg.dylib; do

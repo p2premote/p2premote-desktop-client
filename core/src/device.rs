@@ -107,6 +107,13 @@ fn current_client_version() -> String {
     )
 }
 
+/// 供二进制 `--version` 输出：与设备注册上报的客户端版本完全同源。
+/// 构建脚本靠它校验产物版本——版本串可能被优化器拆进指令立即数，
+/// 对产物做字节扫描不可靠，必须运行二进制取真实值。
+pub fn client_version() -> String {
+    current_client_version()
+}
+
 fn resolve_client_version(compiled: Option<&str>, runtime: Option<String>) -> String {
     compiled
         .map(str::trim)
