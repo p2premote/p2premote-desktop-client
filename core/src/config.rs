@@ -987,24 +987,42 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 #[cfg(windows)]
 fn replace_file_atomically(source: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
+    use std::time::Duration;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    const RETRY_DELAYS_MS: [u64; 5] = [10, 25, 50, 100, 200];
+
     let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    let result = unsafe {
-        MoveFileExW(
-            source_wide.as_ptr(),
-            target_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    for retry_delay_ms in RETRY_DELAYS_MS.into_iter().map(Some).chain([None]) {
+        let result = unsafe {
+            MoveFileExW(
+                source_wide.as_ptr(),
+                target_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if result != 0 {
+            return Ok(());
+        }
+
+        let error = std::io::Error::last_os_error();
+        let retryable = matches!(
+            error.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+        );
+        match (retryable, retry_delay_ms) {
+            (true, Some(delay_ms)) => std::thread::sleep(Duration::from_millis(delay_ms)),
+            _ => return Err(error),
+        }
     }
+
+    unreachable!("atomic replacement retry loop always returns")
 }
 
 #[cfg(not(windows))]
