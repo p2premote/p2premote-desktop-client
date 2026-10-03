@@ -256,8 +256,7 @@ fn require_bundled_binary(app: &AppHandle, binary_name: &str) -> Result<PathBuf,
                 // which the repacked deb no longer contains. Prefer the install
                 // root derived from the executable itself and only keep the
                 // Tauri path for the upstream /usr/lib layout.
-                let exe_relative =
-                    p2premote_core::config::linux_resources_dir().join(binary_name);
+                let exe_relative = p2premote_core::config::linux_resources_dir().join(binary_name);
                 if exe_relative.is_file() {
                     exe_relative
                 } else {
@@ -338,10 +337,10 @@ pub fn launch_rustdesk_tiny(app: AppHandle, address: String) -> Result<(), Strin
 
     #[cfg(target_os = "macos")]
     {
-        let executable = require_bundled_binary(&app, "RustDeskTiny.app/Contents/MacOS/RustDeskTiny")
-            .map_err(|_| {
-                "RustDeskTiny executable is missing from application resources".to_string()
-            })?;
+        let executable =
+            require_bundled_binary(&app, "RustDeskTiny.app/Contents/MacOS/RustDeskTiny").map_err(
+                |_| "RustDeskTiny executable is missing from application resources".to_string(),
+            )?;
         spawn_rustdesk_tiny(executable, address)?;
         Ok(())
     }

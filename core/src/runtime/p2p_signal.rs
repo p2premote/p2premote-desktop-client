@@ -117,7 +117,9 @@ pub(super) async fn handle_p2p_notify(
             traversal_negotiation,
             ..
         } => {
-            if let Some(negotiation) = &traversal_negotiation { negotiation.validate()?; }
+            if let Some(negotiation) = &traversal_negotiation {
+                negotiation.validate()?;
+            }
             info!(
                 "[ServiceRuntime] passive attempt start: source_device_id={}, attempt={}/{}, attempt_id={}, source_user_id={}, source_username_present={}, source_email_present={}",
                 source_device_id,
@@ -307,8 +309,16 @@ pub(super) async fn handle_p2p_notify(
                 drop(state);
             }
             if let Some(negotiation) = &traversal_negotiation {
-                crate::traversal::register(punch_token.clone(), attempt_id.clone(), connection_id.clone(),
-                    source_device_id, access_grant.clone(), ws_client.clone(), false, negotiation.clone())?;
+                crate::traversal::register(
+                    punch_token.clone(),
+                    attempt_id.clone(),
+                    connection_id.clone(),
+                    source_device_id,
+                    access_grant.clone(),
+                    ws_client.clone(),
+                    false,
+                    negotiation.clone(),
+                )?;
             }
             let start_result = start_wgvpn_job(
                 shared,

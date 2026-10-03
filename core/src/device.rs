@@ -52,9 +52,9 @@ fn current_capabilities() -> Vec<String> {
                     .map(|resources| resources.join("RustDeskTiny.app/Contents/MacOS/RustDeskTiny"))
             })
             .is_some_and(|executable| rustdesk_tiny_executable_installed(&executable));
-        let installed_in_applications = rustdesk_tiny_executable_installed(
-            std::path::Path::new("/Applications/RustDeskTiny.app/Contents/MacOS/RustDeskTiny"),
-        );
+        let installed_in_applications = rustdesk_tiny_executable_installed(std::path::Path::new(
+            "/Applications/RustDeskTiny.app/Contents/MacOS/RustDeskTiny",
+        ));
         if bundled_next_to_exe || installed_in_applications {
             vec![CAPABILITY_RUSTDESK_TINY.to_string()]
         } else {

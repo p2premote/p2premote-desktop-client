@@ -415,18 +415,32 @@ pub async fn save_wgvpn_lan_access_config(
 
 /// 设置 UI 语言并持久化到 service 侧 MachineConfig.locale。
 #[tauri::command]
-pub async fn get_connection_preferences() -> Result<p2premote_core::traversal_policy::Preferences, String> {
+pub async fn get_connection_preferences(
+) -> Result<p2premote_core::traversal_policy::Preferences, String> {
     connection_preferences_response(Data::GetConnectionPreferences).await
 }
 
 #[tauri::command]
-pub async fn save_connection_preferences(prefer_ipv6: bool, prefer_tcp: bool) -> Result<p2premote_core::traversal_policy::Preferences, String> {
-    connection_preferences_response(Data::SaveConnectionPreferences { prefer_ipv6, prefer_tcp }).await
+pub async fn save_connection_preferences(
+    prefer_ipv6: bool,
+    prefer_tcp: bool,
+) -> Result<p2premote_core::traversal_policy::Preferences, String> {
+    connection_preferences_response(Data::SaveConnectionPreferences {
+        prefer_ipv6,
+        prefer_tcp,
+    })
+    .await
 }
 
-async fn connection_preferences_response(command: Data) -> Result<p2premote_core::traversal_policy::Preferences, String> {
+async fn connection_preferences_response(
+    command: Data,
+) -> Result<p2premote_core::traversal_policy::Preferences, String> {
     match crate::commands::service::send_command_responsive(command).await? {
-        Data::CommandResponse { ok: true, data: Some(data), .. } => serde_json::from_value(data).map_err(|e| e.to_string()),
+        Data::CommandResponse {
+            ok: true,
+            data: Some(data),
+            ..
+        } => serde_json::from_value(data).map_err(|e| e.to_string()),
         Data::CommandResponse { message, .. } => Err(message),
         other => Err(format!("unexpected service response: {other:?}")),
     }

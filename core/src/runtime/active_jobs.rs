@@ -233,7 +233,8 @@ pub(super) fn spawn_active_tunnel_job_task(
                 &shared_for_task,
                 TunnelJobStatus {
                     is_active: true,
-            tcp_retry_recommended: false,
+                    tcp_retry_recommended: false,
+                    symmetric_nat_help_recommended: false,
                     peer_device_id,
                     peer_device_uuid: target_uuid_for_task.clone(),
                     state: TunnelJobState::Running,
@@ -380,7 +381,8 @@ pub(super) fn spawn_active_tunnel_job_task(
                         &shared_for_task,
                         TunnelJobStatus {
                             is_active: true,
-            tcp_retry_recommended: false,
+                            tcp_retry_recommended: false,
+                            symmetric_nat_help_recommended: false,
                             peer_device_id,
                             peer_device_uuid: target_uuid_for_task.clone(),
                             state: TunnelJobState::Succeeded,
@@ -472,7 +474,16 @@ pub(super) fn spawn_active_tunnel_job_task(
                     &shared_for_task,
                     TunnelJobStatus {
                         is_active: true,
-            tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(config.prefer_tcp, &last_message),
+                        tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(
+                            config.prefer_tcp,
+                            &last_message,
+                        ),
+                        symmetric_nat_help_recommended:
+                            crate::traversal_policy::symmetric_nat_help_recommended(
+                                &classify_tunnel_error_code(&last_message),
+                                &last_source_nat,
+                                &last_target_nat,
+                            ),
                         peer_device_id,
                         peer_device_uuid: target_uuid_for_task.clone(),
                         state: TunnelJobState::Waiting,
@@ -514,11 +525,20 @@ pub(super) fn spawn_active_tunnel_job_task(
             &shared_for_task,
             TunnelJobStatus {
                 is_active: true,
-            tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(config.prefer_tcp, &last_message),
+                tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(
+                    config.prefer_tcp,
+                    &last_message,
+                ),
+                symmetric_nat_help_recommended:
+                    crate::traversal_policy::symmetric_nat_help_recommended(
+                        &classify_tunnel_error_code(&last_message),
+                        &last_source_nat,
+                        &last_target_nat,
+                    ),
                 peer_device_id,
                 peer_device_uuid: target_uuid_for_task,
-            state: TunnelJobState::Failed,
-            attempt: last_attempt,
+                state: TunnelJobState::Failed,
+                attempt: last_attempt,
                 max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                 message: if last_message.is_empty() {
                     localized_message(
@@ -598,7 +618,10 @@ pub(super) async fn start_wgvpn_active_with_notify(
             .unwrap_or_default(),
         traversal_negotiation: Some(crate::traversal_policy::Negotiation {
             version: crate::traversal_policy::VERSION,
-            preferences: crate::traversal_policy::Preferences { prefer_ipv6: config.prefer_ipv6, prefer_tcp: config.prefer_tcp },
+            preferences: crate::traversal_policy::Preferences {
+                prefer_ipv6: config.prefer_ipv6,
+                prefer_tcp: config.prefer_tcp,
+            },
         }),
     };
     if let Err(err) = send_p2p_attempt_message(
@@ -652,11 +675,24 @@ pub(super) async fn start_wgvpn_active_with_notify(
 
     if let Some(negotiation) = traversal_negotiation {
         negotiation.validate()?;
-        if negotiation.preferences != (crate::traversal_policy::Preferences { prefer_ipv6: config.prefer_ipv6, prefer_tcp: config.prefer_tcp }) {
+        if negotiation.preferences
+            != (crate::traversal_policy::Preferences {
+                prefer_ipv6: config.prefer_ipv6,
+                prefer_tcp: config.prefer_tcp,
+            })
+        {
             return Err(anyhow!("traversal_preference_mismatch"));
         }
-        crate::traversal::register(punch_token.clone(), attempt_id.clone(), opened.connection_id.clone(),
-            peer_device_id, opened.access_grant.clone(), ws_client.clone(), true, negotiation)?;
+        crate::traversal::register(
+            punch_token.clone(),
+            attempt_id.clone(),
+            opened.connection_id.clone(),
+            peer_device_id,
+            opened.access_grant.clone(),
+            ws_client.clone(),
+            true,
+            negotiation,
+        )?;
     }
     let blocking_config = config.clone();
     let runtime_handle = tokio::runtime::Handle::current();
@@ -798,6 +834,7 @@ pub(super) fn publish_active_tunnel_job_failed(
         TunnelJobStatus {
             is_active: true,
             tcp_retry_recommended: false,
+            symmetric_nat_help_recommended: false,
             peer_device_id,
             peer_device_uuid,
             state: TunnelJobState::Failed,
@@ -821,6 +858,7 @@ pub(super) fn publish_active_tunnel_job_cancelled(
         TunnelJobStatus {
             is_active: true,
             tcp_retry_recommended: false,
+            symmetric_nat_help_recommended: false,
             peer_device_id,
             peer_device_uuid,
             state: TunnelJobState::Cancelled,

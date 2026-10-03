@@ -149,11 +149,11 @@ enum ConfigCommands {
 async fn main() -> Result<()> {
     // 构建脚本以 `--version` 校验产物内嵌版本（与设备注册上报同源）；
     // 在 clap 解析前拦截，避免与子命令/帮助冲突
-    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
-        println!(
-            "p2premote-cli {}",
-            p2premote_core::device::client_version()
-        );
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+    {
+        println!("p2premote-cli {}", p2premote_core::device::client_version());
         return Ok(());
     }
 

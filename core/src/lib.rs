@@ -17,10 +17,10 @@ pub mod runtime;
 pub mod service_control;
 pub mod speed_test; // 基于 riperf3 的双向隧道测速（发起端 client / 对端 server）
 pub mod subnet_router;
+pub mod traversal;
+pub mod traversal_policy;
 pub mod tunnel_control;
 pub mod tunnel_view;
-pub mod traversal_policy;
-pub mod traversal;
 pub mod update;
 pub mod wol;
 pub mod ws;

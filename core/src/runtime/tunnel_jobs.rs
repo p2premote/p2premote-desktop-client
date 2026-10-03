@@ -103,6 +103,7 @@ pub(super) fn spawn_wgvpn_job_task(
                     peer_device_uuid: String::new(),
                     result: None,
                     tcp_retry_recommended: false,
+                    symmetric_nat_help_recommended: false,
                     peer_device_id,
                     is_active,
                     state: TunnelJobState::Running,
@@ -130,6 +131,7 @@ pub(super) fn spawn_wgvpn_job_task(
                             peer_device_uuid: String::new(),
                             result: None,
                             tcp_retry_recommended: false,
+                            symmetric_nat_help_recommended: false,
                             peer_device_id,
                             is_active,
                             state: TunnelJobState::Failed,
@@ -259,6 +261,7 @@ pub(super) fn spawn_wgvpn_job_task(
                                     peer_device_uuid: String::new(),
                                     result: None,
                                     tcp_retry_recommended: false,
+                                    symmetric_nat_help_recommended: false,
                                     peer_device_id,
                                     is_active,
                                     state: TunnelJobState::Failed,
@@ -285,6 +288,7 @@ pub(super) fn spawn_wgvpn_job_task(
                             peer_device_uuid: String::new(),
                             result: None,
                             tcp_retry_recommended: false,
+                            symmetric_nat_help_recommended: false,
                             peer_device_id,
                             is_active,
                             state: TunnelJobState::Succeeded,
@@ -326,6 +330,7 @@ pub(super) fn spawn_wgvpn_job_task(
                                 peer_device_uuid: String::new(),
                                 result: None,
                                 tcp_retry_recommended: false,
+                                symmetric_nat_help_recommended: false,
                                 peer_device_id,
                                 is_active,
                                 state: TunnelJobState::Failed,
@@ -346,6 +351,7 @@ pub(super) fn spawn_wgvpn_job_task(
                                 peer_device_uuid: String::new(),
                                 result: None,
                                 tcp_retry_recommended: false,
+                                symmetric_nat_help_recommended: false,
                                 peer_device_id,
                                 is_active,
                                 state: TunnelJobState::Failed,
@@ -365,6 +371,7 @@ pub(super) fn spawn_wgvpn_job_task(
                             peer_device_uuid: String::new(),
                             result: None,
                             tcp_retry_recommended: false,
+                            symmetric_nat_help_recommended: false,
                             peer_device_id,
                             is_active,
                             state: TunnelJobState::Waiting,
@@ -410,6 +417,7 @@ pub(super) fn spawn_wgvpn_job_task(
                 peer_device_uuid: String::new(),
                 result: None,
                 tcp_retry_recommended: false,
+                symmetric_nat_help_recommended: false,
                 peer_device_id,
                 is_active,
                 state: TunnelJobState::Failed,
@@ -476,6 +484,7 @@ async fn await_passive_inbound_approval(
             peer_device_uuid: String::new(),
             result: None,
             tcp_retry_recommended: false,
+            symmetric_nat_help_recommended: false,
             peer_device_id,
             is_active: false,
             state: TunnelJobState::Waiting,
@@ -838,6 +847,7 @@ pub(super) fn publish_wgvpn_job_cancelled(
             peer_device_uuid: String::new(),
             result: None,
             tcp_retry_recommended: false,
+            symmetric_nat_help_recommended: false,
             peer_device_id,
             is_active,
             state: TunnelJobState::Cancelled,
@@ -1138,9 +1148,7 @@ pub(super) fn refresh_wgvpn_sessions_with_options(
             if s.subnet_router_handle_id.is_empty() {
                 continue;
             }
-            if let Ok(router) =
-                gonc_ffi::get_subnet_router_status(&s.subnet_router_handle_id)
-            {
+            if let Ok(router) = gonc_ffi::get_subnet_router_status(&s.subnet_router_handle_id) {
                 if let Some(mode) = subnet_router::lan_mode_from_backend_label(&router.lan_mode) {
                     s.lan_mode = mode;
                 }

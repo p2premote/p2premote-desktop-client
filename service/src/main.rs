@@ -155,9 +155,7 @@ fn handle_scm_command() -> anyhow::Result<()> {
         "install" => install_exe
             .ok_or_else(|| anyhow::anyhow!("install requires exe_path argument"))
             .and_then(|exe_path| {
-                run_scm_step(|| {
-                    p2premote_core::service_control::direct::install_service(&exe_path)
-                })
+                run_scm_step(|| p2premote_core::service_control::direct::install_service(&exe_path))
             }),
         "uninstall" => run_scm_step(|| {
             // 先停并等停止再删除：对运行中的服务 DeleteService 只会"标记删除"，
@@ -175,9 +173,7 @@ fn handle_scm_command() -> anyhow::Result<()> {
             }
             result
         }),
-        "start" => run_scm_step(|| {
-            p2premote_core::service_control::direct::start_service()
-        }),
+        "start" => run_scm_step(|| p2premote_core::service_control::direct::start_service()),
         "stop" => run_scm_step(|| {
             p2premote_core::service_control::direct::stop_service()?;
             // SCM acknowledges the stop request before the process has exited.
@@ -186,12 +182,8 @@ fn handle_scm_command() -> anyhow::Result<()> {
             wait_until_service_stopped(std::time::Duration::from_secs(60));
             Ok(())
         }),
-        "enable" => run_scm_step(|| {
-            p2premote_core::service_control::direct::enable_service()
-        }),
-        "disable" => run_scm_step(|| {
-            p2premote_core::service_control::direct::disable_service()
-        }),
+        "enable" => run_scm_step(|| p2premote_core::service_control::direct::enable_service()),
+        "disable" => run_scm_step(|| p2premote_core::service_control::direct::disable_service()),
         // 复合操作：install + enable + start，一次 UAC 完成
         "setup" => install_exe
             .ok_or_else(|| anyhow::anyhow!("setup requires exe_path argument"))
@@ -199,17 +191,14 @@ fn handle_scm_command() -> anyhow::Result<()> {
                 run_scm_step(|| {
                     p2premote_core::service_control::direct::install_service(&exe_path)
                 })?;
-                run_scm_step(|| {
-                    p2premote_core::service_control::direct::enable_service()
-                })?;
+                run_scm_step(|| p2premote_core::service_control::direct::enable_service())?;
                 // 等待 SCM 完成 config 变更后再启动
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 // 重试 start 最多 3 次
                 let mut start_err = None;
                 for attempt in 1..=3 {
-                    match run_scm_step(|| {
-                        p2premote_core::service_control::direct::start_service()
-                    }) {
+                    match run_scm_step(|| p2premote_core::service_control::direct::start_service())
+                    {
                         Ok(()) => {
                             start_err = None;
                             break;
@@ -429,52 +418,50 @@ fn service_main() -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
     let status_handle =
-        service_control_handler::register(
-            SERVICE_NAME,
-            move |control_event| match control_event {
-                ServiceControl::Stop | ServiceControl::Shutdown => {
-                    let _ = shutdown_tx.send(());
-                    ServiceControlHandlerResult::NoError
-                }
-                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-                _ => ServiceControlHandlerResult::NotImplemented,
-            },
-        ).context("register service control handler")?;
+        service_control_handler::register(SERVICE_NAME, move |control_event| match control_event {
+            ServiceControl::Stop | ServiceControl::Shutdown => {
+                let _ = shutdown_tx.send(());
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            _ => ServiceControlHandlerResult::NotImplemented,
+        })
+        .context("register service control handler")?;
 
     // 报告 StartPending
-    status_handle.set_service_status(ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: ServiceState::StartPending,
-        controls_accepted: ServiceControlAccept::empty(),
-        exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 1,
-        wait_hint: std::time::Duration::from_secs(5),
-        process_id: None,
-    }).context("report StartPending")?;
+    status_handle
+        .set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::StartPending,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 1,
+            wait_hint: std::time::Duration::from_secs(5),
+            process_id: None,
+        })
+        .context("report StartPending")?;
 
     // 在独立线程运行 service 逻辑
     let service_result = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_foreground));
         match result {
-            Ok(value) => {
-                value
-            }
-            Err(_) => {
-                Err(anyhow::anyhow!("runtime thread panicked"))
-            }
+            Ok(value) => value,
+            Err(_) => Err(anyhow::anyhow!("runtime thread panicked")),
         }
     });
 
     // 报告 Running
-    status_handle.set_service_status(ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-        exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 0,
-        wait_hint: std::time::Duration::from_secs(0),
-        process_id: None,
-    }).context("report Running")?;
+    status_handle
+        .set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Running,
+            controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: std::time::Duration::from_secs(0),
+            process_id: None,
+        })
+        .context("report Running")?;
 
     loop {
         match shutdown_rx.try_recv() {

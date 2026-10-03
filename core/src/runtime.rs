@@ -14,9 +14,9 @@ use crate::config::{
     save_machine_config,
 };
 use crate::control::{
-    accept_ipc_client, TunnelJobState, TunnelJobStatus, Connection, Data, IpcStream,
-    RuntimeStatus, TunnelLastResult, TunnelLifecycleRole, TunnelLifecycleState,
-    TunnelLifecycleStatus, WgvpnHealthState, WgvpnSessionStatus,
+    accept_ipc_client, Connection, Data, IpcStream, RuntimeStatus, TunnelJobState, TunnelJobStatus,
+    TunnelLastResult, TunnelLifecycleRole, TunnelLifecycleState, TunnelLifecycleStatus,
+    WgvpnHealthState, WgvpnSessionStatus,
 };
 use crate::device::{
     anonymous_connect, collect_device_status_report, delete_device, generate_connect_code,
@@ -1173,8 +1173,10 @@ fn classify_tunnel_error_code(message: &str) -> &'static str {
     {
         return code;
     }
-    if matches!(structured_code, "punch_exhausted" | "traversal_signal_timeout")
-        || message.starts_with("hole_punch_wait_timeout:")
+    if matches!(
+        structured_code,
+        "punch_exhausted" | "traversal_signal_timeout"
+    ) || message.starts_with("hole_punch_wait_timeout:")
         || (message.contains("exchange failed:") && message.contains("timeout"))
         || (message.contains("udp tunnel failed:")
             && (message.contains("timeout")
@@ -1357,6 +1359,7 @@ mod tests {
             active_tunnel_jobs: vec![TunnelJobStatus {
                 is_active: true,
                 tcp_retry_recommended: false,
+                symmetric_nat_help_recommended: false,
                 peer_device_id: 29,
                 peer_device_uuid: "peer-29".to_string(),
                 state: TunnelJobState::Waiting,
@@ -1441,6 +1444,7 @@ mod tests {
             message: "stale token".to_string(),
             result: None,
             tcp_retry_recommended: false,
+            symmetric_nat_help_recommended: false,
             updated_at: 1,
         };
         assert!(!update_wgvpn_job_status(&shared, stale_status, Some(1)));
@@ -1601,11 +1605,22 @@ mod tests {
 
     #[test]
     fn negotiated_punch_failures_retry_but_invalid_plans_and_cancellation_do_not() {
-        for error in ["punch_exhausted", "punch_exhausted:udp4,udp6", "punch_exhausted:tcp4,udp4,udp6", "traversal_signal_timeout"] {
+        for error in [
+            "punch_exhausted",
+            "punch_exhausted:udp4,udp6",
+            "punch_exhausted:tcp4,udp4,udp6",
+            "traversal_signal_timeout",
+        ] {
             assert_eq!(classify_tunnel_error_code(error), "hole_punch_wait_timeout");
             assert!(is_retryable_tunnel_error(error));
         }
-        for error in ["invalid_traversal_sequence", "traversal_plan_mismatch", "traversal_cancelled", "approval_denied", "peer_offline"] {
+        for error in [
+            "invalid_traversal_sequence",
+            "traversal_plan_mismatch",
+            "traversal_cancelled",
+            "approval_denied",
+            "peer_offline",
+        ] {
             assert!(!is_retryable_tunnel_error(error));
         }
     }

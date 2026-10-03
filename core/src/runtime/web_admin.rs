@@ -150,8 +150,10 @@ impl WebSecurityState {
         let allowed_remote_ip = allowed_remote_ip
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(|value| parse_allowed_cidr(value)
-                .with_context(|| format!("invalid web_admin_allowed_ip: {value}")))
+            .map(|value| {
+                parse_allowed_cidr(value)
+                    .with_context(|| format!("invalid web_admin_allowed_ip: {value}"))
+            })
             .transpose()?;
         let security_code = security_code
             .map(str::trim)
@@ -172,7 +174,10 @@ impl WebSecurityState {
         Ok(Self {
             allowed_remote_ip: Mutex::new(allowed_remote_ip),
             security_code_hash: Mutex::new(
-                security_code.as_deref().map(parse_persisted_security_code).transpose()?,
+                security_code
+                    .as_deref()
+                    .map(parse_persisted_security_code)
+                    .transpose()?,
             ),
             session: Mutex::new(None),
             session_revision,
@@ -198,9 +203,10 @@ impl WebSecurityState {
     fn source_allowed(&self, ip: IpAddr) -> bool {
         let ip = normalize_ip(ip);
         ip.is_loopback()
-            || self.allowed_remote_ip.lock().is_some_and(|allowed| {
-                matches!(ip, IpAddr::V4(value) if allowed.contains(&value))
-            })
+            || self
+                .allowed_remote_ip
+                .lock()
+                .is_some_and(|allowed| matches!(ip, IpAddr::V4(value) if allowed.contains(&value)))
     }
 
     /// Docker 部署（Dockerfile 注入 P2PREMOTE_WEB_ADMIN_FIRST_TRUST=1）启用
@@ -531,10 +537,7 @@ fn web_admin_addr(remote_enabled: bool) -> Result<SocketAddr> {
 /// 启动日志用的 Web Admin 监听地址（复用启动路径已加载的 config，避免双读）。
 pub(super) fn web_admin_addr_for_log(config: Option<&crate::config::MachineConfig>) -> String {
     // 读失败（None）时沿用 MachineConfig::default 的 webui_enabled=true 语义。
-    if !config
-        .map(|config| config.webui_enabled)
-        .unwrap_or(true)
-    {
+    if !config.map(|config| config.webui_enabled).unwrap_or(true) {
         return "disabled".to_string();
     }
     let security = config.and_then(|config| {
@@ -716,16 +719,17 @@ async fn web_auth_complete_first_trust(
     if config.web_admin_security_code.is_some() || config.web_admin_allowed_ip.is_some() {
         return StatusCode::CONFLICT.into_response();
     }
-    config.web_admin_security_code = Some(encode_security_code_hash(&hash_security_code(security_code)));
+    config.web_admin_security_code = Some(encode_security_code_hash(&hash_security_code(
+        security_code,
+    )));
     config.web_admin_allowed_ip = Some(allowed_cidr.clone());
     if let Err(err) = save_machine_config(&config) {
         error!("[WebAdmin] failed to save first-use settings: {err}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     *state.security.security_code_hash.lock() = Some(hash_security_code(security_code));
-    *state.security.allowed_remote_ip.lock() = Some(
-        parse_allowed_cidr(&allowed_cidr).expect("validated IPv4 CIDR"),
-    );
+    *state.security.allowed_remote_ip.lock() =
+        Some(parse_allowed_cidr(&allowed_cidr).expect("validated IPv4 CIDR"));
     *state.security.bootstrap_trusted_ip.lock() = None;
     state.security.clear_session();
     let source_ip = normalize_ip(peer.ip());
@@ -925,10 +929,11 @@ async fn web_admin_update_access(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    let requested_cidr = match parse_web_access_config(&request.mode, request.allowed_cidr.as_deref()) {
-        Ok(cidr) => cidr,
-        Err(error) => return web_access_error(error),
-    };
+    let requested_cidr =
+        match parse_web_access_config(&request.mode, request.allowed_cidr.as_deref()) {
+            Ok(cidr) => cidr,
+            Err(error) => return web_access_error(error),
+        };
 
     let mut config = match load_machine_config() {
         Ok(config) => config,
@@ -946,7 +951,9 @@ async fn web_admin_update_access(
     {
         return web_access_error("security_code_required");
     }
-    let current_cidr = config.web_admin_allowed_ip.as_deref()
+    let current_cidr = config
+        .web_admin_allowed_ip
+        .as_deref()
         .and_then(|value| parse_allowed_cidr(value).ok())
         .map(|network| network.to_string());
     if current_cidr == requested_cidr {
@@ -1376,13 +1383,24 @@ async fn handle_web_command(
             .await?;
             Ok(serde_json::Value::Null)
         }
-        "get_connection_preferences" => command_data(dispatch_web_data(Data::GetConnectionPreferences, state).await?),
+        "get_connection_preferences" => {
+            command_data(dispatch_web_data(Data::GetConnectionPreferences, state).await?)
+        }
         "save_connection_preferences" => {
             let prefer_ipv6 = arg_bool(&args, &["preferIpv6", "prefer_ipv6"])
                 .ok_or_else(|| "missing prefer_ipv6".to_string())?;
             let prefer_tcp = arg_bool(&args, &["preferTcp", "prefer_tcp"])
                 .ok_or_else(|| "missing prefer_tcp".to_string())?;
-            command_data(dispatch_web_data(Data::SaveConnectionPreferences { prefer_ipv6, prefer_tcp }, state).await?)
+            command_data(
+                dispatch_web_data(
+                    Data::SaveConnectionPreferences {
+                        prefer_ipv6,
+                        prefer_tcp,
+                    },
+                    state,
+                )
+                .await?,
+            )
         }
         "get_wgvpn_lan_access_config" => {
             let resp = dispatch_web_data(Data::GetWgvpnLanAccessConfig, state).await?;
@@ -1819,8 +1837,7 @@ mod tests {
 
     #[test]
     fn source_allowlist_accepts_loopback_mapped_loopback_and_configured_ip() {
-        let security =
-            WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
+        let security = WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
         assert!(security.source_allowed("127.0.0.1".parse().unwrap()));
         assert!(security.source_allowed("::ffff:127.0.0.1".parse().unwrap()));
         assert!(security.source_allowed("192.0.2.191".parse().unwrap()));
@@ -1829,8 +1846,7 @@ mod tests {
 
     #[test]
     fn session_is_bound_to_source_and_expires_when_idle() {
-        let security =
-            WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
+        let security = WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
         let now = Instant::now();
         security.replace_session(WebSession {
             token: "token".to_string(),
@@ -1847,8 +1863,7 @@ mod tests {
 
     #[test]
     fn a_new_web_session_replaces_the_previous_session() {
-        let security =
-            WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
+        let security = WebSecurityState::from_values(Some("192.0.2.191"), Some("1")).unwrap();
         let now = Instant::now();
         for token in ["first", "second"] {
             security.replace_session(WebSession {
@@ -1882,7 +1897,10 @@ mod tests {
         let expected = hash_security_code("safe-code");
         let encoded = encode_security_code_hash(&expected);
         assert_eq!(parse_persisted_security_code(&encoded).unwrap(), expected);
-        assert_eq!(parse_persisted_security_code("safe-code").unwrap(), expected);
+        assert_eq!(
+            parse_persisted_security_code("safe-code").unwrap(),
+            expected
+        );
         assert!(parse_persisted_security_code("sha256:not-hex").is_err());
     }
 
@@ -1946,8 +1964,7 @@ mod tests {
         // 已配置安全码或白名单的部署不进入引导窗口。
         let with_code = WebSecurityState::from_values(None, Some("1234")).unwrap();
         assert!(!with_code.claim_first_trust_bootstrap_with(remote, true));
-        let with_allowed =
-            WebSecurityState::from_values(Some("10.0.0.8"), Some("1234")).unwrap();
+        let with_allowed = WebSecurityState::from_values(Some("10.0.0.8"), Some("1234")).unwrap();
         assert!(!with_allowed.claim_first_trust_bootstrap_with(remote, true));
     }
 

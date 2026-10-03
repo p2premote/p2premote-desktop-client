@@ -16,16 +16,33 @@ pub fn ipv6_available() -> Option<bool> {
     let interfaces = NetworkInterface::show().ok()?;
     Some(interfaces.into_iter().any(|interface| {
         let name = interface.name.to_ascii_lowercase();
-        if ["loopback", "wg", "tun", "tap", "tailscale"].iter().any(|prefix| name.starts_with(prefix)) {
+        if ["loopback", "wg", "tun", "tap", "tailscale"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
             return false;
         }
-        interface.addr.into_iter().any(|addr| matches!(addr, Addr::V6(v6) if usable_ipv6(v6.ip)))
+        interface
+            .addr
+            .into_iter()
+            .any(|addr| matches!(addr, Addr::V6(v6) if usable_ipv6(v6.ip)))
     }))
 }
 
 pub fn tcp_retry_recommended(prefer_tcp: bool, error: &str) -> bool {
-    prefer_tcp && error.strip_prefix("punch_exhausted:")
-        .is_some_and(|networks| networks.split(',').any(|network| matches!(network, "tcp4" | "tcp6")))
+    prefer_tcp
+        && error
+            .strip_prefix("punch_exhausted:")
+            .is_some_and(|networks| {
+                networks
+                    .split(',')
+                    .any(|network| matches!(network, "tcp4" | "tcp6"))
+            })
+}
+
+pub fn symmetric_nat_help_recommended(error_code: &str, local_nat: &str, remote_nat: &str) -> bool {
+    error_code == "hole_punch_wait_timeout"
+        && (local_nat.eq_ignore_ascii_case("symm") || remote_nat.eq_ignore_ascii_case("symm"))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,27 +97,43 @@ pub fn eligible(network: &str, local: &[NatEvidence], remote: &[NatEvidence]) ->
         return false;
     }
     matches!(network, "tcp4" | "tcp6")
-            && (left.iter().any(|v| v.nat_type == "easy")
-                || right.iter().any(|v| v.nat_type == "easy"))
+        && (left.iter().any(|v| v.nat_type == "easy") || right.iter().any(|v| v.nat_type == "easy"))
 }
 
-pub fn build_plan_with_family(preferences: Preferences, local: &[NatEvidence], remote: &[NatEvidence],
-    local_ipv6: Option<bool>, remote_ipv6: Option<bool>) -> Vec<String> {
-    network_order(preferences).into_iter()
-        .filter(|network| !network.ends_with('6') || (local_ipv6 != Some(false) && remote_ipv6 != Some(false)))
+pub fn build_plan_with_family(
+    preferences: Preferences,
+    local: &[NatEvidence],
+    remote: &[NatEvidence],
+    local_ipv6: Option<bool>,
+    remote_ipv6: Option<bool>,
+) -> Vec<String> {
+    network_order(preferences)
+        .into_iter()
+        .filter(|network| {
+            !network.ends_with('6') || (local_ipv6 != Some(false) && remote_ipv6 != Some(false))
+        })
         .filter(|network| eligible(network, local, remote))
-        .map(str::to_string).collect()
+        .map(str::to_string)
+        .collect()
 }
 
 /// Fresh evidence is gathered for every attempt; no cross-network cache.
 pub async fn collect_evidence(ipv6: Option<bool>) -> Vec<NatEvidence> {
-    let networks: &[&str] = if ipv6 == Some(false) { &["udp4", "tcp4"] } else { &["udp4", "udp6", "tcp4", "tcp6"] };
-    let result = p2premote_punch::api::detect_nat(
-        networks, std::time::Duration::from_secs(6),
-    ).await;
-    let mut evidence = result.unwrap_or_default().into_iter()
+    let networks: &[&str] = if ipv6 == Some(false) {
+        &["udp4", "tcp4"]
+    } else {
+        &["udp4", "udp6", "tcp4", "tcp6"]
+    };
+    let result =
+        p2premote_punch::api::detect_nat(networks, std::time::Duration::from_secs(6)).await;
+    let mut evidence = result
+        .unwrap_or_default()
+        .into_iter()
         .filter(|v| matches!(v.network.as_str(), "udp4" | "udp6" | "tcp4" | "tcp6"))
-        .map(|v| NatEvidence { network: v.network, nat_type: v.nat_type })
+        .map(|v| NatEvidence {
+            network: v.network,
+            nat_type: v.nat_type,
+        })
         .collect::<Vec<_>>();
     evidence.sort_by(|a, b| (&a.network, &a.nat_type).cmp(&(&b.network, &b.nat_type)));
     evidence.dedup();
@@ -112,12 +145,23 @@ pub async fn collect_evidence(ipv6: Option<bool>) -> Vec<NatEvidence> {
 mod tests {
     use super::*;
     fn nat(network: &str, nat_type: &str) -> NatEvidence {
-        NatEvidence { network: network.into(), nat_type: nat_type.into() }
+        NatEvidence {
+            network: network.into(),
+            nat_type: nat_type.into(),
+        }
     }
     #[test]
     fn tcp_requires_easy_on_the_same_transport_and_family() {
-        let local = vec![nat("udp4", "easy"), nat("tcp4", "hard"), nat("tcp6", "easy")];
-        let remote = vec![nat("udp4", "symm"), nat("tcp4", "symm"), nat("tcp6", "hard")];
+        let local = vec![
+            nat("udp4", "easy"),
+            nat("tcp4", "hard"),
+            nat("tcp6", "easy"),
+        ];
+        let remote = vec![
+            nat("udp4", "symm"),
+            nat("tcp4", "symm"),
+            nat("tcp6", "hard"),
+        ];
         assert!(!eligible("tcp4", &local, &remote));
         assert!(eligible("tcp6", &local, &remote));
         assert!(eligible("tcp6", &remote, &local));
@@ -129,29 +173,65 @@ mod tests {
         let all = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "easy"));
         for prefer_ipv6 in [false, true] {
             for prefer_tcp in [false, true] {
-                let p = Preferences { prefer_ipv6, prefer_tcp };
-                assert_eq!(build_plan_with_family(p, &all, &all, None, None), network_order(p));
+                let p = Preferences {
+                    prefer_ipv6,
+                    prefer_tcp,
+                };
+                assert_eq!(
+                    build_plan_with_family(p, &all, &all, None, None),
+                    network_order(p)
+                );
             }
         }
         let hard = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "hard"));
-        assert_eq!(build_plan_with_family(Preferences { prefer_ipv6: true, prefer_tcp: true }, &hard, &hard, None, None), ["udp6", "udp4"]);
-        assert_eq!(build_plan_with_family(Preferences::default(), &[], &all, None, None), ["udp4", "udp6"]);
+        assert_eq!(
+            build_plan_with_family(
+                Preferences {
+                    prefer_ipv6: true,
+                    prefer_tcp: true
+                },
+                &hard,
+                &hard,
+                None,
+                None
+            ),
+            ["udp6", "udp4"]
+        );
+        assert_eq!(
+            build_plan_with_family(Preferences::default(), &[], &all, None, None),
+            ["udp4", "udp6"]
+        );
     }
     #[test]
     fn failed_nat_preflight_keeps_udp_fallback_but_never_grants_tcp() {
         let unknown = [nat("tcp4", "unknown"), nat("tcp6", "unknown")];
         let all = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "easy"));
-        let preferences = Preferences { prefer_ipv6: true, prefer_tcp: true };
-        assert_eq!(build_plan_with_family(preferences, &[], &[], None, None), ["udp6", "udp4"]);
-        assert_eq!(build_plan_with_family(preferences, &unknown, &all, None, None), ["udp6", "udp4"]);
-        assert_eq!(build_plan_with_family(preferences, &all, &unknown, None, None), ["udp6", "udp4"]);
+        let preferences = Preferences {
+            prefer_ipv6: true,
+            prefer_tcp: true,
+        };
+        assert_eq!(
+            build_plan_with_family(preferences, &[], &[], None, None),
+            ["udp6", "udp4"]
+        );
+        assert_eq!(
+            build_plan_with_family(preferences, &unknown, &all, None, None),
+            ["udp6", "udp4"]
+        );
+        assert_eq!(
+            build_plan_with_family(preferences, &all, &unknown, None, None),
+            ["udp6", "udp4"]
+        );
     }
     #[test]
     fn either_endpoint_without_ipv6_excludes_both_ipv6_transports() {
         let all = ["udp4", "udp6", "tcp4", "tcp6"].map(|n| nat(n, "easy"));
         for prefer_ipv6 in [false, true] {
             for prefer_tcp in [false, true] {
-                let preferences = Preferences { prefer_ipv6, prefer_tcp };
+                let preferences = Preferences {
+                    prefer_ipv6,
+                    prefer_tcp,
+                };
                 for other in [None, Some(false), Some(true)] {
                     for (local, remote) in [(Some(false), other), (other, Some(false))] {
                         let plan = build_plan_with_family(preferences, &all, &all, local, remote);
@@ -162,7 +242,19 @@ mod tests {
                 }
             }
         }
-        assert_eq!(build_plan_with_family(Preferences { prefer_ipv6: true, prefer_tcp: true }, &[], &[], None, Some(true)), ["udp6", "udp4"]);
+        assert_eq!(
+            build_plan_with_family(
+                Preferences {
+                    prefer_ipv6: true,
+                    prefer_tcp: true
+                },
+                &[],
+                &[],
+                None,
+                Some(true)
+            ),
+            ["udp6", "udp4"]
+        );
     }
     #[test]
     fn ipv6_address_check_excludes_local_and_documentation_addresses() {
@@ -173,11 +265,46 @@ mod tests {
     }
     #[test]
     fn tcp_hint_requires_a_public_tcp_attempt_and_enabled_preference() {
-        for error in ["punch_exhausted", "punch_exhausted:", "punch_exhausted:udp4,udp6", "traversal_signal_timeout", "peer_cancelled"] {
+        for error in [
+            "punch_exhausted",
+            "punch_exhausted:",
+            "punch_exhausted:udp4,udp6",
+            "traversal_signal_timeout",
+            "peer_cancelled",
+        ] {
             assert!(!tcp_retry_recommended(true, error));
         }
-        assert!(tcp_retry_recommended(true, "punch_exhausted:tcp4,udp4,udp6"));
-        assert!(tcp_retry_recommended(true, "punch_exhausted:tcp6,udp6,udp4"));
+        assert!(tcp_retry_recommended(
+            true,
+            "punch_exhausted:tcp4,udp4,udp6"
+        ));
+        assert!(tcp_retry_recommended(
+            true,
+            "punch_exhausted:tcp6,udp6,udp4"
+        ));
         assert!(!tcp_retry_recommended(false, "punch_exhausted:tcp4,udp4"));
+    }
+    #[test]
+    fn symmetric_nat_help_requires_network_punch_failure() {
+        assert!(symmetric_nat_help_recommended(
+            "hole_punch_wait_timeout",
+            "symm",
+            "easy"
+        ));
+        assert!(symmetric_nat_help_recommended(
+            "hole_punch_wait_timeout",
+            "hard",
+            "SYMM"
+        ));
+        assert!(!symmetric_nat_help_recommended(
+            "internal_error",
+            "symm",
+            "symm"
+        ));
+        assert!(!symmetric_nat_help_recommended(
+            "hole_punch_wait_timeout",
+            "hard",
+            "easy"
+        ));
     }
 }

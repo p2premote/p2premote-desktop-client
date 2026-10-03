@@ -40,11 +40,19 @@ const WGVPN_LISTEN_PORT: u16 = 41118;
 const LEGACY_WGVPN_LISTEN_PORT: u16 = 51820;
 
 fn peer_wg_port(advertised: u16) -> u16 {
-    if advertised == 0 { LEGACY_WGVPN_LISTEN_PORT } else { advertised }
+    if advertised == 0 {
+        LEGACY_WGVPN_LISTEN_PORT
+    } else {
+        advertised
+    }
 }
 
 fn peer_health_port(advertised: u16) -> u16 {
-    if advertised == 0 { LEGACY_HEALTH_PORT } else { advertised }
+    if advertised == 0 {
+        LEGACY_HEALTH_PORT
+    } else {
+        advertised
+    }
 }
 
 const fn uses_userspace_wg() -> bool {
@@ -378,11 +386,9 @@ pub async fn start_active_wgvpn(
     local_payload.my_ip = choose_passive_ip_for_peer(&wg_cli, target_device_id, ip_start, ip_end)?;
     local_payload.wg_port = WGVPN_LISTEN_PORT;
     local_payload.health_port = HEALTH_PORT;
-    let peer_payload = wgvpn_exchange::exchange_as_active(
-        &punch_token,
-        &local_payload,
-        Duration::from_secs(60),
-    ).await?;
+    let peer_payload =
+        wgvpn_exchange::exchange_as_active(&punch_token, &local_payload, Duration::from_secs(60))
+            .await?;
     let peer_exposed_lan_cidrs = peer_payload.exposed_lan_cidrs.clone();
     let warning = peer_payload.warning.clone();
     let peer_pubkey = peer_payload.pubkey;
@@ -655,7 +661,8 @@ pub async fn start_passive_wgvpn(
             reserved_peer_ip = Some(assigned);
             Ok((assigned, my_ip_u32))
         },
-    ).await?;
+    )
+    .await?;
     let peer_pubkey = active_payload.pubkey;
     let peer_device_id = active_payload.device_id;
     let peer_wg_port = peer_wg_port(active_payload.wg_port);
@@ -822,24 +829,22 @@ pub async fn start_passive_wgvpn(
 
     let mut router = None;
     if !use_userspace_router && !passive_exposed_lan_cidrs.is_empty() {
-        let started = gonc_ffi::start_subnet_router(
-            &gonc_ffi::StartSubnetRouterRequest {
-                session_id: source_device_id,
-                peer_device_id,
-                wg_private_key: priv_key.clone(),
-                peer_public_key: peer_pubkey.clone(),
-                tail_ip: my_ip.clone(),
-                peer_tail_ip: peer_ip.clone(),
-                peer_endpoint: local_endpoint.clone(),
-                listen_ip: "127.0.0.1".to_string(),
-                listen_port: WGVPN_LISTEN_PORT,
-                exposed_lan_cidrs: passive_exposed_lan_cidrs.clone(),
-                snat: true,
-                allow_tcp: true,
-                allow_udp: true,
-                allow_icmp_echo: true,
-            },
-        );
+        let started = gonc_ffi::start_subnet_router(&gonc_ffi::StartSubnetRouterRequest {
+            session_id: source_device_id,
+            peer_device_id,
+            wg_private_key: priv_key.clone(),
+            peer_public_key: peer_pubkey.clone(),
+            tail_ip: my_ip.clone(),
+            peer_tail_ip: peer_ip.clone(),
+            peer_endpoint: local_endpoint.clone(),
+            listen_ip: "127.0.0.1".to_string(),
+            listen_port: WGVPN_LISTEN_PORT,
+            exposed_lan_cidrs: passive_exposed_lan_cidrs.clone(),
+            snat: true,
+            allow_tcp: true,
+            allow_udp: true,
+            allow_icmp_echo: true,
+        });
         let started = match started {
             Ok(value) => value,
             Err(err) => {
@@ -1001,9 +1006,7 @@ async fn stop_wgvpn_internal(
         }
     }
 
-    if let Err(e) =
-        gonc_ffi::stop_subnet_router(&session.subnet_router_handle_id)
-    {
+    if let Err(e) = gonc_ffi::stop_subnet_router(&session.subnet_router_handle_id) {
         warn!("[wgvpn] stop subnet router failed: {:#}", e);
         cleanup_errors.push(format!("stop subnet router: {e:#}"));
     }

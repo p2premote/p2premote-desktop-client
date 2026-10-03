@@ -5,8 +5,8 @@ use super::{
     ACTIVE_TUNNEL_JOB_BACKOFF_SECS, WGVPN_JOB_BACKOFF_SECS,
 };
 use crate::control::{
-    TunnelJobState, TunnelJobStatus, RuntimeStatus, TunnelLastResult,
-    TunnelLifecycleRole, TunnelLifecycleState, TunnelLifecycleStatus,
+    RuntimeStatus, TunnelJobState, TunnelJobStatus, TunnelLastResult, TunnelLifecycleRole,
+    TunnelLifecycleState, TunnelLifecycleStatus,
 };
 use crate::i18n::localized_message;
 use parking_lot::Mutex;
@@ -244,13 +244,21 @@ pub(super) fn tunnel_job_lifecycle_projection(
     message: &str,
 ) -> (TunnelLifecycleState, TunnelLastResult, Option<String>) {
     match state {
-        TunnelJobState::Running => (TunnelLifecycleState::Connecting, TunnelLastResult::None, None),
+        TunnelJobState::Running => (
+            TunnelLifecycleState::Connecting,
+            TunnelLastResult::None,
+            None,
+        ),
         TunnelJobState::Waiting => (
             TunnelLifecycleState::Connecting,
             TunnelLastResult::None,
             Some("hole_punch_wait_timeout".to_string()),
         ),
-        TunnelJobState::Succeeded => (TunnelLifecycleState::Connected, TunnelLastResult::None, None),
+        TunnelJobState::Succeeded => (
+            TunnelLifecycleState::Connected,
+            TunnelLastResult::None,
+            None,
+        ),
         TunnelJobState::Failed => (
             TunnelLifecycleState::NotEstablished,
             TunnelLastResult::AttemptFailed,

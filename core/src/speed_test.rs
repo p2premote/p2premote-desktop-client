@@ -206,7 +206,11 @@ mod tests {
 
     #[test]
     fn speed_test_port_does_not_collide_with_health_or_webui() {
-        assert_ne!(SPEED_TEST_PORT, crate::health::HEALTH_PORT, "must not collide with HEALTH_PORT");
+        assert_ne!(
+            SPEED_TEST_PORT,
+            crate::health::HEALTH_PORT,
+            "must not collide with HEALTH_PORT"
+        );
         assert_ne!(SPEED_TEST_PORT, 48083, "must not collide with WebUI port");
     }
 

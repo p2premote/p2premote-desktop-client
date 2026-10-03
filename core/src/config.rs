@@ -614,7 +614,10 @@ fn configure_machine_data_dir_permissions(dir: &Path) {
 
         match output {
             Ok(out) if out.status.success() => {
-                tracing::info!("[config] configured machine data directory permissions: {}", dir_str);
+                tracing::info!(
+                    "[config] configured machine data directory permissions: {}",
+                    dir_str
+                );
             }
             Ok(out) => {
                 // 非 admin 进程会失败，service 以 SYSTEM 运行时下次启动会修复

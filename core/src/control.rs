@@ -358,6 +358,9 @@ pub struct TunnelJobStatus {
     pub result: Option<ActiveStartResult>,
     #[serde(default)]
     pub tcp_retry_recommended: bool,
+    /// 主动打洞因真实网络条件失败，且任一端检测到对称型 NAT 时，引导用户查看改善指南。
+    #[serde(default)]
+    pub symmetric_nat_help_recommended: bool,
     pub updated_at: i64,
 }
 
@@ -445,7 +448,6 @@ pub struct WgvpnSessionStatus {
     #[serde(default)]
     pub subnet_last_error: String,
 }
-
 
 // ---- 连接封装 ----
 

@@ -812,5 +812,4 @@ mod tests {
     fn statically_linked_punch_library_needs_no_runtime_file() {
         validate_punch_library_available(Path::new("missing-libp2premote-punch.a")).unwrap();
     }
-
 }

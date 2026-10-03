@@ -924,18 +924,34 @@ pub(super) async fn handle_data(
             }
         }
         Data::GetConnectionPreferences => {
-            let config = match load_config_or_err() { Ok(c) => c, Err(resp) => return Some(resp) };
-            Some(cmd_response_with_data(true, "ok", None, serde_json::json!({
-                "prefer_ipv6": config.prefer_ipv6, "prefer_tcp": config.prefer_tcp,
-            })))
+            let config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
+            Some(cmd_response_with_data(
+                true,
+                "ok",
+                None,
+                serde_json::json!({
+                    "prefer_ipv6": config.prefer_ipv6, "prefer_tcp": config.prefer_tcp,
+                }),
+            ))
         }
-        Data::SaveConnectionPreferences { prefer_ipv6, prefer_tcp } => {
-            let mut config = match load_config_or_err() { Ok(c) => c, Err(resp) => return Some(resp) };
+        Data::SaveConnectionPreferences {
+            prefer_ipv6,
+            prefer_tcp,
+        } => {
+            let mut config = match load_config_or_err() {
+                Ok(c) => c,
+                Err(resp) => return Some(resp),
+            };
             config.prefer_ipv6 = prefer_ipv6;
             config.prefer_tcp = prefer_tcp;
-            Some(response_from_result(save_machine_config(&config), |_| serde_json::json!({
-                "prefer_ipv6": prefer_ipv6, "prefer_tcp": prefer_tcp,
-            })))
+            Some(response_from_result(save_machine_config(&config), |_| {
+                serde_json::json!({
+                    "prefer_ipv6": prefer_ipv6, "prefer_tcp": prefer_tcp,
+                })
+            }))
         }
         Data::GetWgvpnLanAccessConfig => {
             let config = match load_config_or_err() {
@@ -1017,7 +1033,11 @@ pub(super) async fn handle_data(
         }
         Data::StopTunnel { source_device_id } => stop_wgvpn_job(shared, source_device_id).await,
         Data::StopActiveTunnel { peer_device_id } => {
-            if shared.lock().active_tunnel_job_cancels.contains_key(&peer_device_id) {
+            if shared
+                .lock()
+                .active_tunnel_job_cancels
+                .contains_key(&peer_device_id)
+            {
                 stop_active_tunnel_job(shared, peer_device_id);
             } else {
                 clear_active_tunnel_job_status(shared, peer_device_id);

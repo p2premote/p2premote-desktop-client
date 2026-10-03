@@ -155,14 +155,21 @@ struct NotifyP2PEndRequest {
 
 /// Field-level fallback: keep the primary value unless it is empty.
 fn merge_nat(primary: &str, fallback: &str) -> String {
-    if primary.is_empty() { fallback.to_string() } else { primary.to_string() }
+    if primary.is_empty() {
+        fallback.to_string()
+    } else {
+        primary.to_string()
+    }
 }
 
 /// Prefer the network of the last actual punch call; when absent (failure
 /// before any native call) fall back to the first planned network.
 fn fallback_network(primary: &str, plan: &str) -> String {
-    if !primary.is_empty() { primary.to_string() }
-    else { plan.split(',').next().unwrap_or_default().to_string() }
+    if !primary.is_empty() {
+        primary.to_string()
+    } else {
+        plan.split(',').next().unwrap_or_default().to_string()
+    }
 }
 /// token 过期前的刷新阈值（秒）
 const TOKEN_REFRESH_THRESHOLD_SECS: i64 = 300;

@@ -151,11 +151,17 @@ pub async fn spawn_health_server(
     } else {
         match TcpListener::bind(format!("0.0.0.0:{}", LEGACY_HEALTH_PORT)).await {
             Ok(listener) => {
-                info!("[Health] legacy compatibility listener started on 0.0.0.0:{}", LEGACY_HEALTH_PORT);
+                info!(
+                    "[Health] legacy compatibility listener started on 0.0.0.0:{}",
+                    LEGACY_HEALTH_PORT
+                );
                 Some(listener)
             }
             Err(err) => {
-                warn!("[Health] legacy compatibility listener unavailable on port {}: {}", LEGACY_HEALTH_PORT, err);
+                warn!(
+                    "[Health] legacy compatibility listener unavailable on port {}: {}",
+                    LEGACY_HEALTH_PORT, err
+                );
                 None
             }
         }

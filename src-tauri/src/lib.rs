@@ -128,8 +128,9 @@ use commands::{
         send_reset_password_verification_code, try_auto_login,
     },
     config::{
-        check_update, exit_application, get_settings, get_wgvpn_lan_access_config,
-        save_wgvpn_lan_access_config, get_connection_preferences, save_connection_preferences, set_auto_start, set_locale,
+        check_update, exit_application, get_connection_preferences, get_settings,
+        get_wgvpn_lan_access_config, save_connection_preferences, save_wgvpn_lan_access_config,
+        set_auto_start, set_locale,
     },
     device::{
         delete_device, generate_connect_code, get_device_list, mark_current_device_offline,
@@ -140,9 +141,9 @@ use commands::{
         check_required_client_files, ensure_background_service_session, get_service_status,
         launch_rustdesk_tiny, listen_service_events, refresh_service_network_info,
         refresh_tunnel_status, reject_inbound_tunnel, set_background_service_enabled,
-        start_service_active_tunnel, start_service_anonymous_active_tunnel,
-        stop_active_tunnel_job, stop_service_active_tunnel, stop_service_tunnel,
-        sync_service_runtime_config, test_tunnel_speed,
+        start_service_active_tunnel, start_service_anonymous_active_tunnel, stop_active_tunnel_job,
+        stop_service_active_tunnel, stop_service_tunnel, sync_service_runtime_config,
+        test_tunnel_speed,
     },
 };
 

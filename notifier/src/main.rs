@@ -111,10 +111,9 @@ fn enable_best_dpi_awareness() {
     unsafe {
         let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast());
         if !user32.is_null() {
-            if let Some(proc) = GetProcAddress(
-                user32,
-                c"SetProcessDpiAwarenessContext".as_ptr().cast(),
-            ) {
+            if let Some(proc) =
+                GetProcAddress(user32, c"SetProcessDpiAwarenessContext".as_ptr().cast())
+            {
                 type SetProcessDpiAwarenessContextFn =
                     unsafe extern "system" fn(*mut core::ffi::c_void) -> i32;
                 let set_process_dpi_awareness_context: SetProcessDpiAwarenessContextFn =
@@ -141,9 +140,8 @@ fn window_dpi(hwnd: windows_sys::Win32::Foundation::HWND) -> u32 {
         let user32 = GetModuleHandleA(c"user32.dll".as_ptr().cast());
         if !user32.is_null() {
             if let Some(proc) = GetProcAddress(user32, c"GetDpiForWindow".as_ptr().cast()) {
-                type GetDpiForWindowFn = unsafe extern "system" fn(
-                    windows_sys::Win32::Foundation::HWND,
-                ) -> u32;
+                type GetDpiForWindowFn =
+                    unsafe extern "system" fn(windows_sys::Win32::Foundation::HWND) -> u32;
                 let get_dpi_for_window: GetDpiForWindowFn = std::mem::transmute(proc);
                 return get_dpi_for_window(hwnd).max(96);
             }
