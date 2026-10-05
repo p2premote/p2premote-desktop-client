@@ -398,6 +398,8 @@ export default {
       auto_tunnel_started: '正在连接对方电脑，预计耗时 10~300 秒，请留意通知',
       preflight_failed_title: '无法开始建立隧道',
       preflight_failed_body: '发起打洞前的准备步骤失败：{error}',
+      symmetric_nat_help: '检测到对称型 NAT，当前网络可能限制 P2P 直连。可查看帮助改善连接成功率。',
+      view_network_help: '查看网络优化帮助',
       windows_rdp_disabled: '对端设备未开启远程桌面服务,请在其设置中开启',
       windows_home_rdp_disabled: '对端设备是Windows家庭版,需升级到高级版本或搜索rdpwrap补丁以开启远程桌面服务',
       android_passive_unsupported: 'Android 设备当前仅支持主动建立隧道，不能作为被动方接收连接',

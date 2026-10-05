@@ -64,6 +64,7 @@ export interface TunnelJobStatus {
   message: string
   result?: ActiveTunnelJobResult | null
   tcp_retry_recommended?: boolean
+  symmetric_nat_help_recommended?: boolean
   updated_at: number
 }
 

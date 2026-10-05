@@ -378,6 +378,8 @@ const en = {
       auto_tunnel_started: 'Connecting to the other computer. This may take 10–300 seconds. Please watch for a notification.',
       preflight_failed_title: 'Unable to start tunnel establishment',
       preflight_failed_body: 'A preparation step failed before hole punching: {error}',
+      symmetric_nat_help: 'Symmetric NAT was detected. Your network may restrict direct P2P connections.',
+      view_network_help: 'View network help',
       windows_rdp_disabled: 'Remote Desktop is not enabled on the peer device. Enable it in the peer device settings.',
       windows_home_rdp_disabled: 'The peer device runs Windows Home. Upgrade Windows or search for the rdpwrap patch to enable Remote Desktop.',
       android_passive_unsupported: 'Android devices currently support initiating tunnels only and cannot accept passive connections',

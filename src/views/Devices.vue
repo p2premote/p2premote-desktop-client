@@ -128,6 +128,9 @@
               <el-alert v-if="activeTunnelJobMap[selectedDevice.device_id]?.tcp_retry_recommended" type="warning" :closable="false" :title="$t('app.settings.tcp_failure_hint')">
                 <el-button :loading="preparingTunnelIds.has(selectedDevice.device_id)" @click="disableTcpAndRetry(selectedDevice)">{{ $t('app.settings.disable_tcp_retry') }}</el-button>
               </el-alert>
+              <el-alert v-if="activeTunnelJobMap[selectedDevice.device_id]?.symmetric_nat_help_recommended" type="warning" :closable="false" :title="$t('devices.message.symmetric_nat_help')">
+                <el-button @click="openSymmetricNatHelp">{{ $t('devices.message.view_network_help') }}</el-button>
+              </el-alert>
 			  <div class="action-groups">
 				<div class="action-group">
 				  <div class="action-group-label">{{ $t('devices.detail.connection.tunnel_group') }}</div>
@@ -346,7 +349,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { invoke, isTauriRuntime, listen, type UnlistenFn } from '../runtime/bridge'
+import { invoke, isTauriRuntime, listen, openExternal, type UnlistenFn } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import {
@@ -993,6 +996,11 @@ async function disableTcpAndRetry(device: DeviceInfo) {
     await invoke('save_connection_preferences', { preferIpv6: preferences.prefer_ipv6, preferTcp: false })
     await handleRetryTunnel(device)
   } catch (error) { ElMessage.error(String(error)) }
+}
+
+const SYMMETRIC_NAT_HELP_URL = 'https://www.p2premote.top/zh/docs/improve-p2p-success'
+function openSymmetricNatHelp() {
+  void openExternal(SYMMETRIC_NAT_HELP_URL)
 }
 
 async function startTunnelSilently(device: DeviceInfo) {

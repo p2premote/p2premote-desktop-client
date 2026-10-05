@@ -152,6 +152,10 @@
             <el-alert :title="$t('app.settings.tcp_failure_hint')" type="warning" :closable="false" />
             <el-button :loading="connecting" @click="disableTcpAndRetry">{{ $t('app.settings.disable_tcp_retry') }}</el-button>
           </div>
+          <div v-if="activeJob?.symmetric_nat_help_recommended" class="detail-section result-section">
+            <el-alert :title="$t('devices.message.symmetric_nat_help')" type="warning" :closable="false" />
+            <el-button @click="openSymmetricNatHelp">{{ $t('devices.message.view_network_help') }}</el-button>
+          </div>
           <div v-if="activeJob?.state === 'succeeded'" class="detail-section result-section">
             <div class="section-title">{{ $t('remote.connect.result_label') }}</div>
             <code v-if="activeTunnelAddress" class="connection-address">{{ activeTunnelAddress }}</code>
@@ -200,7 +204,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { invoke, listen, type UnlistenFn } from '../runtime/bridge'
+import { invoke, listen, openExternal, type UnlistenFn } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { Close, CopyDocument, Monitor } from '@element-plus/icons-vue'
@@ -209,6 +213,8 @@ import { errorMessage } from '../utils/errorMessage'
 import type { TunnelJobStatus, BackgroundServiceStatus } from '../types/api'
 import { useConnectingDots } from '../composables/useConnectingDots'
 const { t } = useI18n()
+const SYMMETRIC_NAT_HELP_URL = 'https://www.p2premote.top/zh/docs/improve-p2p-success'
+function openSymmetricNatHelp() { void openExternal(SYMMETRIC_NAT_HELP_URL) }
 
 interface AnonymousConnectResponse {
   success: boolean
