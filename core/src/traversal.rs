@@ -18,6 +18,21 @@ use std::{
 };
 use tokio::sync::{mpsc, Notify};
 
+const LAN_PROBE_BUDGET_SECS: u64 = 1;
+const LEGACY_LAN_PROBE_BUDGET_SECS: u64 = 6;
+
+fn validate_lan_probe_budget(value: Option<u64>) -> Result<u64> {
+    match value {
+        None => Ok(LEGACY_LAN_PROBE_BUDGET_SECS),
+        Some(value @ 1..=LEGACY_LAN_PROBE_BUDGET_SECS) => Ok(value),
+        Some(_) => Err(anyhow!("invalid_lan_probe_budget")),
+    }
+}
+
+fn negotiate_lan_probe_budget(local: Option<u64>, remote: Option<u64>) -> Result<u64> {
+    Ok(validate_lan_probe_budget(local)?.max(validate_lan_probe_budget(remote)?))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Frame {
@@ -27,6 +42,9 @@ pub enum Frame {
         ipv6_available: Option<bool>,
         #[serde(default)]
         ipv6_gate_supported: bool,
+        /// Missing on legacy peers, which keep the original 6-second LAN round.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lan_probe_budget_secs: Option<u64>,
     },
     Plan {
         networks: Vec<String>,
@@ -316,16 +334,32 @@ impl Session {
             evidence: evidence.clone(),
             ipv6_available,
             ipv6_gate_supported: true,
+            lan_probe_budget_secs: Some(LAN_PROBE_BUDGET_SECS),
         })
         .await?;
-        let (remote, remote_ipv6, remote_gate) = match self.wait(0, 0).await? {
+        let (remote, remote_ipv6, remote_gate, remote_lan_budget) = match self.wait(0, 0).await? {
             Frame::Capabilities {
                 evidence,
                 ipv6_available,
                 ipv6_gate_supported,
-            } if evidence.len() <= 32 => (evidence, ipv6_available, ipv6_gate_supported),
+                lan_probe_budget_secs,
+            } if evidence.len() <= 32 => (
+                evidence,
+                ipv6_available,
+                ipv6_gate_supported,
+                lan_probe_budget_secs,
+            ),
             _ => return Err(anyhow!("invalid_traversal_capabilities")),
         };
+        let lan_probe_budget_secs =
+            negotiate_lan_probe_budget(Some(LAN_PROBE_BUDGET_SECS), remote_lan_budget)?;
+        tracing::info!(
+            peer = self.peer,
+            local_budget_secs = LAN_PROBE_BUDGET_SECS,
+            remote_budget_secs = remote_lan_budget.unwrap_or(LEGACY_LAN_PROBE_BUDGET_SECS),
+            negotiated_budget_secs = lan_probe_budget_secs,
+            "LAN probe budget negotiated"
+        );
         let networks = traversal_policy::build_plan_with_family(
             self.negotiation.preferences,
             &evidence,
@@ -368,7 +402,7 @@ impl Session {
             .await?;
         }
         // LAN eligibility is independent of public NAT classification.
-        let rounds = std::iter::once(("udp4".to_string(), "lan", 6u64))
+        let rounds = std::iter::once(("udp4".to_string(), "lan", lan_probe_budget_secs))
             .chain(networks.into_iter().map(|n| (n, "internet", 30u64)));
         let mut attempted_networks = Vec::new();
         for (index, (network, mode, timeout_secs)) in rounds.enumerate() {
@@ -546,6 +580,7 @@ mod tests {
             frame,
             Frame::Capabilities {
                 ipv6_available: None,
+                lan_probe_budget_secs: None,
                 ..
             }
         ));
@@ -563,5 +598,23 @@ mod tests {
             r#"{"kind":"capabilities","evidence":[],"ipv6_available":"false"}"#
         )
         .is_err());
+    }
+    #[test]
+    fn lan_probe_budget_is_short_only_when_both_peers_support_it() {
+        assert_eq!(negotiate_lan_probe_budget(Some(1), Some(1)).unwrap(), 1);
+        assert_eq!(
+            negotiate_lan_probe_budget(Some(1), None).unwrap(),
+            LEGACY_LAN_PROBE_BUDGET_SECS
+        );
+        assert_eq!(
+            negotiate_lan_probe_budget(None, Some(1)).unwrap(),
+            LEGACY_LAN_PROBE_BUDGET_SECS
+        );
+        assert_eq!(negotiate_lan_probe_budget(Some(1), Some(2)).unwrap(), 2);
+    }
+    #[test]
+    fn lan_probe_budget_rejects_out_of_range_values() {
+        assert!(negotiate_lan_probe_budget(Some(0), Some(1)).is_err());
+        assert!(negotiate_lan_probe_budget(Some(1), Some(7)).is_err());
     }
 }
