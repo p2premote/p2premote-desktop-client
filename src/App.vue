@@ -532,6 +532,7 @@ import { useAuthStore } from './stores/auth'
 import { useDeviceStore } from './stores/device'
 import AppLogo from './components/AppLogo.vue'
 import NetworkSettings from './components/NetworkSettings.vue'
+import { copyTextToClipboard } from './utils/clipboard'
 
 const settingsVisible = ref(false)
 const connectionSettings = ref<InstanceType<typeof NetworkSettings>>()
@@ -996,7 +997,7 @@ async function copyContextSelection() {
   closeTextContextMenu()
   if (!text) return
   try {
-    await navigator.clipboard.writeText(text)
+    await copyTextToClipboard(text)
   } catch {
     ElMessage.error(t('common.copy_failed'))
   }
@@ -1653,7 +1654,7 @@ async function copyText(value: string, successMessage: string) {
     ElMessage.warning(t('common.nothing_to_copy'))
     return
   }
-  await navigator.clipboard.writeText(value)
+  await copyTextToClipboard(value)
   ElMessage.success(successMessage)
 }
 

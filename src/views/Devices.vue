@@ -367,6 +367,7 @@ import mstscIcon from '../assets/icons/mstsc.png'
 import rustdeskTinyIcon from '../assets/icons/rustdesk-tiny.png'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { errorMessage } from '../utils/errorMessage'
+import { copyTextToClipboard } from '../utils/clipboard'
 import type { TunnelJobStatus, TunnelLifecycleStatus } from '../types/api'
 import { useAuthStore } from '../stores/auth'
 import DevicePlatformIcon from '../components/DevicePlatformIcon.vue'
@@ -730,7 +731,7 @@ async function copyTunnelVirtualIp(device: DeviceInfo) {
   const virtualIp = tunnelVirtualIp(device)
   if (!virtualIp) return
   try {
-    await navigator.clipboard.writeText(virtualIp)
+    await copyTextToClipboard(virtualIp)
     ElMessage.success(t('devices.message.virtual_ip_copied', { ip: virtualIp }))
   } catch {
     ElMessage.error(t('devices.message.copy_virtual_ip_failed'))
@@ -1087,7 +1088,7 @@ async function copyRemoteDesktopAddress(device: DeviceInfo) {
       ElMessage.error(t('devices.message.no_rdp_address'))
       return
     }
-    await navigator.clipboard.writeText(address)
+    await copyTextToClipboard(address)
     ElMessage.success(t('devices.message.rdp_address_copied', { address }))
   } catch {
     ElMessage.error(t('devices.message.copy_rdp_address_failed'))
@@ -1121,7 +1122,7 @@ async function launchP2pRemoteDesktop(device: DeviceInfo) {
 
   let addressCopied = false
   try {
-    await navigator.clipboard.writeText(address)
+    await copyTextToClipboard(address)
     addressCopied = true
   } catch {
     // Launch can still use --connect; the copy failure is reported only if

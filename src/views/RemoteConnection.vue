@@ -210,6 +210,7 @@ import type { FormInstance, FormRules } from 'element-plus/es/components/form/in
 import { Close, CopyDocument, Monitor } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { errorMessage } from '../utils/errorMessage'
+import { copyTextToClipboard } from '../utils/clipboard'
 import type { TunnelJobStatus, BackgroundServiceStatus } from '../types/api'
 import { useConnectingDots } from '../composables/useConnectingDots'
 const { t } = useI18n()
@@ -438,7 +439,7 @@ async function copyText(text: string, successMessage: string) {
     return
   }
   try {
-    await navigator.clipboard.writeText(text)
+    await copyTextToClipboard(text)
     ElMessage.success(successMessage)
   } catch {
     ElMessage.error(t('common.copy_failed'))

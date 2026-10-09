@@ -123,6 +123,7 @@ import { ArrowDown, CopyDocument, Monitor, Refresh } from '@element-plus/icons-v
 import { useDeviceStore } from '../stores/device'
 import type { TunnelLifecycleStatus } from '../types/api'
 import { errorMessage } from '../utils/errorMessage'
+import { copyTextToClipboard } from '../utils/clipboard'
 const { t, locale } = useI18n()
 
 interface TunnelItem {
@@ -421,7 +422,7 @@ function connectedDuration(tunnel: TunnelItem): string {
 
 async function copyValue(value: string) {
   try {
-    await navigator.clipboard.writeText(value)
+    await copyTextToClipboard(value)
     ElMessage.success(t('tunnel.message.copied'))
   } catch {
     ElMessage.error(t('tunnel.message.copy_failed'))
