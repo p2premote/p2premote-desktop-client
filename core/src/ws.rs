@@ -1,7 +1,10 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 use tokio::time::{interval, Duration, Instant};
 use tokio_tungstenite::{
@@ -184,15 +187,22 @@ impl HeartbeatTracker {
 #[derive(Clone)]
 pub struct ServiceWsClient {
     connected: Arc<TokioMutex<bool>>,
+    connection_generation: Arc<AtomicU64>,
     task_handle: Arc<TokioMutex<Option<tokio::task::JoinHandle<()>>>>,
-    send_channel: Arc<TokioMutex<Option<mpsc::UnboundedSender<WsSendType>>>>,
-    p2p_notify_acks: Arc<TokioMutex<HashMap<String, oneshot::Sender<Result<(), String>>>>>,
+    send_channel: Arc<TokioMutex<Option<(u64, mpsc::UnboundedSender<WsSendType>)>>>,
+    p2p_notify_acks: Arc<TokioMutex<HashMap<String, PendingNotifyAck>>>,
+}
+
+struct PendingNotifyAck {
+    generation: u64,
+    sender: oneshot::Sender<Result<(), String>>,
 }
 
 impl ServiceWsClient {
     pub fn new() -> Self {
         Self {
             connected: Arc::new(TokioMutex::new(false)),
+            connection_generation: Arc::new(AtomicU64::new(0)),
             task_handle: Arc::new(TokioMutex::new(None)),
             send_channel: Arc::new(TokioMutex::new(None)),
             p2p_notify_acks: Arc::new(TokioMutex::new(HashMap::new())),
@@ -228,11 +238,17 @@ impl ServiceWsClient {
             .await
             .map_err(|e| format!("WebSocket connection failed: {}", e))?;
 
+        let generation = self
+            .connection_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         *self.connected.lock().await = true;
         let (send_tx, mut send_rx) = mpsc::unbounded_channel::<WsSendType>();
-        *self.send_channel.lock().await = Some(send_tx);
+        *self.send_channel.lock().await = Some((generation, send_tx));
 
         let connected = self.connected.clone();
+        let connection_generation = self.connection_generation.clone();
+        let send_channel = self.send_channel.clone();
         let p2p_notify_acks = self.p2p_notify_acks.clone();
         let task = tokio::spawn(async move {
             let mut ping_ticker = interval(Duration::from_secs(WS_PING_INTERVAL_SECS));
@@ -247,7 +263,6 @@ impl ServiceWsClient {
                         if let Some(sequence) = heartbeat.begin_ping(Instant::now()) {
                             if let Err(err) = write.send(Message::Ping(sequence.to_be_bytes().to_vec().into())).await {
                                 error!("[ServiceWS] send protocol ping failed: {}", err);
-                                *connected.lock().await = false;
                                 break;
                             }
                             debug!("[ServiceWS] protocol ping sent: sequence={}", sequence);
@@ -266,6 +281,7 @@ impl ServiceWsClient {
                                 if let Ok(json) = serde_json::to_string(&ws_msg) {
                                     if let Err(err) = write.send(Message::Text(json.into())).await {
                                         error!("[ServiceWS] send p2p_ready failed: {}", err);
+                                        break;
                                     }
                                 }
                             }
@@ -274,13 +290,21 @@ impl ServiceWsClient {
                                     connection_id,
                                     source_device_id: 0,
                                     target_device_id,
-                                    message_id,
+                                    message_id: message_id.clone(),
                                     access_grant,
                                     data,
                                 };
                                 if let Ok(json) = serde_json::to_string(&ws_msg) {
                                     if let Err(err) = write.send(Message::Text(json.into())).await {
                                         error!("[ServiceWS] send p2p_notify failed: {}", err);
+                                        fail_pending_notify_ack(
+                                            &p2p_notify_acks,
+                                            &message_id,
+                                            generation,
+                                            format!("p2p_notify_write_failed: {err}"),
+                                        )
+                                        .await;
+                                        break;
                                     }
                                 }
                             }
@@ -295,7 +319,10 @@ impl ServiceWsClient {
                                     code,
                                 };
                                 if let Ok(json) = serde_json::to_string(&ws_msg) {
-                                    let _ = write.send(Message::Text(json.into())).await;
+                                    if let Err(err) = write.send(Message::Text(json.into())).await {
+                                        error!("[ServiceWS] send wol_result failed: {}", err);
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -360,7 +387,15 @@ impl ServiceWsClient {
                                         });
                                     }
                                     WsMessage::P2PNotifyAck { message_id, accepted, error } => {
-                                        if let Some(waiter) = p2p_notify_acks.lock().await.remove(&message_id) {
+                                        let waiter = {
+                                            let mut waiters = p2p_notify_acks.lock().await;
+                                            if waiters.get(&message_id).is_some_and(|pending| pending.generation == generation) {
+                                                waiters.remove(&message_id)
+                                            } else {
+                                                None
+                                            }
+                                        };
+                                        if let Some(waiter) = waiter {
                                             let result = if accepted {
                                                 Ok(())
                                             } else {
@@ -371,7 +406,7 @@ impl ServiceWsClient {
                                                     .unwrap_or("notify_rejected");
                                                 Err(code.to_string())
                                             };
-                                            let _ = waiter.send(result);
+                                            let _ = waiter.sender.send(result);
                                         }
                                         if !accepted {
                                             warn!("[ServiceWS] p2p_notify rejected: message_id={}, error={:?}", message_id, error);
@@ -393,12 +428,10 @@ impl ServiceWsClient {
                             }
                             Some(Ok(Message::Close(_))) | None => {
                                 debug!("[ServiceWS] connection closed by peer or stream ended");
-                                *connected.lock().await = false;
                                 break;
                             }
                             Some(Err(err)) => {
                                 error!("[ServiceWS] read message failed: {}", err);
-                                *connected.lock().await = false;
                                 break;
                             }
                             Some(Ok(other)) => {
@@ -415,7 +448,6 @@ impl ServiceWsClient {
                             );
                             if missed >= WS_MAX_CONSECUTIVE_FAILURES {
                                 warn!("[ServiceWS] heartbeat failed 3 consecutive times, reconnecting");
-                                *connected.lock().await = false;
                                 break;
                             }
                         }
@@ -423,7 +455,18 @@ impl ServiceWsClient {
                 }
             }
 
-            let _ = event_tx.send(WsEvent::Disconnected);
+            let was_current = cleanup_connection_generation(
+                &connected,
+                &connection_generation,
+                &send_channel,
+                &p2p_notify_acks,
+                generation,
+                "websocket_disconnected",
+            )
+            .await;
+            if was_current {
+                let _ = event_tx.send(WsEvent::Disconnected);
+            }
             debug!("[ServiceWS] message loop exited");
         });
 
@@ -432,11 +475,20 @@ impl ServiceWsClient {
     }
 
     pub async fn disconnect(&self) {
-        *self.connected.lock().await = false;
-        *self.send_channel.lock().await = None;
+        let generation = self.connection_generation.load(Ordering::Acquire);
         if let Some(handle) = self.task_handle.lock().await.take() {
             handle.abort();
+            let _ = handle.await;
         }
+        cleanup_connection_generation(
+            &self.connected,
+            &self.connection_generation,
+            &self.send_channel,
+            &self.p2p_notify_acks,
+            generation,
+            "websocket_disconnected",
+        )
+        .await;
     }
 
     pub async fn is_connected(&self) -> bool {
@@ -451,7 +503,7 @@ impl ServiceWsClient {
         target_device_id: i64,
     ) -> Result<(), String> {
         let channel = self.send_channel.lock().await;
-        if let Some(ref tx) = *channel {
+        if let Some((_, tx)) = channel.as_ref() {
             tx.send(WsSendType::P2PReady {
                 punch_token,
                 public_ip,
@@ -476,6 +528,7 @@ impl ServiceWsClient {
             .await
             .as_ref()
             .ok_or_else(|| "websocket not connected".to_string())?
+            .1
             .send(WsSendType::WOLResult {
                 request_id,
                 success,
@@ -493,13 +546,20 @@ impl ServiceWsClient {
         data: String,
     ) -> Result<(), String> {
         let (ack_tx, ack_rx) = oneshot::channel();
-        self.p2p_notify_acks
-            .lock()
-            .await
-            .insert(message_id.clone(), ack_tx);
+        let generation = self.connection_generation.load(Ordering::Acquire);
+        if generation == 0 || !*self.connected.lock().await {
+            return Err("websocket not connected".to_string());
+        }
+        self.p2p_notify_acks.lock().await.insert(
+            message_id.clone(),
+            PendingNotifyAck {
+                generation,
+                sender: ack_tx,
+            },
+        );
         let channel = self.send_channel.lock().await;
         let send_result = match channel.as_ref() {
-            Some(tx) => tx
+            Some((active_generation, tx)) if *active_generation == generation => tx
                 .send(WsSendType::P2PNotify {
                     connection_id,
                     target_device_id,
@@ -508,22 +568,103 @@ impl ServiceWsClient {
                     data,
                 })
                 .map_err(|err| format!("failed to queue p2p_notify: {}", err)),
-            None => Err("websocket not connected".to_string()),
+            _ => Err("websocket not connected".to_string()),
         };
         drop(channel);
         if let Err(err) = send_result {
-            self.p2p_notify_acks.lock().await.remove(&message_id);
+            remove_pending_notify_ack(&self.p2p_notify_acks, &message_id, generation).await;
             return Err(err);
         }
         match tokio::time::timeout(Duration::from_secs(5), ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("p2p_notify_ack_cancelled".to_string()),
             Err(_) => {
-                self.p2p_notify_acks.lock().await.remove(&message_id);
+                remove_pending_notify_ack(&self.p2p_notify_acks, &message_id, generation).await;
                 Err("p2p_notify_ack_timeout".to_string())
             }
         }
     }
+}
+
+async fn remove_pending_notify_ack(
+    waiters: &Arc<TokioMutex<HashMap<String, PendingNotifyAck>>>,
+    message_id: &str,
+    generation: u64,
+) -> Option<PendingNotifyAck> {
+    let mut waiters = waiters.lock().await;
+    if waiters
+        .get(message_id)
+        .is_some_and(|pending| pending.generation == generation)
+    {
+        waiters.remove(message_id)
+    } else {
+        None
+    }
+}
+
+async fn fail_pending_notify_ack(
+    waiters: &Arc<TokioMutex<HashMap<String, PendingNotifyAck>>>,
+    message_id: &str,
+    generation: u64,
+    reason: String,
+) {
+    if let Some(waiter) = remove_pending_notify_ack(waiters, message_id, generation).await {
+        let _ = waiter.sender.send(Err(reason));
+    }
+}
+
+async fn fail_pending_notify_acks_for_generation(
+    waiters: &Arc<TokioMutex<HashMap<String, PendingNotifyAck>>>,
+    generation: u64,
+    reason: &str,
+) {
+    let pending = {
+        let mut waiters = waiters.lock().await;
+        let message_ids = waiters
+            .iter()
+            .filter_map(|(message_id, pending)| {
+                (pending.generation == generation).then(|| message_id.clone())
+            })
+            .collect::<Vec<_>>();
+        message_ids
+            .into_iter()
+            .filter_map(|message_id| waiters.remove(&message_id))
+            .collect::<Vec<_>>()
+    };
+    for waiter in pending {
+        let _ = waiter.sender.send(Err(reason.to_string()));
+    }
+}
+
+async fn cleanup_connection_generation(
+    connected: &Arc<TokioMutex<bool>>,
+    current_generation: &Arc<AtomicU64>,
+    send_channel: &Arc<TokioMutex<Option<(u64, mpsc::UnboundedSender<WsSendType>)>>>,
+    waiters: &Arc<TokioMutex<HashMap<String, PendingNotifyAck>>>,
+    generation: u64,
+    reason: &str,
+) -> bool {
+    fail_pending_notify_acks_for_generation(waiters, generation, reason).await;
+    if current_generation.load(Ordering::Acquire) != generation {
+        return false;
+    }
+    let mut connected = connected.lock().await;
+    // The generation may change while cleanup is waiting for the state lock.
+    // Recheck under the lock so an old connection cannot mark a newly connected
+    // generation as disconnected.
+    if current_generation.load(Ordering::Acquire) != generation {
+        return false;
+    }
+    *connected = false;
+    drop(connected);
+    let mut channel = send_channel.lock().await;
+    if channel
+        .as_ref()
+        .is_some_and(|(active_generation, _)| *active_generation == generation)
+    {
+        *channel = None;
+    }
+    true
 }
 
 impl Default for ServiceWsClient {
@@ -535,6 +676,11 @@ impl Default for ServiceWsClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending_ack(generation: u64) -> (PendingNotifyAck, oneshot::Receiver<Result<(), String>>) {
+        let (sender, receiver) = oneshot::channel();
+        (PendingNotifyAck { generation, sender }, receiver)
+    }
 
     #[test]
     fn heartbeat_requires_three_consecutive_timeouts() {
@@ -571,5 +717,118 @@ mod tests {
         assert_eq!(tracker.accept_pong(&(sequence + 1).to_be_bytes()), None);
         assert_eq!(tracker.waiting_sequence, Some(sequence));
         assert_eq!(tracker.consecutive_failures, 2);
+    }
+
+    #[tokio::test]
+    async fn disconnect_fails_only_waiters_from_its_generation() {
+        let waiters = Arc::new(TokioMutex::new(HashMap::new()));
+        let (old, old_rx) = pending_ack(4);
+        let (current, mut current_rx) = pending_ack(5);
+        {
+            let mut pending = waiters.lock().await;
+            pending.insert("old".to_string(), old);
+            pending.insert("current".to_string(), current);
+        }
+
+        fail_pending_notify_acks_for_generation(&waiters, 4, "websocket_disconnected").await;
+
+        assert_eq!(
+            old_rx.await.unwrap(),
+            Err("websocket_disconnected".to_string())
+        );
+        assert!(matches!(
+            current_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(waiters.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_connection_cleanup_preserves_current_connection() {
+        let connected = Arc::new(TokioMutex::new(true));
+        let generation = Arc::new(AtomicU64::new(8));
+        let (send_tx, _send_rx) = mpsc::unbounded_channel();
+        let send_channel = Arc::new(TokioMutex::new(Some((8, send_tx))));
+        let waiters = Arc::new(TokioMutex::new(HashMap::new()));
+
+        let was_current = cleanup_connection_generation(
+            &connected,
+            &generation,
+            &send_channel,
+            &waiters,
+            7,
+            "websocket_disconnected",
+        )
+        .await;
+
+        assert!(!was_current);
+        assert!(*connected.lock().await);
+        assert_eq!(send_channel.lock().await.as_ref().unwrap().0, 8);
+    }
+
+    #[tokio::test]
+    async fn generation_change_while_cleanup_waits_preserves_connected_state() {
+        let connected = Arc::new(TokioMutex::new(true));
+        let connected_guard = connected.lock().await;
+        let generation = Arc::new(AtomicU64::new(10));
+        let (send_tx, _send_rx) = mpsc::unbounded_channel();
+        let send_channel = Arc::new(TokioMutex::new(Some((11, send_tx))));
+        let waiters = Arc::new(TokioMutex::new(HashMap::new()));
+
+        let cleanup = tokio::spawn({
+            let connected = connected.clone();
+            let generation = generation.clone();
+            let send_channel = send_channel.clone();
+            let waiters = waiters.clone();
+            async move {
+                cleanup_connection_generation(
+                    &connected,
+                    &generation,
+                    &send_channel,
+                    &waiters,
+                    10,
+                    "websocket_disconnected",
+                )
+                .await
+            }
+        });
+
+        tokio::task::yield_now().await;
+        generation.store(11, Ordering::Release);
+        drop(connected_guard);
+
+        assert!(!cleanup.await.unwrap());
+        assert!(*connected.lock().await);
+        assert_eq!(send_channel.lock().await.as_ref().unwrap().0, 11);
+    }
+
+    #[tokio::test]
+    async fn current_connection_cleanup_clears_sender_and_waiters() {
+        let connected = Arc::new(TokioMutex::new(true));
+        let generation = Arc::new(AtomicU64::new(9));
+        let (send_tx, _send_rx) = mpsc::unbounded_channel();
+        let send_channel = Arc::new(TokioMutex::new(Some((9, send_tx))));
+        let waiters = Arc::new(TokioMutex::new(HashMap::new()));
+        let (pending, receiver) = pending_ack(9);
+        waiters.lock().await.insert("pending".to_string(), pending);
+
+        let was_current = cleanup_connection_generation(
+            &connected,
+            &generation,
+            &send_channel,
+            &waiters,
+            9,
+            "websocket_disconnected",
+        )
+        .await;
+
+        assert!(was_current);
+        assert!(!*connected.lock().await);
+        assert!(send_channel.lock().await.is_none());
+        assert!(waiters.lock().await.is_empty());
+        assert_eq!(
+            receiver.await.unwrap(),
+            Err("websocket_disconnected".to_string())
+        );
     }
 }
