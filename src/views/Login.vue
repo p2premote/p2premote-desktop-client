@@ -223,6 +223,10 @@ async function handleLogin() {
     ElMessage.success(t('login.message.success'))
     router.push('/')
   } catch (error) {
+    if (useSavedSession && String(error).includes('saved_session_expired')) {
+      hasSavedCredential.value = false
+      loginForm.password = ''
+    }
     ElMessage.error(t('login.message.failed_with_error', { error }))
   } finally {
     loading.value = false

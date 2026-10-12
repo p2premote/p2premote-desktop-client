@@ -760,15 +760,47 @@ pub(super) async fn handle_data(
                     serde_json::json!({ "logged_in": false }),
                 ));
             }
-            Some(response_from_result(
-                resume_saved_token_session(shared, true).await,
-                |data| data,
-            ))
+            match resume_saved_token_session(shared, true).await {
+                Ok(data) => Some(cmd_response_with_data(true, "ok", None, data)),
+                Err(err) if is_invalid_saved_session(&err) => {
+                    warn!("[ServiceRuntime] saved auto-login session expired");
+                    match invalidate_saved_session(shared) {
+                        Ok(()) => Some(cmd_response_with_data(
+                            true,
+                            "session expired",
+                            None,
+                            serde_json::json!({
+                                "logged_in": false,
+                                "reason": "session_expired",
+                            }),
+                        )),
+                        Err(clear_err) => Some(cmd_response(
+                            false,
+                            &format!("failed to clear invalid saved session: {clear_err}"),
+                            None,
+                        )),
+                    }
+                }
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
         }
-        Data::ResumeSavedSession { auto_login } => Some(response_from_result(
-            resume_saved_token_session(shared, auto_login).await,
-            |data| data,
-        )),
+        Data::ResumeSavedSession { auto_login } => {
+            match resume_saved_token_session(shared, auto_login).await {
+                Ok(data) => Some(cmd_response_with_data(true, "ok", None, data)),
+                Err(err) if is_invalid_saved_session(&err) => {
+                    warn!("[ServiceRuntime] manually resumed saved session expired");
+                    match invalidate_saved_session(shared) {
+                        Ok(()) => Some(cmd_response(false, "saved_session_expired", None)),
+                        Err(clear_err) => Some(cmd_response(
+                            false,
+                            &format!("failed to clear invalid saved session: {clear_err}"),
+                            None,
+                        )),
+                    }
+                }
+                Err(err) => Some(cmd_response(false, &err.to_string(), None)),
+            }
+        }
         Data::GetUserProfile => {
             let mut config = match load_config_or_err() {
                 Ok(c) => c,

@@ -1848,11 +1848,19 @@ async function bootstrapApp() {
     })
 
     await setStartupStep(t('app.startup_status.checking_login'), 96)
-    const token = await withTimeout(
-      invoke<string>('try_auto_login'),
-      10_000,
-      t('app.startup_errors.login_check_timeout')
-    )
+    let token = ''
+    try {
+      token = await withTimeout(
+        invoke<string>('try_auto_login'),
+        10_000,
+        t('app.startup_errors.login_check_timeout')
+      )
+    } catch (error) {
+      // 自动登录是可选恢复步骤。网络或旧凭据故障不能把整个应用锁在
+      // 启动失败遮罩中；后台只会在确认凭据失效后清除保存的 token。
+      console.warn('[App] auto login failed, falling back to login page:', error)
+      authStore.resetSession()
+    }
     if (token) {
       try {
         await restoreServiceSession(token)

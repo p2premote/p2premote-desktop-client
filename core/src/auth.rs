@@ -3,6 +3,7 @@ use crate::config::{load_machine_config, save_machine_config, MachineConfig};
 use crate::http::{shared_client, ApiResponse};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +43,34 @@ pub struct InviteInfo {
 }
 
 type AuthEnvelope = ApiResponse<Option<AuthBundle>>;
+
+const INVALID_SAVED_SESSION_CODES: &[i32] = &[401, 1001, 1004, 1005];
+
+#[derive(Debug)]
+pub struct InvalidSavedSession {
+    pub code: i32,
+    pub message: String,
+}
+
+impl fmt::Display for InvalidSavedSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "saved auth session invalid: code={}, message={}",
+            self.code, self.message
+        )
+    }
+}
+
+impl std::error::Error for InvalidSavedSession {}
+
+pub fn is_invalid_saved_session(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<InvalidSavedSession>().is_some()
+}
+
+fn is_invalid_saved_session_code(code: i32) -> bool {
+    INVALID_SAVED_SESSION_CODES.contains(&code)
+}
 
 fn current_locale() -> Option<String> {
     load_machine_config().ok().and_then(|config| config.locale)
@@ -203,9 +232,14 @@ pub async fn refresh(server_url: &str, refresh_token: &str) -> Result<AuthBundle
 
     let envelope: AuthEnvelope = response.json().await?;
     if envelope.code != 0 {
-        return Err(anyhow!(
-            envelope.localized_error_message(current_locale().as_deref())
-        ));
+        let message = envelope.localized_error_message(current_locale().as_deref());
+        if is_invalid_saved_session_code(envelope.code) {
+            return Err(anyhow!(InvalidSavedSession {
+                code: envelope.code,
+                message,
+            }));
+        }
+        return Err(anyhow!(message));
     }
     envelope
         .data
@@ -221,6 +255,31 @@ pub fn apply_auth_bundle(config: &mut MachineConfig, bundle: &AuthBundle) {
     config.refresh_token = Some(bundle.refresh_token.clone());
     config.access_token_expires_at = Some(now + bundle.expires_in);
     config.user_email = Some(bundle.user.email.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_session_codes_include_old_and_new_servers() {
+        for code in [401, 1001, 1004, 1005] {
+            assert!(is_invalid_saved_session_code(code));
+        }
+        for code in [0, 400, 500, 1002] {
+            assert!(!is_invalid_saved_session_code(code));
+        }
+    }
+
+    #[test]
+    fn typed_invalid_session_survives_anyhow_wrapping() {
+        let error = anyhow!(InvalidSavedSession {
+            code: 1004,
+            message: "invalid token".to_string(),
+        })
+        .context("refresh failed");
+        assert!(is_invalid_saved_session(&error));
+    }
 }
 
 // ---- 带令牌的认证信息查询（走 send_authed 自动刷新）----

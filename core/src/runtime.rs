@@ -6,8 +6,9 @@
 //! - 状态变化时通过持久连接推送 StatusChanged
 
 use crate::auth::{
-    fetch_invite_info, fetch_profile, login_and_persist, refresh_with_config,
-    register_by_email_code, reset_password_by_email_code, send_verification_code,
+    fetch_invite_info, fetch_profile, is_invalid_saved_session, login_and_persist,
+    refresh_with_config, register_by_email_code, reset_password_by_email_code,
+    send_verification_code,
 };
 use crate::config::{
     clear_machine_credentials, derive_control_secret, ensure_machine_config, load_machine_config,
@@ -1055,8 +1056,11 @@ fn set_last_error(shared: &Arc<Mutex<SharedRuntimeState>>, error: String) {
     });
 }
 
-fn is_auth_session_error(error: &str) -> bool {
-    let error = error.to_ascii_lowercase();
+fn is_auth_session_error(error: &anyhow::Error) -> bool {
+    if is_invalid_saved_session(error) {
+        return true;
+    }
+    let error = error.to_string().to_ascii_lowercase();
     [
         "401",
         "403",
@@ -1065,36 +1069,19 @@ fn is_auth_session_error(error: &str) -> bool {
         "invalid token",
         "expired token",
         "token expired",
+        "invalid credentials",
         "无效或已过期的令牌",
         "令牌已过期",
+        "用户名或密码错误",
     ]
     .iter()
     .any(|needle| error.contains(needle))
 }
 
-async fn handle_bootstrap_error(
-    shared: &Arc<Mutex<SharedRuntimeState>>,
-    ws_client: &ServiceWsClient,
-    err: anyhow::Error,
-) {
-    let error = err.to_string();
-    if !is_auth_session_error(&error) {
-        set_last_error(shared, error);
-        return;
-    }
-
-    warn!("[ServiceRuntime] saved session is no longer valid; signing out");
-    ws_client.disconnect().await;
-    match load_machine_config().and_then(|mut config| {
-        clear_machine_credentials(&mut config);
-        save_machine_config(&config)
-    }) {
-        Ok(()) => {}
-        Err(clear_err) => error!(
-            "[ServiceRuntime] failed to clear invalid saved credentials: {}",
-            clear_err
-        ),
-    }
+fn invalidate_saved_session(shared: &Arc<Mutex<SharedRuntimeState>>) -> Result<()> {
+    let mut config = load_machine_config()?;
+    clear_machine_credentials(&mut config);
+    save_machine_config(&config)?;
     {
         let mut state = shared.lock();
         state.login_session_enabled = false;
@@ -1113,6 +1100,28 @@ async fn handle_bootstrap_error(
             &[],
         ));
     });
+    Ok(())
+}
+
+async fn handle_bootstrap_error(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    ws_client: &ServiceWsClient,
+    err: anyhow::Error,
+) {
+    if !is_auth_session_error(&err) {
+        set_last_error(shared, err.to_string());
+        return;
+    }
+
+    warn!("[ServiceRuntime] saved session is no longer valid; signing out");
+    ws_client.disconnect().await;
+    match invalidate_saved_session(shared) {
+        Ok(()) => {}
+        Err(clear_err) => error!(
+            "[ServiceRuntime] failed to clear invalid saved credentials: {}",
+            clear_err
+        ),
+    }
 }
 
 fn token_expires_soon(expires_at: Option<i64>, threshold_secs: i64) -> bool {
@@ -1533,13 +1542,17 @@ mod tests {
 
     #[test]
     fn websocket_auth_failures_are_not_retried_as_network_errors() {
-        assert!(is_auth_session_error(
+        assert!(is_auth_session_error(&anyhow::anyhow!(
             "failed to connect service websocket: HTTP error: 403 Forbidden"
-        ));
-        assert!(is_auth_session_error("401 Unauthorized"));
-        assert!(is_auth_session_error("expired token"));
-        assert!(!is_auth_session_error("connection reset by peer"));
-        assert!(!is_auth_session_error("operation timed out"));
+        )));
+        assert!(is_auth_session_error(&anyhow::anyhow!("401 Unauthorized")));
+        assert!(is_auth_session_error(&anyhow::anyhow!("expired token")));
+        assert!(!is_auth_session_error(&anyhow::anyhow!(
+            "connection reset by peer"
+        )));
+        assert!(!is_auth_session_error(&anyhow::anyhow!(
+            "operation timed out"
+        )));
     }
 
     #[test]
