@@ -956,16 +956,14 @@ pub(super) async fn handle_data(
             }
         }
         Data::GetConnectionPreferences => {
-            let config = match load_config_or_err() {
-                Ok(c) => c,
-                Err(resp) => return Some(resp),
-            };
+            let preferences = shared.lock().connection_preferences;
             Some(cmd_response_with_data(
                 true,
                 "ok",
                 None,
                 serde_json::json!({
-                    "prefer_ipv6": config.prefer_ipv6, "prefer_tcp": config.prefer_tcp,
+                    "prefer_ipv6": preferences.prefer_ipv6,
+                    "prefer_tcp": preferences.prefer_tcp,
                 }),
             ))
         }
@@ -979,11 +977,23 @@ pub(super) async fn handle_data(
             };
             config.prefer_ipv6 = prefer_ipv6;
             config.prefer_tcp = prefer_tcp;
-            Some(response_from_result(save_machine_config(&config), |_| {
-                serde_json::json!({
-                    "prefer_ipv6": prefer_ipv6, "prefer_tcp": prefer_tcp,
-                })
-            }))
+            match save_machine_config(&config) {
+                Ok(()) => {
+                    shared.lock().connection_preferences = crate::traversal_policy::Preferences {
+                        prefer_ipv6,
+                        prefer_tcp,
+                    };
+                    Some(cmd_response_with_data(
+                        true,
+                        "ok",
+                        None,
+                        serde_json::json!({
+                            "prefer_ipv6": prefer_ipv6, "prefer_tcp": prefer_tcp,
+                        }),
+                    ))
+                }
+                Err(error) => Some(cmd_response(false, &error.to_string(), None)),
+            }
         }
         Data::GetWgvpnLanAccessConfig => {
             let config = match load_config_or_err() {

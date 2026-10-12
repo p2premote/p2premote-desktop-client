@@ -142,6 +142,8 @@ impl Default for WgvpnHealthRuntime {
 #[derive(Default)]
 pub(super) struct SharedRuntimeState {
     status: RuntimeStatus,
+    /// 连接偏好在 service 生命周期内以内存为准；仅保存时落盘。
+    connection_preferences: crate::traversal_policy::Preferences,
     /// 当前 service 生命周期是否已获准使用持久化令牌登录。
     /// service 启动时仅由记住会话 + 自动登录 + token 开启；显式登录后保持到进程退出。
     login_session_enabled: bool,
@@ -476,6 +478,13 @@ pub async fn run_service_foreground() -> Result<()> {
         },
         status_tx: Some(status_tx),
         login_session_enabled: startup_login_enabled,
+        connection_preferences: startup_config
+            .as_ref()
+            .map(|config| crate::traversal_policy::Preferences {
+                prefer_ipv6: config.prefer_ipv6,
+                prefer_tcp: config.prefer_tcp,
+            })
+            .unwrap_or_default(),
         ..Default::default()
     }));
     // 从持久化配置恢复 locale 到内存缓存，保证 service 重启后
