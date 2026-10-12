@@ -473,6 +473,7 @@ async fn web_admin_server_loop(
         )
         .route("/api/web-admin/settings", get(web_admin_settings))
         .route("/api/web-admin/access", post(web_admin_update_access))
+        .route("/api/web-admin/logs.zip", get(web_admin_download_logs))
         .route("/api/events", get(web_events))
         .route("/api/invoke/{command}", post(web_invoke))
         .fallback_service(ServeDir::new(&web_dir).fallback(ServeFile::new(index_file)))
@@ -1006,6 +1007,36 @@ fn web_access_error(error: &str) -> Response {
         Json(serde_json::json!({ "ok": false, "error": error })),
     )
         .into_response()
+}
+
+async fn web_admin_download_logs(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    State(state): State<WebAdminState>,
+) -> Response {
+    if !state.security.session_valid(&headers, peer.ip(), true) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    match crate::logging::build_logs_zip() {
+        Ok((bytes, _count)) => {
+            let file_name = crate::logging::default_log_archive_name();
+            let disposition = format!("attachment; filename=\"{file_name}\"");
+            (
+                [
+                    (header::CONTENT_TYPE, "application/zip".to_string()),
+                    (header::CONTENT_DISPOSITION, disposition),
+                    (header::CACHE_CONTROL, "no-store".to_string()),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(error) => {
+            error!("[WebAdmin] failed to package logs: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 fn parse_web_access_config(

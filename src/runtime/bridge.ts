@@ -274,6 +274,27 @@ export async function openClientDownloadPage(): Promise<void> {
   return openExternal(CLIENT_DOWNLOAD_URL)
 }
 
+export async function downloadWebLogs(): Promise<void> {
+  const response = await fetch('/api/web-admin/logs.zip', { credentials: 'same-origin' })
+  if (!response.ok) {
+    if (response.status === 401) {
+      suspendWebSocket()
+      window.dispatchEvent(new CustomEvent('p2premote-web-auth-required'))
+    }
+    throw new Error(`Log download failed: ${response.status}`)
+  }
+  const disposition = response.headers.get('content-disposition') || ''
+  const fileName = disposition.match(/filename="([^"]+)"/)?.[1] || 'p2premote-logs.zip'
+  const url = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 export async function minimizeWindow(): Promise<void> {
   if (!isTauriRuntime()) {
     return

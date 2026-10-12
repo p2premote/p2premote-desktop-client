@@ -236,6 +236,9 @@
                   <button type="button" class="settings-item clickable" @click="handleOpenGitHub">
                     <span>{{ $t('app.settings.visit_github') }}</span><el-icon><LinkIcon /></el-icon>
                   </button>
+                  <button type="button" class="settings-item clickable" @click="handleExportLogs">
+                    <span>{{ $t('app.settings.export_logs') }}</span>
+                  </button>
                   <button v-if="!isTauriRuntime() && webAuthRequired" type="button" class="settings-item clickable" @click="handleWebAdminLogout">
                     <span>{{ $t('app.web_auth.logout') }}</span>
                   </button>
@@ -495,6 +498,7 @@ import {
   closeWindow,
   changeWebAdminSecurityCode,
   completeWebFirstTrust,
+  downloadWebLogs,
   getWebAdminSettings,
   getWebAuthStatus,
   invoke,
@@ -1546,6 +1550,26 @@ async function handleBackgroundServiceChange(value: boolean | string | number) {
 
 async function handleCheckUpdate() {
   await checkForUpdates(true)
+}
+
+async function handleExportLogs() {
+  try {
+    if (!isTauriRuntime()) {
+      await downloadWebLogs()
+      return
+    }
+    const { save } = await import('@tauri-apps/api/dialog')
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+    const destination = await save({
+      defaultPath: `p2premote-logs-${stamp}.zip`,
+      filters: [{ name: 'ZIP', extensions: ['zip'] }],
+    })
+    if (!destination) return
+    const count = await invoke<number>('export_logs', { destination })
+    ElMessage.success(t('app.actions.logs_exported', { count, path: destination }))
+  } catch (error) {
+    ElMessage.error(t('app.actions.export_logs_failed', { error: errorMessage(error, t('common.unknown_error')) }))
+  }
 }
 
 async function openUpdatePage() {

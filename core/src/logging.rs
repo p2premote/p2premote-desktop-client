@@ -1,13 +1,203 @@
+use flate2::{write::DeflateEncoder, Compression};
 use once_cell::sync::{Lazy, OnceCell};
 use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Cursor, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::fmt::MakeWriter;
 
 const MAX_ROLLED_LOG_FILES: usize = 3;
 pub const AUDIT_LOG_FILE_NAME: &str = "p2premote-audit.log";
+
+/// Build a portable default name for an exported log archive.
+pub fn default_log_archive_name() -> String {
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    format!(
+        "p2premote-logs-{:04}{:02}{:02}-{:02}{:02}{:02}.zip",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
+}
+
+/// Compress all regular files in the application's log directory into `destination`.
+///
+/// The archive is first written beside the destination and then moved into place, so
+/// a failed export never leaves a partially written ZIP at the user-selected path.
+pub fn export_logs(destination: impl AsRef<Path>) -> io::Result<usize> {
+    export_logs_from(&crate::config::machine_log_dir(), destination.as_ref())
+}
+
+fn export_logs_from(log_dir: &Path, destination: &Path) -> io::Result<usize> {
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let temp_name = format!(
+        ".{}.{}.tmp",
+        destination
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy(),
+        std::process::id()
+    );
+    let temp_path = parent.join(temp_name);
+    let result = (|| {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        let (file, count) = write_logs_zip(log_dir, file, &[destination, &temp_path])?;
+        file.sync_all()?;
+
+        if destination.exists() {
+            fs::remove_file(destination)?;
+        }
+        fs::rename(&temp_path, destination)?;
+        Ok(count)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+/// Build a ZIP response for the authenticated Web management download endpoint.
+pub fn build_logs_zip() -> io::Result<(Vec<u8>, usize)> {
+    let (cursor, count) = write_logs_zip(
+        &crate::config::machine_log_dir(),
+        Cursor::new(Vec::new()),
+        &[],
+    )?;
+    Ok((cursor.into_inner(), count))
+}
+
+fn write_logs_zip<W: Write + Seek>(
+    log_dir: &Path,
+    writer: W,
+    excluded: &[&Path],
+) -> io::Result<(W, usize)> {
+    let mut writer = writer;
+    let mut entries = fs::read_dir(log_dir)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
+        .filter(|entry| !excluded.iter().any(|path| entry.path() == *path))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    struct CentralEntry {
+        name: Vec<u8>,
+        crc32: u32,
+        compressed_size: u32,
+        uncompressed_size: u32,
+        offset: u32,
+    }
+    let mut central_entries = Vec::new();
+    for entry in entries {
+        let name = entry
+            .file_name()
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes();
+        let contents = fs::read(entry.path())?;
+        let uncompressed_size = u32::try_from(contents.len())
+            .map_err(|_| io::Error::other("a log file is too large for ZIP32"))?;
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&contents)?;
+        let compressed = encoder.finish()?;
+        let compressed_size = u32::try_from(compressed.len())
+            .map_err(|_| io::Error::other("a compressed log file is too large for ZIP32"))?;
+        let offset = u32::try_from(writer.stream_position()?)
+            .map_err(|_| io::Error::other("log archive is too large for ZIP32"))?;
+        let crc32 = crc32(&contents);
+
+        write_u32(&mut writer, 0x0403_4b50)?;
+        write_u16(&mut writer, 20)?;
+        write_u16(&mut writer, 0x0800)?; // UTF-8 file name
+        write_u16(&mut writer, 8)?; // deflate
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 0)?;
+        write_u32(&mut writer, crc32)?;
+        write_u32(&mut writer, compressed_size)?;
+        write_u32(&mut writer, uncompressed_size)?;
+        write_u16(&mut writer, name.len() as u16)?;
+        write_u16(&mut writer, 0)?;
+        writer.write_all(&name)?;
+        writer.write_all(&compressed)?;
+        central_entries.push(CentralEntry {
+            name,
+            crc32,
+            compressed_size,
+            uncompressed_size,
+            offset,
+        });
+    }
+
+    let central_offset = writer.stream_position()?;
+    for entry in &central_entries {
+        write_u32(&mut writer, 0x0201_4b50)?;
+        write_u16(&mut writer, 20)?;
+        write_u16(&mut writer, 20)?;
+        write_u16(&mut writer, 0x0800)?;
+        write_u16(&mut writer, 8)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 0)?;
+        write_u32(&mut writer, entry.crc32)?;
+        write_u32(&mut writer, entry.compressed_size)?;
+        write_u32(&mut writer, entry.uncompressed_size)?;
+        write_u16(&mut writer, entry.name.len() as u16)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 0)?;
+        write_u32(&mut writer, 0)?;
+        write_u32(&mut writer, entry.offset)?;
+        writer.write_all(&entry.name)?;
+    }
+    let central_size = writer.stream_position()? - central_offset;
+    let count = u16::try_from(central_entries.len())
+        .map_err(|_| io::Error::other("too many files for ZIP32"))?;
+    write_u32(&mut writer, 0x0605_4b50)?;
+    write_u16(&mut writer, 0)?;
+    write_u16(&mut writer, 0)?;
+    write_u16(&mut writer, count)?;
+    write_u16(&mut writer, count)?;
+    write_u32(&mut writer, central_size as u32)?;
+    write_u32(&mut writer, central_offset as u32)?;
+    write_u16(&mut writer, 0)?;
+    Ok((writer, central_entries.len()))
+}
+
+fn write_u16(writer: &mut impl Write, value: u16) -> io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+fn write_u32(writer: &mut impl Write, value: u32) -> io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0_u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & (0_u32.wrapping_sub(crc & 1)));
+        }
+    }
+    !crc
+}
 
 static AUDIT_LOG_WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -406,6 +596,33 @@ mod tests {
         assert!(records[0]["timestamp"].as_str().unwrap().contains('T'));
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn export_logs_creates_zip_with_all_log_files() {
+        let dir = test_dir("export");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("p2premote.log"), b"gui log\n").unwrap();
+        fs::write(dir.join("service.log"), b"service log\n").unwrap();
+        let output_dir = test_dir("export-output");
+        let output = output_dir.join("logs.zip");
+
+        assert_eq!(export_logs_from(&dir, &output).unwrap(), 2);
+        let archive = fs::read(&output).unwrap();
+        assert!(archive.starts_with(&0x0403_4b50_u32.to_le_bytes()));
+        assert!(archive.windows(13).any(|bytes| bytes == b"p2premote.log"));
+        assert!(archive.windows(11).any(|bytes| bytes == b"service.log"));
+        assert!(archive
+            .windows(4)
+            .any(|bytes| bytes == 0x0605_4b50_u32.to_le_bytes()));
+
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn zip_crc32_matches_standard_test_vector() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
     }
 }
 

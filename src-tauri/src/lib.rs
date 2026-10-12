@@ -43,6 +43,20 @@ fn flash_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn export_logs(destination: String) -> Result<usize, String> {
+    let destination = std::path::PathBuf::from(destination);
+    if destination.as_os_str().is_empty() {
+        return Err("log archive destination is empty".to_string());
+    }
+    p2premote_core::logging::export_logs(&destination).map_err(|error| {
+        format!(
+            "failed to export logs to {}: {error}",
+            destination.display()
+        )
+    })
+}
+
+#[tauri::command]
 fn launch_windows_rdp(address: String) -> Result<(), String> {
     let address = address.trim();
     if address.is_empty() || address.chars().any(char::is_whitespace) {
@@ -334,6 +348,7 @@ pub fn run() {
             refresh_service_network_info,
             refresh_tunnel_status,
             flash_main_window,
+            export_logs,
             launch_windows_rdp,
         ])
         .setup(|app| {
