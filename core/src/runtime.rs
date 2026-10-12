@@ -10,6 +10,7 @@ use crate::auth::{
     refresh_with_config, register_by_email_code, reset_password_by_email_code,
     send_verification_code,
 };
+use crate::auto_keep::{list_auto_keep, set_auto_keep, AutoKeepStatus};
 use crate::config::{
     clear_machine_credentials, derive_control_secret, ensure_machine_config, load_machine_config,
     save_machine_config,
@@ -43,7 +44,7 @@ use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -53,6 +54,7 @@ use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
 mod active_jobs;
+mod auto_keep_runtime;
 mod desktop_engine;
 mod ipc;
 mod p2p_signal;
@@ -62,6 +64,7 @@ mod tunnel_jobs;
 mod web_admin;
 
 use active_jobs::*;
+use auto_keep_runtime::*;
 use ipc::*;
 use p2p_signal::*;
 use status::{
@@ -180,6 +183,10 @@ pub(super) struct SharedRuntimeState {
     /// 本机注册已被服务端拒绝（如设备数超限）后停止周期重试，避免每分钟
     /// 打一次注定失败的请求。重新登录或 service 重启后才会再试。
     device_registration_abandoned: bool,
+    auto_keep_retries: HashMap<i64, AutoKeepRetryRuntime>,
+    /// A remote manual stop is safety-sensitive: keep the local pause even if
+    /// persisting it fails or a later server snapshot is stale.
+    auto_keep_remote_stop_barriers: HashSet<i64>,
     status_tx: Option<tokio::sync::broadcast::Sender<RuntimeStatus>>,
 }
 
@@ -505,6 +512,8 @@ pub async fn run_service_foreground() -> Result<()> {
     let wake = Arc::new(Notify::new());
     spawn_control_server(shared.clone(), wake.clone());
     info!("[ServiceRuntime] IPC control server started");
+    spawn_auto_keep_coordinator(shared.clone());
+    info!("[ServiceRuntime] automatic tunnel keep coordinator started");
     web_admin::spawn_web_admin_server(shared.clone(), wake.clone(), startup_config.clone());
     info!(
         "[ServiceRuntime] web admin server scheduled on {}",

@@ -63,11 +63,12 @@ pub struct ActiveP2POpenResult {
     pub source_email: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TunnelHealthEvent {
     HeartbeatSucceeded { latency_ms: Option<u32> },
     HeartbeatFailed,
     ConnectionClosed,
+    RemoteStop { reason: String },
 }
 
 pub type TunnelHealthEventHandler = Arc<dyn Fn(TunnelHealthEvent) + Send + Sync>;
@@ -483,6 +484,13 @@ async fn active_health_session(
                             }
                         }
                     }
+                    Some(TunnelControlMessage::Stop { reason }) => {
+                        if let Some(handler) = event_handler {
+                            handler(TunnelHealthEvent::RemoteStop { reason });
+                            return Ok(());
+                        }
+                        return Err(anyhow!("remote requested tunnel stop"));
+                    }
                     Some(other) => {
                         return Err(anyhow!("unexpected health control message: {:?}", other));
                     }
@@ -681,7 +689,7 @@ async fn notify_remote_tunnel_stop(source_device_id: i64, health_addr: &str) -> 
     };
 
     conn.send(&TunnelControlMessage::Stop {
-        reason: "initiator_closed".to_string(),
+        reason: "remote_manual_disconnect".to_string(),
     })
     .await
     .context("failed to send remote stop")?;
@@ -1042,7 +1050,7 @@ mod tests {
             assert_eq!(
                 conn.next().await.expect("read stop"),
                 Some(TunnelControlMessage::Stop {
-                    reason: "initiator_closed".to_string(),
+                    reason: "remote_manual_disconnect".to_string(),
                 })
             );
         });

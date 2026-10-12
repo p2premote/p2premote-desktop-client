@@ -280,6 +280,7 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::AcknowledgeDeviceIdentityNotification => "AcknowledgeDeviceIdentityNotification",
         Data::StopTunnel { .. } => "StopTunnel",
         Data::StopActiveTunnel { .. } => "StopActiveTunnel",
+        Data::DisconnectActiveTunnel { .. } => "DisconnectActiveTunnel",
         Data::TestTunnelSpeed { .. } => "TestTunnelSpeed",
         Data::ShutdownGracefully => "ShutdownGracefully",
         Data::GetDeviceList => "GetDeviceList",
@@ -288,6 +289,8 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::WakeDevice { .. } => "WakeDevice",
         Data::SetDevicePassword { .. } => "SetDevicePassword",
         Data::GenerateConnectCode { .. } => "GenerateConnectCode",
+        Data::GetAutoKeepStatuses => "GetAutoKeepStatuses",
+        Data::SetAutoKeep { .. } => "SetAutoKeep",
         Data::MarkCurrentDeviceOffline => "MarkCurrentDeviceOffline",
         Data::Login { .. } => "Login",
         Data::RegisterByEmailCode { .. } => "RegisterByEmailCode",
@@ -510,6 +513,24 @@ pub(super) async fn handle_data(
                 Err(err) => Some(cmd_response(false, &err.to_string(), None)),
             }
         }
+        Data::GetAutoKeepStatuses => match refresh_auto_keep_statuses(shared).await {
+            Ok(statuses) => Some(cmd_response_with_data(
+                true,
+                "ok",
+                Some(shared.lock().status.clone()),
+                serde_json::to_value(statuses).unwrap_or(serde_json::Value::Null),
+            )),
+            Err(error) => Some(cmd_response(
+                false,
+                &error.to_string(),
+                Some(shared.lock().status.clone()),
+            )),
+        },
+        Data::SetAutoKeep {
+            target_device_id,
+            enabled,
+            expected_revision,
+        } => set_auto_keep_setting(shared, target_device_id, enabled, expected_revision).await,
         Data::UpdateDeviceAlias { device_id, alias } => {
             let mut config = match load_config_or_err() {
                 Ok(c) => c,
@@ -1075,6 +1096,31 @@ pub(super) async fn handle_data(
         }
         Data::StopTunnel { source_device_id } => stop_wgvpn_job(shared, source_device_id).await,
         Data::StopActiveTunnel { peer_device_id } => {
+            if shared
+                .lock()
+                .active_tunnel_job_cancels
+                .contains_key(&peer_device_id)
+            {
+                stop_active_tunnel_job(shared, peer_device_id);
+            } else {
+                clear_active_tunnel_job_status(shared, peer_device_id);
+            }
+            stop_wgvpn_job(shared, peer_device_id).await
+        }
+        Data::DisconnectActiveTunnel {
+            peer_device_id,
+            auto_keep_enabled,
+            expected_revision,
+        } => {
+            let setting_response =
+                set_auto_keep_setting(shared, peer_device_id, auto_keep_enabled, expected_revision)
+                    .await;
+            if !matches!(
+                setting_response,
+                Some(Data::CommandResponse { ok: true, .. })
+            ) {
+                return setting_response;
+            }
             if shared
                 .lock()
                 .active_tunnel_job_cancels

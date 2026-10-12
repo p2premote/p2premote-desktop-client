@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod auth_http;
+pub mod auto_keep;
 pub mod bytes_codec;
 pub mod config;
 pub mod control;

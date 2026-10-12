@@ -1,8 +1,8 @@
 //! Runtime status mutations shared by service tasks.
 
 use super::{
-    classify_tunnel_error_code, now_ts, SharedRuntimeState, ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS,
-    ACTIVE_TUNNEL_JOB_BACKOFF_SECS, WGVPN_JOB_BACKOFF_SECS,
+    classify_tunnel_error_code, note_auto_keep_job_failed, now_ts, SharedRuntimeState,
+    ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS, ACTIVE_TUNNEL_JOB_BACKOFF_SECS, WGVPN_JOB_BACKOFF_SECS,
 };
 use crate::control::{
     RuntimeStatus, TunnelJobState, TunnelJobStatus, TunnelLastResult, TunnelLifecycleRole,
@@ -320,6 +320,9 @@ pub(super) fn update_active_tunnel_job_status(
             updated_at: status.updated_at,
         },
     );
+    if status.state == TunnelJobState::Failed {
+        note_auto_keep_job_failed(&mut state, status.peer_device_id, status.updated_at);
+    }
     if let Some(tx) = &state.status_tx {
         let _ = tx.send(state.status.clone());
     }

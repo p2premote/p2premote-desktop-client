@@ -77,6 +77,10 @@ pub struct MachineConfig {
     /// 持久化以免邀请页每次挂载都重新生成、使已分享未使用的邀请失效。
     #[serde(default)]
     pub invite_temporary_password: Option<String>,
+    /// Target devices whose automatic recovery was paused by a peer's explicit
+    /// disconnect. Runtime state is local to this source device, not server data.
+    #[serde(default)]
+    pub auto_keep_remote_stop_targets: Vec<i64>,
 }
 
 /// 不属于用户配置的持久化运行时状态。
@@ -99,6 +103,7 @@ struct MachineState {
     cached_public_ip_location: Option<String>,
     cached_public_network_checked_at: i64,
     invite_temporary_password: Option<String>,
+    auto_keep_remote_stop_targets: Vec<i64>,
 }
 
 impl Default for MachineConfig {
@@ -131,6 +136,7 @@ impl Default for MachineConfig {
             cached_public_ip_location: None,
             cached_public_network_checked_at: 0,
             invite_temporary_password: None,
+            auto_keep_remote_stop_targets: Vec::new(),
         }
     }
 }
@@ -768,6 +774,7 @@ fn is_machine_state_field(key: &str) -> bool {
             | "cached_public_ip_location"
             | "cached_public_network_checked_at"
             | "invite_temporary_password"
+            | "auto_keep_remote_stop_targets"
     )
 }
 
@@ -818,6 +825,7 @@ fn machine_state_from_config(config: &MachineConfig) -> MachineState {
         cached_public_ip_location: config.cached_public_ip_location.clone(),
         cached_public_network_checked_at: config.cached_public_network_checked_at,
         invite_temporary_password: config.invite_temporary_password.clone(),
+        auto_keep_remote_stop_targets: config.auto_keep_remote_stop_targets.clone(),
     }
 }
 
@@ -835,6 +843,7 @@ fn apply_machine_state(mut config: MachineConfig, state: MachineState) -> Machin
     config.cached_public_ip_location = state.cached_public_ip_location;
     config.cached_public_network_checked_at = state.cached_public_network_checked_at;
     config.invite_temporary_password = state.invite_temporary_password;
+    config.auto_keep_remote_stop_targets = state.auto_keep_remote_stop_targets;
     config
 }
 
@@ -850,6 +859,7 @@ pub fn clear_machine_credentials(config: &mut MachineConfig) {
     config.access_token_expires_at = None;
     config.user_email = None;
     config.device_id = None;
+    config.auto_keep_remote_stop_targets.clear();
 }
 
 pub fn ensure_machine_config() -> Result<MachineConfig> {

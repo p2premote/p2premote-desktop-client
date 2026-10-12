@@ -138,3 +138,39 @@ pub async fn generate_connect_code(device_id: i64) -> Result<String, String> {
         other => Err(format!("unexpected service response: {:?}", other)),
     }
 }
+
+#[tauri::command]
+pub async fn get_auto_keep_statuses() -> Result<serde_json::Value, String> {
+    match send_command_responsive(Data::GetAutoKeepStatuses).await? {
+        Data::CommandResponse {
+            ok: true,
+            data: Some(data),
+            ..
+        } => Ok(data),
+        Data::CommandResponse { message, .. } => Err(message),
+        other => Err(format!("unexpected service response: {:?}", other)),
+    }
+}
+
+#[tauri::command]
+pub async fn set_auto_keep(
+    target_device_id: i64,
+    enabled: bool,
+    expected_revision: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    match send_command_responsive(Data::SetAutoKeep {
+        target_device_id,
+        enabled,
+        expected_revision,
+    })
+    .await?
+    {
+        Data::CommandResponse {
+            ok: true,
+            data: Some(data),
+            ..
+        } => Ok(data),
+        Data::CommandResponse { message, .. } => Err(message),
+        other => Err(format!("unexpected service response: {:?}", other)),
+    }
+}

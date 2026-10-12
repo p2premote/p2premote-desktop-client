@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::Framed;
 
-pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 3;
+pub const TUNNEL_CONTROL_PROTOCOL_VERSION: u16 = 4;
 
 /// 最低可互连的协议版本。
 pub const TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT: u16 = 3;

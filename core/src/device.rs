@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use tracing::{debug, info};
 
 pub const CAPABILITY_RUSTDESK_TINY: &str = "rustdesk_tiny";
+pub const CAPABILITY_STRUCTURED_TUNNEL_STOP_REASON: &str = "structured_tunnel_stop_reason";
 
 #[cfg(target_os = "linux")]
 pub const LINUX_RUSTDESK_TINY_EXECUTABLE: &str = "/usr/share/rustdesktiny/rustdesktiny";
@@ -26,17 +27,16 @@ fn rustdesk_tiny_executable_installed(path: &std::path::Path) -> bool {
 }
 
 fn current_capabilities() -> Vec<String> {
+    let mut capabilities = vec![CAPABILITY_STRUCTURED_TUNNEL_STOP_REASON.to_string()];
     #[cfg(windows)]
     {
-        vec![CAPABILITY_RUSTDESK_TINY.to_string()]
+        capabilities.push(CAPABILITY_RUSTDESK_TINY.to_string());
     }
     #[cfg(target_os = "linux")]
     {
         if rustdesk_tiny_executable_installed(std::path::Path::new(LINUX_RUSTDESK_TINY_EXECUTABLE))
         {
-            vec![CAPABILITY_RUSTDESK_TINY.to_string()]
-        } else {
-            Vec::new()
+            capabilities.push(CAPABILITY_RUSTDESK_TINY.to_string());
         }
     }
     #[cfg(target_os = "macos")]
@@ -56,15 +56,12 @@ fn current_capabilities() -> Vec<String> {
             "/Applications/RustDeskTiny.app/Contents/MacOS/RustDeskTiny",
         ));
         if bundled_next_to_exe || installed_in_applications {
-            vec![CAPABILITY_RUSTDESK_TINY.to_string()]
-        } else {
-            Vec::new()
+            capabilities.push(CAPABILITY_RUSTDESK_TINY.to_string());
         }
     }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-    {
-        Vec::new()
-    }
+    {}
+    capabilities
 }
 
 // 平台特定实现按 Go 的文件命名习惯拆分（device_windows.rs / device_macos.rs /

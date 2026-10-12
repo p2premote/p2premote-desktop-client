@@ -102,6 +102,28 @@ export interface TunnelLifecycleStatus {
   updated_at: number
 }
 
+export interface AutoKeepStatus {
+  target_device_id: number
+  enabled: boolean
+  state:
+    | 'active'
+    | 'waiting_network'
+    | 'waiting_peer_online'
+    | 'paused_membership'
+    | 'paused_logout'
+    | 'paused_remote_stop'
+    | 'blocked'
+    | 'stopped'
+  revision: number
+  eligible: boolean
+  ineligible_reason?: string | null
+  last_trigger?: string | null
+  stop_reason?: string | null
+  error_code?: string | null
+  next_retry_at?: number | null
+  updated_at: number
+}
+
 // ============ 后台服务状态 ============
 
 /** core::control::PendingInboundApproval */
@@ -154,6 +176,7 @@ export interface BackgroundServiceStatus {
     }>
     pending_inbound_approvals?: InboundApprovalStatus[]
     active_tunnel_jobs?: TunnelJobStatus[]
+    auto_keep_statuses?: AutoKeepStatus[]
   } | null
   machine_logged_in: boolean
   config_path: string

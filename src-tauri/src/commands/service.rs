@@ -1025,6 +1025,28 @@ pub async fn stop_active_tunnel_job(peer_device_id: i64) -> Result<String, Strin
 }
 
 #[tauri::command]
+pub async fn disconnect_active_tunnel(
+    peer_device_id: i64,
+    auto_keep_enabled: bool,
+    expected_revision: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    match send_command_responsive(Data::DisconnectActiveTunnel {
+        peer_device_id,
+        auto_keep_enabled,
+        expected_revision,
+    })
+    .await
+    {
+        Ok(Data::CommandResponse {
+            ok: true, status, ..
+        }) => Ok(serde_json::json!({ "runtime": status })),
+        Ok(Data::CommandResponse { message, .. }) => Err(message),
+        Ok(other) => Err(format!("unexpected service response: {:?}", other)),
+        Err(error) => Err(error),
+    }
+}
+
+#[tauri::command]
 pub async fn approve_inbound_tunnel(attempt_id: String) -> Result<String, String> {
     match send_command_responsive(Data::ApproveInboundTunnel { attempt_id }).await {
         Ok(Data::CommandResponse {

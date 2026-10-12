@@ -8,6 +8,7 @@
 //! 3. 服务端验证后回复 Data::CommandResponse
 //! 4. 双方在持久连接上互发 Data 消息（长度前缀帧 + JSON）
 
+use crate::auto_keep::AutoKeepStatus;
 use crate::bytes_codec::BytesCodec;
 use crate::config::derive_control_secret;
 use crate::device::DeviceInfo;
@@ -87,6 +88,12 @@ pub enum Data {
     StopActiveTunnel {
         peer_device_id: i64,
     },
+    DisconnectActiveTunnel {
+        peer_device_id: i64,
+        auto_keep_enabled: bool,
+        #[serde(default)]
+        expected_revision: Option<i64>,
+    },
     TestTunnelSpeed {
         peer_device_id: i64,
     },
@@ -110,6 +117,13 @@ pub enum Data {
     },
     GenerateConnectCode {
         device_id: i64,
+    },
+    GetAutoKeepStatuses,
+    SetAutoKeep {
+        target_device_id: i64,
+        enabled: bool,
+        #[serde(default)]
+        expected_revision: Option<i64>,
     },
     MarkCurrentDeviceOffline,
 
@@ -239,6 +253,8 @@ pub struct RuntimeStatus {
     pub wgvpn_jobs: Vec<TunnelJobStatus>,
     #[serde(default)]
     pub tunnel_lifecycles: Vec<TunnelLifecycleStatus>,
+    #[serde(default)]
+    pub auto_keep_statuses: Vec<AutoKeepStatus>,
     /// Cross-account passive requests that have completed WG handshake and
     /// are waiting for an explicit local approval.
     #[serde(default)]
@@ -1004,6 +1020,7 @@ mod tests {
                 wgvpn_sessions: vec![],
                 wgvpn_jobs: vec![],
                 tunnel_lifecycles: vec![],
+                auto_keep_statuses: vec![],
                 pending_inbound_approvals: vec![],
                 locale: Some("zh-CN".to_string()),
             }),

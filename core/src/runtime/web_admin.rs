@@ -1417,6 +1417,28 @@ async fn handle_web_command(
             let resp = dispatch_web_data(Data::GetDeviceList, state).await?;
             command_data(resp)
         }
+        "get_auto_keep_statuses" => {
+            let resp = dispatch_web_data(Data::GetAutoKeepStatuses, state).await?;
+            command_data(resp)
+        }
+        "set_auto_keep" => {
+            let target_device_id = arg_i64(&args, &["targetDeviceId", "target_device_id"])?;
+            let enabled = arg_bool(&args, &["enabled"]).unwrap_or(false);
+            let expected_revision = args
+                .get("expectedRevision")
+                .or_else(|| args.get("expected_revision"))
+                .and_then(|value| value.as_i64());
+            let resp = dispatch_web_data(
+                Data::SetAutoKeep {
+                    target_device_id,
+                    enabled,
+                    expected_revision,
+                },
+                state,
+            )
+            .await?;
+            command_data(resp)
+        }
         "parse_invite_info" => {
             let input = arg_string(&args, &["input"])?;
             Ok(
@@ -1521,6 +1543,25 @@ async fn handle_web_command(
         "stop_service_active_tunnel" => {
             let peer_device_id = arg_i64(&args, &["peerDeviceId", "peer_device_id"])?;
             let _ = dispatch_web_data(Data::StopActiveTunnel { peer_device_id }, state).await?;
+            Ok(web_status_value(state))
+        }
+        "disconnect_active_tunnel" => {
+            let peer_device_id = arg_i64(&args, &["peerDeviceId", "peer_device_id"])?;
+            let auto_keep_enabled =
+                arg_bool(&args, &["autoKeepEnabled", "auto_keep_enabled"]).unwrap_or(false);
+            let expected_revision = args
+                .get("expectedRevision")
+                .or_else(|| args.get("expected_revision"))
+                .and_then(|value| value.as_i64());
+            let _ = dispatch_web_data(
+                Data::DisconnectActiveTunnel {
+                    peer_device_id,
+                    auto_keep_enabled,
+                    expected_revision,
+                },
+                state,
+            )
+            .await?;
             Ok(web_status_value(state))
         }
         "test_tunnel_speed" => {

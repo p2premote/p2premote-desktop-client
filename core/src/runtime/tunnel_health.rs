@@ -123,6 +123,18 @@ pub(super) fn spawn_wgvpn_health_monitor(
                 CleanupGuard::Monitor(generation),
             );
         }
+        TunnelHealthEvent::RemoteStop { reason } => {
+            closed_flag_for_handler.store(true, Ordering::SeqCst);
+            if reason == "remote_manual_disconnect" {
+                mark_auto_keep_remote_stop(&event_shared, peer_device_id);
+            }
+            cleanup_wgvpn_session_async(
+                event_shared.clone(),
+                peer_device_id,
+                "remote_manual_disconnect",
+                CleanupGuard::Monitor(generation),
+            );
+        }
     });
 
     tokio::spawn(async move {
