@@ -49,6 +49,14 @@
                   <el-icon aria-hidden="true"><Link /></el-icon>
                   <span>{{ tunnelConnectedLabel(device) }}</span>
                 </span>
+                <el-tag
+                  v-if="isTunnelConnected(device)"
+                  size="small"
+                  class="device-latency-tag"
+                  :class="tunnelLatencyClass(device)"
+                >
+                  {{ tunnelLatencyText(device) }}ms
+                </el-tag>
                 <el-tag v-if="isCurrentDevice(device.device_uuid)" size="small" type="primary">{{ $t('common.current_device') }}</el-tag>
               </div>
               <div class="device-list-subtitle">
@@ -585,6 +593,15 @@ function tunnelConnectedLabel(device: DeviceInfo | null): string {
   return deviceTunnelLifecycle(device).role === 'passive'
     ? t('devices.list.passive_tunnel_connected')
     : t('devices.list.active_tunnel_connected')
+}
+
+function tunnelLatencyClass(device: DeviceInfo | null): string {
+  if (!device) return 'latency-normal'
+  const latency = tunnelStatusMap.value[device.device_id]?.latency_ms
+  if (typeof latency !== 'number') return 'latency-normal'
+  if (latency > 300) return 'latency-danger'
+  if (latency > 100) return 'latency-warning'
+  return 'latency-normal'
 }
 
 function tunnelLifecycleTitle(device: DeviceInfo | null): string {
@@ -1329,6 +1346,30 @@ async function confirmDeleteDevice(device: DeviceInfo) {
 
 .device-tunnel-badge .el-icon {
   font-size: 12px;
+}
+
+.device-latency-tag {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.device-latency-tag.latency-normal {
+  --el-tag-text-color: color-mix(in srgb, var(--fluent-success) 88%, var(--fluent-text));
+  --el-tag-border-color: color-mix(in srgb, var(--fluent-success) 34%, transparent);
+  --el-tag-bg-color: color-mix(in srgb, var(--fluent-success) 12%, transparent);
+}
+
+.device-latency-tag.latency-warning {
+  --el-tag-text-color: color-mix(in srgb, var(--fluent-warning) 82%, var(--fluent-text));
+  --el-tag-border-color: color-mix(in srgb, var(--fluent-warning) 45%, transparent);
+  --el-tag-bg-color: color-mix(in srgb, var(--fluent-warning) 15%, transparent);
+}
+
+.device-latency-tag.latency-danger {
+  --el-tag-text-color: color-mix(in srgb, var(--fluent-danger) 88%, var(--fluent-text));
+  --el-tag-border-color: color-mix(in srgb, var(--fluent-danger) 42%, transparent);
+  --el-tag-bg-color: color-mix(in srgb, var(--fluent-danger) 13%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
