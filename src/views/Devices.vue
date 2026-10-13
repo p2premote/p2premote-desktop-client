@@ -940,7 +940,7 @@ async function testTunnelSpeed(device: DeviceInfo) {
       { confirmButtonText: t('common.confirm') },
     )
   } catch (error) {
-    ElMessage.error(t('devices.message.speed_test_failed', { reason: String(error) }))
+    ElMessage.error(t('devices.message.speed_test_failed', { reason: errorMessage(error, t('common.unknown_error')) }))
   } finally {
     speedTestingIds.delete(device.device_id)
   }
@@ -982,6 +982,8 @@ function applyCurrentDeviceUUIDFromRuntime(runtime: any) {
     ? (typeof runtime?.device_registration_error === 'string' ? runtime.device_registration_error.trim() : '')
     : ''
   registrationError.value = registrationFailure
+    ? errorMessage(registrationFailure, t('devices.registration_failed_title'))
+    : ''
 }
 
 const registrationErrorMessage = computed(() => {
@@ -1191,7 +1193,7 @@ async function disableTcpAndRetry(device: DeviceInfo) {
     const preferences = await invoke<{ prefer_ipv6: boolean; prefer_tcp: boolean }>('get_connection_preferences')
     await invoke('save_connection_preferences', { preferIpv6: preferences.prefer_ipv6, preferTcp: false })
     await handleRetryTunnel(device)
-  } catch (error) { ElMessage.error(String(error)) }
+  } catch (error) { ElMessage.error(errorMessage(error, t('common.unknown_error'))) }
 }
 
 const SYMMETRIC_NAT_HELP_URL = 'https://www.p2premote.top/zh/docs/improve-p2p-success'
@@ -1244,7 +1246,7 @@ async function handleCancelActiveTunnelJob(device: DeviceInfo) {
     delete activeTunnelJobMap.value[device.device_id]
     ElMessage.success(t('devices.message.auto_tunnel_cancelled'))
   } catch (error) {
-    ElMessage.error(t('devices.message.auto_tunnel_cancel_failed', { error: (error as any).message }))
+    ElMessage.error(t('devices.message.auto_tunnel_cancel_failed', { error: errorMessage(error, t('common.unknown_error')) }))
   }
 }
 
@@ -1314,7 +1316,7 @@ async function launchWindowsRdp(device: DeviceInfo) {
     await invoke('launch_windows_rdp', { address })
     ElMessage.success(t('devices.message.windows_rdp_started'))
   } catch (e) {
-    ElMessage.error(t('devices.message.connect_failed', { error: String(e) }))
+    ElMessage.error(t('devices.message.connect_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1370,7 +1372,7 @@ async function handleWakeDevice(device: DeviceInfo) {
 		const status = await invoke<string>('wake_device', { deviceId: device.device_id })
 		if (status === 'sent') ElMessage.success(t('devices.wol.sent'))
 		else ElMessage.error(t(`devices.wol.${status}`))
-	} catch (e) { ElMessage.error(t('devices.wol.failed', { error: String(e) })) }
+	} catch (e) { ElMessage.error(t('devices.wol.failed', { error: errorMessage(e, t('common.unknown_error')) })) }
 	finally { wakingIds.delete(device.device_id) }
 }
 
@@ -1383,7 +1385,7 @@ async function confirmSetAlias() {
     aliasDialogVisible.value = false
     await deviceStore.fetchDevices({ force: true })
   } catch (e) {
-    ElMessage.error(t('devices.message.alias_set_failed', { error: e }))
+    ElMessage.error(t('devices.message.alias_set_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   } finally {
     aliasForm.loading = false
   }
@@ -1405,7 +1407,7 @@ async function confirmDeleteDevice(device: DeviceInfo) {
     ElMessage.success(t('devices.message.delete_success'))
     await deviceStore.fetchDevices({ force: true })
   } catch (e) {
-    ElMessage.error(t('devices.message.delete_failed', { error: e }))
+    ElMessage.error(t('devices.message.delete_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 </script>

@@ -4,6 +4,7 @@ import { invoke } from '../runtime/bridge'
 import { useDeviceStore } from './device'
 import type { DeviceInfo } from '../types/api'
 import i18n from '../i18n'
+import { businessErrorMessage } from '../utils/errorMessage'
 
 export interface UserInfo {
   user_id: number
@@ -34,6 +35,13 @@ export const useAuthStore = defineStore('auth', () => {
   const currentDevice = ref<DeviceInfo | null>(null)
 
   const isLoggedIn = computed(() => !!token.value)
+  let authOperationTail: Promise<void> = Promise.resolve()
+
+  function runAuthOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = authOperationTail.then(operation, operation)
+    authOperationTail = result.then(() => undefined, () => undefined)
+    return result
+  }
 
   async function syncServiceRuntimeConfig() {
     try {
@@ -48,6 +56,10 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(identifier: string, password: string) {
+    return runAuthOperation(() => loginInner(identifier, password))
+  }
+
+  async function loginInner(identifier: string, password: string) {
     deviceStore.resetDevices()
 
     const response = await invoke<LoginResponse>('login', {
@@ -71,14 +83,14 @@ export const useAuthStore = defineStore('auth', () => {
     }
 
     // Tauri/service 已按当前 locale 本地化；旧服务端仍由 core 回退到 msg。
-    throw new Error(response.msg || i18n.global.t('errors.login_failed'))
+    throw new Error(businessErrorMessage(response.msg, i18n.global.t('errors.login_failed')))
   }
 
   /// 接管一个已由后台 service 建立的会话（自动登录 token 或 '__service_session__'
   /// 哨兵）：置 token → 拉用户信息 → 同步 service 运行时配置 → 强制刷新设备列表。
   /// App.vue 的启动恢复流程与本 store 的 resumeSavedSession 共用此单一入口
   /// （审计 G-7：原先两份并行流程仅入口命令不同）。
-  async function adoptServiceSession(sessionToken: string) {
+  async function adoptServiceSessionInner(sessionToken: string) {
     token.value = sessionToken
     const info = await invoke<UserInfo | null>('fetch_user_profile')
     if (!info) {
@@ -89,10 +101,46 @@ export const useAuthStore = defineStore('auth', () => {
     await deviceStore.fetchDevices({ force: true })
   }
 
+  async function adoptServiceSession(sessionToken: string) {
+    return runAuthOperation(() => adoptServiceSessionInner(sessionToken))
+  }
+
   async function resumeSavedSession(autoLogin: boolean) {
-    deviceStore.resetDevices()
-    await invoke('resume_saved_session', { autoLogin })
-    await adoptServiceSession('__service_session__')
+    return runAuthOperation(async () => {
+      deviceStore.resetDevices()
+      await invoke('resume_saved_session', { autoLogin })
+      await adoptServiceSessionInner('__service_session__')
+    })
+  }
+
+  async function recoverAvailableServiceSession(afterAdopt: () => Promise<void>) {
+    return runAuthOperation(async () => {
+      // A manual login may have completed while this recovery attempt was
+      // waiting in the queue. Never replace or clear that newer session.
+      if (isLoggedIn.value) return true
+
+      try {
+        const recoveredToken = await invoke<string>('try_auto_login')
+        if (recoveredToken) {
+          await adoptServiceSessionInner(recoveredToken)
+          await afterAdopt()
+          return true
+        }
+
+        const serviceLoggedIn = await invoke<boolean>('is_logged_in')
+        if (serviceLoggedIn) {
+          await adoptServiceSessionInner('__service_session__')
+          await afterAdopt()
+          return true
+        }
+        return false
+      } catch (error) {
+        // Keep the reset inside the serialized operation. A manual login queued
+        // behind recovery must never be cleared by a late recovery failure.
+        resetSession()
+        throw error
+      }
+    })
   }
 
   async function logout() {
@@ -128,6 +176,7 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     adoptServiceSession,
     resumeSavedSession,
+    recoverAvailableServiceSession,
     logout,
     resetSession,
   }

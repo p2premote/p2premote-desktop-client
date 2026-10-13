@@ -128,13 +128,13 @@
             <span class="app-title">p2pRemote</span>
             <Transition name="connection-status">
               <span
-                v-if="!isOnline"
+                v-if="connectionUnavailable"
                 class="connection-status"
                 role="status"
                 aria-live="polite"
               >
                 <span class="connection-status-dot" aria-hidden="true"></span>
-                {{ $t('app.connection.offline') }}
+                {{ connectionStatusLabel }}
               </span>
             </Transition>
           </div>
@@ -275,6 +275,23 @@
           </div>
         </div>
       </el-header>
+
+      <div
+        v-if="startupReady && connectionUnavailable"
+        class="offline-banner no-drag"
+        role="status"
+        aria-live="polite"
+      >
+        <span>{{ networkRecoveryRunning ? $t('app.connection.recovering') : connectionStatusMessage }}</span>
+        <el-button
+          text
+          size="small"
+          :loading="networkRecoveryRunning"
+          @click="retryNetworkRecovery"
+        >
+          {{ $t('app.connection.retry') }}
+        </el-button>
+      </div>
 
       <div v-if="!startupReady && showStartupPreflight" class="startup-preflight">
         <div class="preflight-card fluent-card">
@@ -547,7 +564,7 @@ async function closeSettings(done: () => void) {
   done()
 }
 import { useLocale } from './composables/useLocale'
-import { errorMessage } from './utils/errorMessage'
+import { errorMessage, normalizeClientError } from './utils/errorMessage'
 import type {
   TunnelJobStatus,
   BackgroundServiceStatus,
@@ -569,9 +586,30 @@ const localeModel = computed({
 const epLocale = computed(() => (locale.value === 'en' ? elEn : elZhCn))
 
 const isOnline = ref(navigator.onLine)
+const networkRecoveryRunning = ref(false)
+const networkRecoveryAttempt = ref(0)
+const sessionRecoveryPending = ref(false)
+const connectionIssueCode = ref<string | null>(navigator.onLine ? null : 'NETWORK_OFFLINE')
+const connectionUnavailable = computed(() => !isOnline.value || connectionIssueCode.value !== null)
+const connectionStatusMessage = computed(() => errorMessage(
+  { code: connectionIssueCode.value || 'NETWORK_OFFLINE' },
+  t('common.unknown_error'),
+))
+const connectionStatusLabel = computed(() => (
+  !isOnline.value || connectionIssueCode.value?.startsWith('NETWORK_')
+    ? t('app.connection.offline')
+    : t('app.connection.unavailable')
+))
+let networkRecoveryTimer: ReturnType<typeof window.setTimeout> | null = null
 
 function updateOnlineStatus() {
   isOnline.value = navigator.onLine
+  if (!isOnline.value) {
+    connectionIssueCode.value = 'NETWORK_OFFLINE'
+    scheduleNetworkRecovery()
+    return
+  }
+  if (appBootstrapped) void recoverNetworkFeatures()
 }
 
 type ThemeMode = 'system' | 'light' | 'dark'
@@ -1082,7 +1120,7 @@ const deviceRegistrationError = computed(() => {
   const runtime = backgroundServiceStatus.value?.runtime
   if (!runtime?.logged_in) return null
   const message = runtime.device_registration_error?.trim()
-  return message || null
+  return message ? errorMessage(message, t('devices.registration_failed_title')) : null
 })
 let lastNotifiedRegistrationError: string | null = null
 watch(deviceRegistrationError, (message) => {
@@ -1251,18 +1289,9 @@ async function runStartupPreflight(): Promise<boolean> {
       10_000,
       t('app.startup_status.service_timeout')
     )
-    await setStartupStep(t('app.startup_status.checking_network'), 50)
-
-    const refreshed = await invoke<BackgroundServiceStatus>('refresh_service_network_info')
-    backgroundServiceStatus.value = refreshed
-    if (!isServiceReady(refreshed)) {
-      throw new Error(t('app.startup_errors.service_not_ready_network'))
-    }
-    await setStartupStep(t('app.startup_status.checking_update'), 75)
-
-    await checkForUpdates()
-
-    await setStartupStep(t('app.startup_status.ready'), 90)
+    // 外网探测和更新检查不是本地运行环境的必要条件。断网时仍应进入
+    // 主界面，网络相关能力在启动完成后由 recoverNetworkFeatures 恢复。
+    await setStartupStep(t('app.startup_status.ready'), 75)
     return true
   } catch (error) {
     const message = errorMessage(error, t('common.unknown_error'))
@@ -1518,7 +1547,7 @@ async function handleAutoStartChange(val: boolean) {
     }
   } catch (e) {
     autoStart.value = !val
-    ElMessage.error(t('app.actions.set_failed', { error: e }))
+    ElMessage.error(t('app.actions.set_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   } finally {
     if (isMacOS) {
       void ElMessageBox.alert(
@@ -1542,7 +1571,7 @@ async function handleBackgroundServiceChange(value: boolean | string | number) {
       ? t('app.actions.background_service_enabled')
       : t('app.actions.background_service_disabled'))
   } catch (error) {
-    ElMessage.error(t('app.actions.set_failed', { error }))
+    ElMessage.error(t('app.actions.set_failed', { error: errorMessage(error, t('common.unknown_error')) }))
   } finally {
     backgroundServiceChanging.value = false
   }
@@ -1576,7 +1605,7 @@ async function openUpdatePage() {
   try {
     await openClientDownloadPage()
   } catch (e) {
-    ElMessage.error(t('app.actions.open_update_failed', { error: e }))
+    ElMessage.error(t('app.actions.open_update_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1588,7 +1617,7 @@ async function handleMinimizeWindow() {
   try {
     await minimizeWindow()
   } catch (e) {
-    ElMessage.error(t('app.actions.minimize_failed', { error: e }))
+    ElMessage.error(t('app.actions.minimize_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1632,7 +1661,7 @@ async function handleCloseWindow() {
   try {
     await closeWindow()
   } catch (e) {
-    ElMessage.error(t('app.actions.close_failed', { error: e }))
+    ElMessage.error(t('app.actions.close_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1640,7 +1669,7 @@ async function handleOpenWebsite() {
   try {
     await openExternal(SITE_ORIGIN)
   } catch (e) {
-    ElMessage.error(t('app.actions.open_website_failed', { error: e }))
+    ElMessage.error(t('app.actions.open_website_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1648,7 +1677,7 @@ async function handleOpenGitHub() {
   try {
     await openExternal('https://github.com/p2premote/p2premote-desktop-client')
   } catch (e) {
-    ElMessage.error(t('app.actions.open_github_failed', { error: e }))
+    ElMessage.error(t('app.actions.open_github_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1656,7 +1685,7 @@ async function handleOpenRecharge() {
   try {
     await openExternal(`${SITE_ORIGIN}/console/recharge`)
   } catch (e) {
-    ElMessage.error(t('app.actions.open_subscribe_failed', { error: e }))
+    ElMessage.error(t('app.actions.open_subscribe_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1669,7 +1698,7 @@ async function handleShowInviteDialog() {
     await loadInviteInfo()
     inviteDialogVisible.value = true
   } catch (e) {
-    ElMessage.error(t('app.actions.get_invite_failed', { error: e }))
+    ElMessage.error(t('app.actions.get_invite_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1686,7 +1715,7 @@ async function copyInviteCode() {
   try {
     await copyText(inviteInfo.value?.invite_code || '', t('app.actions.invite_code_copied'))
   } catch (e) {
-    ElMessage.error(t('app.actions.copy_invite_code_failed', { error: e }))
+    ElMessage.error(t('app.actions.copy_invite_code_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1694,7 +1723,7 @@ async function copyInviteLink() {
   try {
     await copyText(inviteInfo.value?.invite_link || '', t('app.actions.invite_link_copied'))
   } catch (e) {
-    ElMessage.error(t('app.actions.copy_invite_link_failed', { error: e }))
+    ElMessage.error(t('app.actions.copy_invite_link_failed', { error: errorMessage(e, t('common.unknown_error')) }))
   }
 }
 
@@ -1720,9 +1749,19 @@ async function handleUserAction(command: string) {
   router.push('/login')
 }
 
-async function restoreServiceSession(sessionToken: string) {
-  await authStore.adoptServiceSession(sessionToken)
-  await ensureServiceRealtimeOwnership()
+async function restoreAvailableServiceSession() {
+  try {
+    await authStore.recoverAvailableServiceSession(ensureServiceRealtimeOwnership)
+    sessionRecoveryPending.value = false
+  } catch (error) {
+    // 网络或旧凭据故障不能阻止客户端启动，也不能清除 service 保存的
+    // refresh token。网络恢复后会再次尝试接管会话。
+    console.warn('[App] session recovery deferred:', error)
+    const code = normalizeClientError(error).code
+    const retryAfterNetworkRecovery = code.startsWith('NETWORK_') || code === 'SERVER_UNAVAILABLE'
+    sessionRecoveryPending.value = retryAfterNetworkRecovery
+    if (retryAfterNetworkRecovery) connectionIssueCode.value = code
+  }
 }
 
 async function checkForUpdates(manual = false) {
@@ -1781,9 +1820,67 @@ async function checkForUpdates(manual = false) {
     }
   } catch (e) {
     if (manual) {
-      ElMessage.error(t('app.actions.check_update_failed', { error: e }))
+      ElMessage.error(t('app.actions.check_update_failed', { error: errorMessage(e, t('common.unknown_error')) }))
     }
   }
+}
+
+function clearNetworkRecoveryTimer() {
+  if (networkRecoveryTimer !== null) {
+    window.clearTimeout(networkRecoveryTimer)
+    networkRecoveryTimer = null
+  }
+}
+
+function scheduleNetworkRecovery() {
+  if (!appBootstrapped || networkRecoveryTimer !== null) return
+  const delays = [5_000, 10_000, 30_000, 60_000]
+  const delay = delays[Math.min(networkRecoveryAttempt.value, delays.length - 1)]
+  networkRecoveryAttempt.value++
+  networkRecoveryTimer = window.setTimeout(() => {
+    networkRecoveryTimer = null
+    void recoverNetworkFeatures()
+  }, delay)
+}
+
+async function recoverNetworkFeatures(manual = false) {
+  if (networkRecoveryRunning.value) return
+  clearNetworkRecoveryTimer()
+
+  if (!navigator.onLine) {
+    isOnline.value = false
+    connectionIssueCode.value = 'NETWORK_OFFLINE'
+    scheduleNetworkRecovery()
+    return
+  }
+
+  networkRecoveryRunning.value = true
+  const wasUnavailable = connectionUnavailable.value
+  try {
+    const refreshed = await invoke<BackgroundServiceStatus>('refresh_service_network_info')
+    backgroundServiceStatus.value = refreshed
+    connectionIssueCode.value = null
+    isOnline.value = true
+    networkRecoveryAttempt.value = 0
+    if (sessionRecoveryPending.value) await restoreAvailableServiceSession()
+    await checkForUpdates(manual)
+    if (connectionUnavailable.value || sessionRecoveryPending.value) {
+      scheduleNetworkRecovery()
+    } else if (wasUnavailable) {
+      ElMessage.success(t('app.connection.restored'))
+    }
+  } catch (error) {
+    const normalized = normalizeClientError(error)
+    connectionIssueCode.value = normalized.code
+    console.warn('[App] network features unavailable; retry scheduled:', error)
+    if (normalized.retryable !== false) scheduleNetworkRecovery()
+  } finally {
+    networkRecoveryRunning.value = false
+  }
+}
+
+function retryNetworkRecovery() {
+  void recoverNetworkFeatures()
 }
 
 async function bootstrapApp() {
@@ -1871,38 +1968,6 @@ async function bootstrapApp() {
       console.log('[App] service IPC reconnect stopped (logged out or app exiting)')
     })
 
-    await setStartupStep(t('app.startup_status.checking_login'), 96)
-    let token = ''
-    try {
-      token = await withTimeout(
-        invoke<string>('try_auto_login'),
-        10_000,
-        t('app.startup_errors.login_check_timeout')
-      )
-    } catch (error) {
-      // 自动登录是可选恢复步骤。网络或旧凭据故障不能把整个应用锁在
-      // 启动失败遮罩中；后台只会在确认凭据失效后清除保存的 token。
-      console.warn('[App] auto login failed, falling back to login page:', error)
-      authStore.resetSession()
-    }
-    if (token) {
-      try {
-        await restoreServiceSession(token)
-      } catch (e) {
-        throw new Error(`自动登录后恢复前端会话失败: ${errorMessage(e, t('common.unknown_error'))}`)
-      }
-    } else {
-      const serviceLoggedIn = await invoke<boolean>('is_logged_in')
-      // GUI 关闭窗口或进程重开时允许接管仍在运行的 service 会话。
-      // 保存但未启用自动登录的 refresh token 只能在登录页由用户手动恢复。
-      if (serviceLoggedIn) {
-        try {
-          await restoreServiceSession('__service_session__')
-        } catch (e) {
-          throw new Error(`后台 service 会话恢复失败: ${errorMessage(e, t('common.unknown_error'))}`)
-        }
-      }
-    }
     await setStartupStep(t('app.startup_status.startup_complete'), 100)
     appBootstrapped = true
     const serviceSessionId = backgroundServiceStatus.value?.runtime?.service_session_id
@@ -1912,6 +1977,10 @@ async function bootstrapApp() {
       sessionStorage.removeItem(SERVICE_SESSION_STORAGE_KEY)
     }
     startupReady.value = true
+    void (async () => {
+      await restoreAvailableServiceSession()
+      await recoverNetworkFeatures()
+    })()
   } catch (e) {
     console.error('[App] 启动检查失败:', e)
     showStartupPreflight.value = true
@@ -1946,6 +2015,7 @@ onUnmounted(() => {
   if (inboundApprovalTimer !== undefined) window.clearInterval(inboundApprovalTimer)
   window.removeEventListener('resize', handleWindowResize)
   if (windowStateSyncTimer !== null) window.clearTimeout(windowStateSyncTimer)
+  clearNetworkRecoveryTimer()
   window.removeEventListener('focus', handleActiveTunnelJobForeground)
   document.removeEventListener('visibilitychange', handleActiveTunnelJobForeground)
   document.removeEventListener('contextmenu', handleAppContextMenu)
@@ -2197,6 +2267,24 @@ watch(
   height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+.offline-banner {
+  min-height: 38px;
+  padding: 4px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--el-color-warning) 32%, transparent);
+  background: color-mix(in srgb, var(--el-color-warning) 12%, var(--fluent-layer));
+  color: var(--fluent-text);
+  font-size: 13px;
+}
+
+.offline-banner .el-button {
+  color: var(--el-color-warning-dark-2);
+  font-weight: 600;
 }
 
 /* ===== 启动检测卡片 ===== */

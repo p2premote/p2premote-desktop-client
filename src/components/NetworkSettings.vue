@@ -48,6 +48,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { invoke } from '../runtime/bridge'
+import { errorMessage } from '../utils/errorMessage'
 const props = defineProps<{ section: 'connection' | 'lan' }>()
 const { t } = useI18n()
 const loading = ref(false), loaded = ref(false), saving = ref(false), loadError = ref('')
@@ -72,7 +73,7 @@ async function load() {
       savedLan = { ...lan }; revision.value++
     }
     loaded.value = true
-  } catch (error) { loadError.value = String(error) }
+  } catch (error) { loadError.value = errorMessage(error, t('common.unknown_error')) }
   finally { loading.value = false }
 }
 async function savePreferences(key: keyof typeof preferences) {
@@ -85,7 +86,7 @@ async function savePreferences(key: keyof typeof preferences) {
     savedPreferences = { ...preferences }
     saveState.value = 'saved'
     saveStateTimer = window.setTimeout(() => { saveState.value = 'idle' }, 2000)
-  } catch (error) { Object.assign(preferences, savedPreferences); ElMessage.error(String(error)) }
+  } catch (error) { Object.assign(preferences, savedPreferences); ElMessage.error(errorMessage(error, t('common.unknown_error'))) }
   finally { saving.value = false; savingKey.value = null }
 }
 async function saveLan() {
@@ -97,7 +98,7 @@ async function saveLan() {
     Object.assign(lan, { enabled: value.enabled, cidrsText: value.cidrs.join('\n') })
     savedLan = { ...lan }; revision.value++
     ElMessage.success(t('devices.message.lan_saved'))
-  } catch (error) { ElMessage.error(t('devices.message.lan_save_failed', { error: String(error) })) }
+  } catch (error) { ElMessage.error(t('devices.message.lan_save_failed', { error: errorMessage(error, t('common.unknown_error')) })) }
   finally { saving.value = false }
 }
 async function confirmClose(): Promise<boolean> {

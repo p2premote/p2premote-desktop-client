@@ -18,6 +18,77 @@ use p2premote_core::service_control::{
     query_service_status, start_service, stop_service, ServiceStatus,
 };
 
+/// Error payload exposed to the UI. Diagnostic details stay in the application
+/// log; the renderer receives only a stable code and retry guidance.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCommandError {
+    code: &'static str,
+    retryable: bool,
+}
+
+impl ClientCommandError {
+    fn from_network_message(message: &str) -> Self {
+        let value = message.to_ascii_lowercase();
+        let code = if value.contains("permission denied")
+            || value.contains("access denied")
+            || value.contains("authorization check failed")
+        {
+            "SERVICE_PERMISSION_DENIED"
+        } else if value.contains("timed out") || value.contains("timeout") {
+            "NETWORK_TIMEOUT"
+        } else if value.contains("dns")
+            || value.contains("name or service not known")
+            || value.contains("failed to lookup address")
+        {
+            "NETWORK_DNS_FAILED"
+        } else if value.contains("offline") || value.contains("network is unreachable") {
+            "NETWORK_OFFLINE"
+        } else if value.contains("connection refused")
+            || value.contains("connection reset")
+            || value.contains("failed to connect")
+            || value.contains("error sending request")
+        {
+            "NETWORK_REQUEST_FAILED"
+        } else {
+            "SERVER_UNAVAILABLE"
+        };
+        Self {
+            code,
+            retryable: code != "SERVICE_PERMISSION_DENIED",
+        }
+    }
+
+    fn service_not_ready() -> Self {
+        Self {
+            code: "SERVICE_NOT_READY",
+            retryable: true,
+        }
+    }
+
+    fn service_connection_failed() -> Self {
+        Self {
+            code: "SERVICE_CONNECTION_FAILED",
+            retryable: true,
+        }
+    }
+
+    fn from_service_status_error(message: &str) -> Self {
+        let value = message.to_ascii_lowercase();
+        if value.contains("permission denied")
+            || value.contains("access denied")
+            || value.contains("authorization check failed")
+        {
+            Self {
+                code: "SERVICE_PERMISSION_DENIED",
+                retryable: false,
+            }
+        } else {
+            Self::service_not_ready()
+        }
+    }
+}
+
 // ---- UI 侧持久连接管理 ----
 
 /// 带回调确认的 IPC 命令（fire-and-forget 模式）
@@ -1071,13 +1142,13 @@ pub async fn reject_inbound_tunnel(attempt_id: String) -> Result<String, String>
 }
 
 #[tauri::command]
-pub async fn refresh_service_network_info() -> Result<ServiceStatusResponse, String> {
-    let service = query_service_status().map_err(|e| e.to_string())?;
+pub async fn refresh_service_network_info() -> Result<ServiceStatusResponse, ClientCommandError> {
+    let service = query_service_status().map_err(|error| {
+        warn!("[service] failed to query service before network refresh: {error:#}");
+        ClientCommandError::service_not_ready()
+    })?;
     if !service.running {
-        return Err(crate::commands::localized(
-            "errors.service_not_running_no_public_ip",
-            &[],
-        ));
+        return Err(ClientCommandError::service_not_ready());
     }
 
     match send_command_responsive(Data::RefreshNetworkInfo).await {
@@ -1085,14 +1156,70 @@ pub async fn refresh_service_network_info() -> Result<ServiceStatusResponse, Str
             ok: true, status, ..
         }) => {
             if status.is_some() {
-                collect_service_status_with_runtime(status)
+                collect_service_status_with_runtime(status).map_err(|error| {
+                    warn!("[service] failed to collect refreshed network status: {error}");
+                    ClientCommandError::from_service_status_error(&error)
+                })
             } else {
-                collect_service_status().await
+                collect_service_status().await.map_err(|error| {
+                    warn!(
+                        "[service] failed to collect service status after network refresh: {error}"
+                    );
+                    ClientCommandError::from_service_status_error(&error)
+                })
             }
         }
-        Ok(Data::CommandResponse { message, .. }) => Err(message),
-        Ok(other) => Err(format!("unexpected service response: {:?}", other)),
-        Err(err) => Err(err),
+        Ok(Data::CommandResponse { message, .. }) => {
+            warn!("[service] network refresh rejected by service: {message}");
+            Err(ClientCommandError::from_network_message(&message))
+        }
+        Ok(other) => {
+            warn!("[service] unexpected network refresh response: {other:?}");
+            Err(ClientCommandError::service_not_ready())
+        }
+        Err(error) => {
+            warn!("[service] network refresh IPC failed: {error}");
+            Err(ClientCommandError::service_connection_failed())
+        }
+    }
+}
+
+#[cfg(test)]
+mod client_command_error_tests {
+    use super::ClientCommandError;
+
+    #[test]
+    fn classifies_timeout_without_exposing_detail() {
+        let error = ClientCommandError::from_network_message(
+            "error sending request for url https://example.invalid: operation timed out",
+        );
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["code"], "NETWORK_TIMEOUT");
+        assert_eq!(value["retryable"], true);
+        assert!(value.get("message").is_none());
+        assert!(!value.to_string().contains("example.invalid"));
+    }
+
+    #[test]
+    fn classifies_permission_failure_as_not_retryable() {
+        let error =
+            ClientCommandError::from_network_message("failed to connect because IPC access denied");
+        assert_eq!(error.code, "SERVICE_PERMISSION_DENIED");
+        assert!(!error.retryable);
+    }
+
+    #[test]
+    fn local_ipc_failure_is_not_reported_as_offline() {
+        let error = ClientCommandError::service_connection_failed();
+        assert_eq!(error.code, "SERVICE_CONNECTION_FAILED");
+        assert!(error.retryable);
+    }
+
+    #[test]
+    fn local_status_failure_is_not_reported_as_network_failure() {
+        let error = ClientCommandError::from_service_status_error("connection refused");
+        assert_eq!(error.code, "SERVICE_NOT_READY");
+        assert!(error.retryable);
     }
 }
 

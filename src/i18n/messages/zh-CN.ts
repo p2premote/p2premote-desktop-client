@@ -35,7 +35,12 @@ export default {
   app: {
     title: 'P2P Remote',
     connection: {
-      offline: '已离线',
+      offline: '当前处于离线状态',
+      unavailable: '连接异常',
+      offline_detail: '当前网络不可用。联网后将自动恢复。',
+      recovering: '正在恢复网络连接…',
+      retry: '立即重试',
+      restored: '网络连接已恢复',
     },
     web_auth: {
       prompt: '请输入 Web 安全码后进入管理界面',
@@ -681,5 +686,22 @@ export default {
   errors: {
     login_failed: '登录失败',
     bridge_call_failed: '本地管理服务调用失败: {command}',
+    network_offline: '当前网络不可用，请检查网络连接',
+    network_dns_failed: '无法连接服务器，请检查网络或 DNS 设置',
+    network_timeout: '连接服务器超时，请稍后重试',
+    network_request_failed: '网络请求失败，请稍后重试',
+    server_unavailable: '服务暂时不可用，请稍后重试',
+    service_not_installed: '后台服务未安装，请重新安装客户端',
+    service_disabled: '后台网络服务已停用，请在设置中重新启用',
+    service_start_failed: '后台服务启动失败，请重试',
+    service_not_ready: '后台服务尚未就绪，请稍后重试',
+    service_connection_failed: '无法连接后台服务，请重试',
+    service_permission_denied: '当前用户无权访问后台服务',
+    auth_invalid_credentials: '用户名或密码错误',
+    auth_session_expired: '登录已失效，请重新登录',
+    auth_saved_session_expired: '保存的登录信息已失效，请重新输入密码',
+    device_offline: '对方设备当前离线',
+    device_limit_reached: '设备数量已达到账号上限，请先删除不用的设备',
+    tunnel_timeout: '建立连接超时，请检查双方网络后重试',
   },
 }

@@ -33,6 +33,11 @@ const en = {
     title: 'P2P Remote',
     connection: {
       offline: 'Offline',
+      unavailable: 'Connection issue',
+      offline_detail: 'The network is unavailable. The client will recover automatically when it reconnects.',
+      recovering: 'Restoring the network connection…',
+      retry: 'Retry now',
+      restored: 'Network connection restored',
     },
     web_auth: {
       prompt: 'Enter the Web security code to open the management interface',
@@ -656,6 +661,23 @@ const en = {
   errors: {
     login_failed: 'Sign-in failed',
     bridge_call_failed: 'Local management service call failed: {command}',
+    network_offline: 'The network is unavailable. Check your connection.',
+    network_dns_failed: 'Unable to reach the server. Check your network or DNS settings.',
+    network_timeout: 'The server connection timed out. Try again later.',
+    network_request_failed: 'The network request failed. Try again later.',
+    server_unavailable: 'The service is temporarily unavailable. Try again later.',
+    service_not_installed: 'The background service is not installed. Reinstall the client.',
+    service_disabled: 'The background service is disabled. Enable it in Settings.',
+    service_start_failed: 'The background service could not start. Try again.',
+    service_not_ready: 'The background service is not ready. Try again shortly.',
+    service_connection_failed: 'Unable to connect to the background service. Try again.',
+    service_permission_denied: 'The current user cannot access the background service.',
+    auth_invalid_credentials: 'The username or password is incorrect.',
+    auth_session_expired: 'Your session has expired. Sign in again.',
+    auth_saved_session_expired: 'The saved sign-in has expired. Enter your password again.',
+    device_offline: 'The remote device is offline.',
+    device_limit_reached: 'The device limit has been reached. Remove an unused device first.',
+    tunnel_timeout: 'The connection timed out. Check both networks and try again.',
   },
 } satisfies MessageSchema<typeof zhCN>
 

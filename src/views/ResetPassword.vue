@@ -23,7 +23,7 @@ import { invoke } from '../runtime/bridge'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormRules } from 'element-plus/es/components/form/index.mjs'
 import { useRouter } from 'vue-router'
-import { errorMessage } from '../utils/errorMessage'
+import { businessErrorMessage } from '../utils/errorMessage'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
@@ -54,7 +54,7 @@ async function send() {
       if (--seconds.value <= 0 && timer) { clearInterval(timer); timer = undefined }
     }, 1000)
   } catch (error) {
-    ElMessage.error(errorMessage(error, t('reset_password.code_send_failed')))
+    ElMessage.error(businessErrorMessage(error, t('reset_password.code_send_failed')))
   } finally {
     sending.value = false
   }
@@ -67,7 +67,7 @@ async function submit() {
     ElMessage.success(t('reset_password.success'))
     router.push('/login')
   } catch (error) {
-    ElMessage.error(errorMessage(error, t('reset_password.failed')))
+    ElMessage.error(businessErrorMessage(error, t('reset_password.failed')))
   } finally {
     loading.value = false
   }

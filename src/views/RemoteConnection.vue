@@ -209,7 +209,7 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { Close, CopyDocument, Monitor } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
-import { errorMessage } from '../utils/errorMessage'
+import { businessErrorMessage, errorMessage } from '../utils/errorMessage'
 import { copyTextToClipboard } from '../utils/clipboard'
 import type { TunnelJobStatus, BackgroundServiceStatus } from '../types/api'
 import { useConnectingDots } from '../composables/useConnectingDots'
@@ -395,7 +395,7 @@ async function ensureInviteCode() {
       match.connect_code = code
     }
   } catch (error) {
-    ElMessage.error(t('remote.message.code_generate_failed', { error }))
+    ElMessage.error(t('remote.message.code_generate_failed', { error: errorMessage(error, t('common.unknown_error')) }))
   } finally {
     generatingCode.value = false
   }
@@ -489,7 +489,7 @@ async function disableTcpAndRetry() {
       await new Promise(resolve => window.setTimeout(resolve, 500))
     }
     await handleConnect()
-  } catch (error) { ElMessage.error(String(error)) }
+  } catch (error) { ElMessage.error(errorMessage(error, t('common.unknown_error'))) }
   finally { connecting.value = false }
 }
 
@@ -518,7 +518,7 @@ async function handleConnect() {
       temporaryPassword: parsed.temporaryPassword,
     })
     if (!result.success || !result.device) {
-      throw new Error(result.message || t('remote.message.device_verify_failed'))
+      throw new Error(businessErrorMessage(result.message, t('remote.message.device_verify_failed')))
     }
 
     verifiedDevice.value = result.device

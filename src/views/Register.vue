@@ -69,7 +69,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import type { FormInstance, FormRules } from 'element-plus/es/components/form/index.mjs'
 import { invoke } from '../runtime/bridge'
-import { errorMessage } from '../utils/errorMessage'
+import { businessErrorMessage } from '../utils/errorMessage'
 import AppLogo from '../components/AppLogo.vue'
 
 const { t } = useI18n()
@@ -226,11 +226,11 @@ async function handleRegister() {
       }, 3000)
     } else {
       // Tauri 已优先按结构化错误键本地化；旧服务端兼容回退到 msg。
-      ElMessage.error(response.msg || t('register.message.failed'))
+      ElMessage.error(businessErrorMessage(response.msg, t('register.message.failed')))
       refreshCaptcha()
     }
   } catch (e) {
-    ElMessage.error(errorMessage(e, t('register.message.failed')))
+    ElMessage.error(businessErrorMessage(e, t('register.message.failed')))
     refreshCaptcha()
   } finally {
     loading.value = false
@@ -253,7 +253,7 @@ async function sendVerificationCode() {
       }
     }, 1000)
   } catch (error) {
-    ElMessage.error(errorMessage(error, t('register.message.code_send_failed')))
+    ElMessage.error(businessErrorMessage(error, t('register.message.code_send_failed')))
   } finally {
     sendingCode.value = false
   }

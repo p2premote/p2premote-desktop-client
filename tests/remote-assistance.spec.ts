@@ -5,8 +5,15 @@ type MockCall = {
   args?: Record<string, unknown>
 }
 
-async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevice = false) {
-  await page.addInitScript(({ initialLocale, includeRemoteDevice }) => {
+async function installTauriMock(
+  page: Page,
+  locale = 'zh-CN',
+  includeRemoteDevice = false,
+  networkFailure: 'dns' | 'service' | null = null,
+  delayedAutoLoginFailure = false,
+  manualLoginError: string | null = null,
+) {
+  await page.addInitScript(({ initialLocale, includeRemoteDevice, networkFailure, delayedAutoLoginFailure, manualLoginError }) => {
     localStorage.setItem('p2premote:locale', initialLocale)
     const callbacks = new Map<number, (payload: unknown) => void>()
     const calls: Array<{ cmd: string, args?: Record<string, unknown> }> = []
@@ -17,6 +24,9 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
       preferences: { prefer_ipv6: false, prefer_tcp: false },
       lan: { enabled: false, cidrs: [] as string[] },
       failPreferences: false,
+      networkFailure,
+      delayedAutoLoginFailure,
+      manualLoginError,
     }
 
     const localDevice = {
@@ -98,7 +108,24 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
           case 'check_update':
             return { mode: 'none', current: '1.0.10', latest: '1.0.10', min_supported: '1.0.0' }
           case 'try_auto_login':
+            if (state.delayedAutoLoginFailure) {
+              await new Promise(resolve => setTimeout(resolve, 500))
+              throw new Error('network is unreachable')
+            }
             return 'mock-token'
+          case 'login':
+            if (state.manualLoginError) throw new Error(state.manualLoginError)
+            return {
+              code: 0,
+              msg: 'ok',
+              data: {
+                user: {
+                  user_id: 2,
+                  username: 'manual-user',
+                  email: 'manual@example.com',
+                },
+              },
+            }
           case 'get_user_info':
           case 'fetch_user_profile':
             return {
@@ -108,9 +135,15 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
               status: 'active',
               member_level: 'pro',
             }
+          case 'refresh_service_network_info':
+            if (state.networkFailure === 'dns') {
+              throw new Error('error sending request for url https://internal.example/api: dns lookup failed')
+            }
+            if (state.networkFailure === 'service') {
+              throw { code: 'SERVICE_NOT_READY', retryable: true }
+            }
           case 'ensure_background_service_session':
           case 'get_service_status':
-          case 'refresh_service_network_info':
             return {
               service: { installed: true, running: state.serviceAvailable, enabled: true, raw_state: state.serviceAvailable ? 'running' : 'stopped' },
               runtime: state.serviceAvailable
@@ -222,9 +255,11 @@ async function installTauriMock(page: Page, locale = 'zh-CN', includeRemoteDevic
         promise = Promise.resolve(command === 'listen' ? 1 : command === 'isMaximized' ? false : null)
       } else promise = (window as any).__TAURI_INTERNALS__.invoke(message.cmd, message)
       promise.then(value => (window as any)[`_${message.callback}`]?.(value))
-        .catch(error => (window as any)[`_${message.error}`]?.(String(error)))
+        .catch(error => (window as any)[`_${message.error}`]?.(
+          error && typeof error === 'object' && 'code' in error ? error : String(error),
+        ))
     }
-  }, { initialLocale: locale, includeRemoteDevice })
+  }, { initialLocale: locale, includeRemoteDevice, networkFailure, delayedAutoLoginFailure, manualLoginError })
 }
 
 async function openRemoteAssistance(page: Page, locale = 'zh-CN') {
@@ -240,6 +275,52 @@ async function openRemoteAssistance(page: Page, locale = 'zh-CN') {
 function mockCalls(page: Page): Promise<MockCall[]> {
   return page.evaluate(() => (window as any).__p2premoteMockCalls)
 }
+
+test('断网启动进入主界面且不显示底层调试信息', async ({ page }) => {
+  await installTauriMock(page, 'zh-CN', false, 'dns')
+  await page.goto('/')
+
+  await expect(page.getByRole('button', { name: '我的设备', exact: true })).toBeVisible()
+  await expect(page.getByText('无法连接服务器，请检查网络或 DNS 设置')).toBeVisible()
+  await expect(page.getByText(/internal\.example|dns lookup|error sending request/i)).toHaveCount(0)
+
+  await page.evaluate(() => { (window as any).__p2premoteMockState.networkFailure = null })
+  await page.getByRole('button', { name: '立即重试', exact: true }).click()
+  await expect(page.getByText('无法连接服务器，请检查网络或 DNS 设置')).toHaveCount(0)
+  await expect.poll(async () => (await mockCalls(page)).filter(call => call.cmd === 'refresh_service_network_info').length).toBeGreaterThanOrEqual(2)
+})
+
+test('后台服务异常不会误报为断网', async ({ page }) => {
+  await installTauriMock(page, 'zh-CN', false, 'service')
+  await page.goto('/')
+
+  await expect(page.getByText('后台服务尚未就绪，请稍后重试')).toBeVisible()
+  await expect(page.getByText('当前网络不可用。联网后将自动恢复。')).toHaveCount(0)
+})
+
+test('手动登录不会被延迟失败的自动恢复清除', async ({ page }) => {
+  await installTauriMock(page, 'zh-CN', false, null, true)
+  await page.goto('/')
+
+  await page.getByPlaceholder('邮箱或用户名').fill('manual-user')
+  await page.getByPlaceholder('密码').fill('manual-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+
+  await expect(page.getByRole('button', { name: '我的设备', exact: true })).toBeVisible()
+  await page.waitForTimeout(700)
+  await expect(page.getByRole('button', { name: '我的设备', exact: true })).toBeVisible()
+})
+
+test('登录保留旧接口的业务提示', async ({ page }) => {
+  await installTauriMock(page, 'zh-CN', false, null, true, '用户名或密码错误')
+  await page.goto('/')
+
+  await page.getByPlaceholder('邮箱或用户名').fill('manual-user')
+  await page.getByPlaceholder('密码').fill('manual-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+
+  await expect(page.getByText(/登录失败: (?:Error: )?用户名或密码错误/)).toBeVisible()
+})
 
 test('连接偏好保存失败回滚，LAN 配置在设置窗口保存', async ({ page }) => {
   await installTauriMock(page)

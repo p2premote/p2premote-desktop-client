@@ -79,6 +79,9 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       suspendWebSocket()
       window.dispatchEvent(new CustomEvent('p2premote-web-auth-required'))
     }
+    if (payload?.error && typeof payload.error === 'object' && typeof payload.error.code === 'string') {
+      throw payload.error
+    }
     throw new Error(payload?.error || i18n.global.t('errors.bridge_call_failed', { command }))
   }
   return payload.value as T

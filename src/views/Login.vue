@@ -76,6 +76,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { useAuthStore } from '../stores/auth'
 import AppLogo from '../components/AppLogo.vue'
+import { businessErrorMessage, errorMessage, normalizeClientError } from '../utils/errorMessage'
 const { t } = useI18n()
 
 const router = useRouter()
@@ -174,7 +175,7 @@ async function canLoginWithCurrentVersion() {
     try {
       await openClientDownloadPage()
     } catch (error) {
-      ElMessage.error(t('app.actions.open_update_failed', { error }))
+      ElMessage.error(t('app.actions.open_update_failed', { error: errorMessage(error, t('common.unknown_error')) }))
     }
     return false
   }
@@ -223,11 +224,11 @@ async function handleLogin() {
     ElMessage.success(t('login.message.success'))
     router.push('/')
   } catch (error) {
-    if (useSavedSession && String(error).includes('saved_session_expired')) {
+    if (useSavedSession && normalizeClientError(error).code === 'AUTH_SAVED_SESSION_EXPIRED') {
       hasSavedCredential.value = false
       loginForm.password = ''
     }
-    ElMessage.error(t('login.message.failed_with_error', { error }))
+    ElMessage.error(t('login.message.failed_with_error', { error: businessErrorMessage(error, t('errors.login_failed')) }))
   } finally {
     loading.value = false
   }
