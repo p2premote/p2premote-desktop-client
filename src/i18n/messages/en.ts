@@ -186,6 +186,9 @@ const en = {
       recheck: 'Check again',
     },
     nav: {
+      label: 'Main navigation',
+      collapse: 'Collapse sidebar',
+      expand: 'Expand sidebar',
       devices: 'My devices',
       remote: 'Remote assistance',
       tunnel: 'Tunnel status',

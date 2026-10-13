@@ -321,38 +321,7 @@
       </div>
 
       <div v-else-if="startupReady && authStore.isLoggedIn" class="app-workspace">
-        <aside class="function-sidebar no-drag">
-          <button
-            type="button"
-            class="function-nav-item"
-            :class="{ active: activeWorkspace === 'devices' }"
-            :aria-current="activeWorkspace === 'devices' ? 'page' : undefined"
-            @click="selectWorkspace('devices', $event)"
-          >
-            <el-icon><Monitor /></el-icon>
-            <span>{{ $t('app.nav.devices') }}</span>
-          </button>
-          <button
-            type="button"
-            class="function-nav-item"
-            :class="{ active: activeWorkspace === 'remote' }"
-            :aria-current="activeWorkspace === 'remote' ? 'page' : undefined"
-            @click="selectWorkspace('remote', $event)"
-          >
-            <el-icon><Connection /></el-icon>
-            <span>{{ $t('app.nav.remote') }}</span>
-          </button>
-          <button
-            type="button"
-            class="function-nav-item"
-            :class="{ active: activeWorkspace === 'tunnels' }"
-            :aria-current="activeWorkspace === 'tunnels' ? 'page' : undefined"
-            @click="selectWorkspace('tunnels', $event)"
-          >
-            <el-icon><LinkIcon /></el-icon>
-            <span>{{ $t('app.nav.tunnel') }}</span>
-          </button>
-        </aside>
+        <WorkspaceSidebar :active-workspace="activeWorkspace" @select="selectWorkspace" />
 
         <el-main class="workspace-main no-drag" :class="{ 'no-workspace-motion': !workspaceMotionEnabled }">
           <Transition name="workspace-view">
@@ -544,14 +513,13 @@ import {
   Link as LinkIcon,
   User as UserIcon,
   ArrowDown,
-  Connection,
-  Monitor,
 } from '@element-plus/icons-vue'
 
 import { useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import { useDeviceStore } from './stores/device'
 import AppLogo from './components/AppLogo.vue'
+import WorkspaceSidebar from './components/WorkspaceSidebar.vue'
 import NetworkSettings from './components/NetworkSettings.vue'
 import { copyTextToClipboard } from './utils/clipboard'
 
@@ -2334,68 +2302,8 @@ watch(
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 152px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   background: var(--fluent-bg);
-}
-
-/* ===== 侧边栏：Fluent 导航 ===== */
-.function-sidebar {
-  min-height: 0;
-  padding: 8px;
-  border-right: 1px solid var(--fluent-stroke);
-  background: var(--fluent-layer);
-}
-
-.function-nav-item {
-  width: 100%;
-  height: 40px;
-  margin-bottom: 4px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--fluent-radius-md);
-  background: transparent;
-  color: var(--fluent-text-secondary);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 400;
-  text-align: left;
-  position: relative;
-  transition: background-color var(--fluent-duration) var(--fluent-easing),
-    color var(--fluent-duration) var(--fluent-easing),
-    transform var(--motion-fast) var(--ease-out);
-}
-
-.function-nav-item::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  width: 3px;
-  height: 0;
-  border-radius: var(--fluent-radius-pill);
-  background: var(--fluent-accent);
-  transition: height var(--motion-standard) var(--ease-standard);
-}
-
-.function-nav-item .el-icon {
-  font-size: 18px;
-}
-
-.function-nav-item:hover {
-  background: var(--fluent-layer-hover);
-  color: var(--fluent-text);
-}
-
-.function-nav-item.active {
-  background: var(--fluent-accent-light);
-  color: var(--fluent-accent);
-  font-weight: 600;
-}
-
-.function-nav-item.active::before {
-  height: 18px;
 }
 
 /* ===== Header 内容 ===== */
@@ -2821,17 +2729,6 @@ watch(
 }
 
 @media (max-width: 860px) {
-  .app-workspace { grid-template-columns: 64px minmax(0, 1fr); }
-  .function-sidebar { padding: var(--space-2); }
-  .function-nav-item { justify-content: center; padding: 0; }
-  .function-nav-item span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
   .el-main { padding: var(--space-4); }
   .user-name { max-width: 92px; }
   .user-level { display: none; }

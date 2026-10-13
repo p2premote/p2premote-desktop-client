@@ -195,6 +195,9 @@ export default {
     },
     // 侧边栏导航
     nav: {
+      label: '功能导航',
+      collapse: '收起侧栏',
+      expand: '展开侧栏',
       devices: '我的设备',
       remote: '远程协助',
       tunnel: '隧道状态',
