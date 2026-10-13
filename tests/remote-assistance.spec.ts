@@ -1,4 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+
+const tauriConfig = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'))
 
 type MockCall = {
   cmd: string
@@ -13,7 +16,7 @@ async function installTauriMock(
   delayedAutoLoginFailure = false,
   manualLoginError: string | null = null,
 ) {
-  await page.addInitScript(({ initialLocale, includeRemoteDevice, networkFailure, delayedAutoLoginFailure, manualLoginError }) => {
+  await page.addInitScript(({ initialLocale, includeRemoteDevice, networkFailure, delayedAutoLoginFailure, manualLoginError, dialogSaveAllowed }) => {
     localStorage.setItem('p2premote:locale', initialLocale)
     const callbacks = new Map<number, (payload: unknown) => void>()
     const calls: Array<{ cmd: string, args?: Record<string, unknown> }> = []
@@ -27,6 +30,7 @@ async function installTauriMock(
       networkFailure,
       delayedAutoLoginFailure,
       manualLoginError,
+      logArchiveDestination: 'C:\\Users\\tester\\Downloads\\p2premote-logs.zip' as string | null,
     }
 
     const localDevice = {
@@ -96,6 +100,7 @@ async function installTauriMock(
         if (cmd === 'plugin:window|close') return null
 
         switch (cmd) {
+          case 'export_logs': return 2
           case 'get_connection_preferences': return { ...state.preferences }
           case 'save_connection_preferences':
             if (state.failPreferences) throw new Error('mock save failed')
@@ -252,14 +257,24 @@ async function installTauriMock(
       let promise: Promise<unknown>
       if (message.cmd === 'tauri') {
         const command = message.message?.cmd
-        promise = Promise.resolve(command === 'listen' ? 1 : command === 'isMaximized' ? false : null)
+        if (message.__tauriModule === 'Dialog' && command === 'saveDialog') {
+          calls.push({ cmd: 'saveDialog', args: message.message.options })
+          promise = dialogSaveAllowed
+            ? Promise.resolve(state.logArchiveDestination)
+            : Promise.reject('dialog > save not in the allowlist')
+        } else {
+          promise = Promise.resolve(command === 'listen' ? 1 : command === 'isMaximized' ? false : null)
+        }
       } else promise = (window as any).__TAURI_INTERNALS__.invoke(message.cmd, message)
       promise.then(value => (window as any)[`_${message.callback}`]?.(value))
         .catch(error => (window as any)[`_${message.error}`]?.(
           error && typeof error === 'object' && 'code' in error ? error : String(error),
         ))
     }
-  }, { initialLocale: locale, includeRemoteDevice, networkFailure, delayedAutoLoginFailure, manualLoginError })
+  }, {
+    initialLocale: locale, includeRemoteDevice, networkFailure, delayedAutoLoginFailure, manualLoginError,
+    dialogSaveAllowed: Boolean(tauriConfig.tauri.allowlist.dialog?.save),
+  })
 }
 
 async function openRemoteAssistance(page: Page, locale = 'zh-CN') {
@@ -275,6 +290,40 @@ async function openRemoteAssistance(page: Page, locale = 'zh-CN') {
 function mockCalls(page: Page): Promise<MockCall[]> {
   return page.evaluate(() => (window as any).__p2premoteMockCalls)
 }
+
+test('日志导出允许打开保存窗口并将选择的路径传给打包命令', async ({ page }) => {
+  await installTauriMock(page)
+  await page.goto('/')
+  await page.getByRole('button', { name: '打开设置', exact: true }).click()
+  const settings = page.getByRole('dialog', { name: '设置', exact: true })
+  await settings.getByRole('tab', { name: '关于与支持', exact: true }).click()
+  await settings.getByRole('button', { name: '打包并导出日志', exact: true }).click()
+
+  await expect(page.getByText(/已将 2 个日志文件保存到/)).toBeVisible()
+  const calls = await mockCalls(page)
+  expect(calls.find(call => call.cmd === 'saveDialog')?.args).toMatchObject({
+    defaultPath: expect.stringMatching(/^p2premote-logs-.*\.zip$/),
+    filters: [{ name: 'ZIP', extensions: ['zip'] }],
+  })
+  expect(calls.find(call => call.cmd === 'export_logs')?.args).toMatchObject({
+    destination: 'C:\\Users\\tester\\Downloads\\p2premote-logs.zip',
+  })
+  await expect(page.getByText(/日志打包失败/)).toHaveCount(0)
+})
+
+test('取消日志保存窗口不调用打包命令也不报错', async ({ page }) => {
+  await installTauriMock(page)
+  await page.goto('/')
+  await page.evaluate(() => { (window as any).__p2premoteMockState.logArchiveDestination = null })
+  await page.getByRole('button', { name: '打开设置', exact: true }).click()
+  const settings = page.getByRole('dialog', { name: '设置', exact: true })
+  await settings.getByRole('tab', { name: '关于与支持', exact: true }).click()
+  await settings.getByRole('button', { name: '打包并导出日志', exact: true }).click()
+
+  await expect.poll(async () => (await mockCalls(page)).filter(call => call.cmd === 'saveDialog').length).toBe(1)
+  expect((await mockCalls(page)).filter(call => call.cmd === 'export_logs')).toHaveLength(0)
+  await expect(page.getByText(/日志打包失败|已将 \d+ 个日志文件保存到/)).toHaveCount(0)
+})
 
 test('断网启动进入主界面且不显示底层调试信息', async ({ page }) => {
   await installTauriMock(page, 'zh-CN', false, 'dns')

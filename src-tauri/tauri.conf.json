@@ -16,6 +16,9 @@
       "shell": {
         "open": true
       },
+      "dialog": {
+        "save": true
+      },
       "window": {
         "all": true
       }
