@@ -144,6 +144,44 @@ pub async fn collect_evidence(ipv6: Option<bool>) -> Vec<NatEvidence> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_protocol_vectors_match_android() {
+        #[derive(Deserialize)]
+        struct PlanCase {
+            name: String,
+            preferences: Preferences,
+            local: String,
+            remote: String,
+            local_ipv6: Option<bool>,
+            remote_ipv6: Option<bool>,
+            expected: Vec<String>,
+        }
+        #[derive(Deserialize)]
+        struct Vectors {
+            version: u8,
+            evidence_sets: std::collections::HashMap<String, Vec<NatEvidence>>,
+            plan_cases: Vec<PlanCase>,
+        }
+        let vectors: Vectors = serde_json::from_str(include_str!(
+            "../../../p2premote-punch-rs/testdata/traversal-policy-v2.json"
+        ))
+        .unwrap();
+        assert_eq!(vectors.version, VERSION);
+        for case in vectors.plan_cases {
+            assert_eq!(
+                build_plan_with_family(
+                    case.preferences,
+                    &vectors.evidence_sets[&case.local],
+                    &vectors.evidence_sets[&case.remote],
+                    case.local_ipv6,
+                    case.remote_ipv6
+                ),
+                case.expected,
+                "{}",
+                case.name
+            );
+        }
+    }
     fn nat(network: &str, nat_type: &str) -> NatEvidence {
         NatEvidence {
             network: network.into(),

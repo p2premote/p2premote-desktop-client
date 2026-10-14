@@ -283,13 +283,32 @@ extern "C" {
     fn StopUserspaceWgPeer(input: *const c_char) -> *mut c_char;
     fn GetUserspaceWgPeerStatus(input: *const c_char) -> *mut c_char;
     fn SetUserspaceWgPeerAllowed(input: *const c_char) -> *mut c_char;
+    fn SetServiceAccessPolicy(input: *const c_char) -> *mut c_char;
     fn StopUserspaceWgEngine(input: *const c_char) -> *mut c_char;
     fn CleanupUserspaceWgPlatform(input: *const c_char) -> *mut c_char;
     fn FreeCString(ptr: *mut c_char);
 }
 
 #[cfg(not(target_os = "linux"))]
-const USERSPACE_WG_ABI_VERSION: u32 = 2;
+const USERSPACE_WG_ABI_VERSION: u32 = 3;
+
+#[cfg(not(target_os = "linux"))]
+pub fn set_service_access_policy(
+    library_path: &Path,
+    policy: &crate::service_access::ServiceAccessPolicy,
+) -> Result<()> {
+    get_wg_capabilities(library_path)?;
+    let input = serde_json::to_string(policy)?;
+    let output = unsafe {
+        ffi_call(
+            &input,
+            |ptr| SetServiceAccessPolicy(ptr),
+            "SetServiceAccessPolicy",
+        )?
+    };
+    decode_windows_wg_peer_result(&output, "service access policy")?;
+    Ok(())
+}
 
 pub fn get_wg_capabilities(library_path: &Path) -> Result<WgCapabilitiesResult> {
     #[cfg(target_os = "linux")]

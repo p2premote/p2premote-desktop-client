@@ -140,7 +140,7 @@
           </div>
           <div class="header-actions no-drag">
             <el-button class="header-btn" :icon="Setting" text :aria-label="$t('app.settings.open_aria')" @click="settingsVisible = true" />
-            <el-dialog v-model="settingsVisible" :title="$t('app.settings.title')" width="720px" class="client-settings-dialog" destroy-on-close :close-on-click-modal="false" :before-close="closeSettings">
+            <el-dialog v-model="settingsVisible" :title="$t('app.settings.title')" width="720px" class="client-settings-dialog" align-center destroy-on-close :close-on-click-modal="false" :before-close="closeSettings">
               <div class="settings-panel">
                 <el-tabs tab-position="left">
                 <el-tab-pane :label="$t('app.settings.group_preferences')">
@@ -195,6 +195,9 @@
                 </el-tab-pane>
                 <el-tab-pane :label="$t('devices.detail.lan_access.section')">
                   <NetworkSettings ref="lanSettings" section="lan" />
+                </el-tab-pane>
+                <el-tab-pane :label="$t('service_access.security')">
+                  <ServiceAccessSettings ref="serviceAccessSettings" />
                 </el-tab-pane>
                 <el-tab-pane v-if="authStore.isLoggedIn" :label="$t('app.settings.group_account')">
                 <section class="settings-group">
@@ -521,14 +524,17 @@ import { useDeviceStore } from './stores/device'
 import AppLogo from './components/AppLogo.vue'
 import WorkspaceSidebar from './components/WorkspaceSidebar.vue'
 import NetworkSettings from './components/NetworkSettings.vue'
+import ServiceAccessSettings from './components/ServiceAccessSettings.vue'
 import { copyTextToClipboard } from './utils/clipboard'
 
 const settingsVisible = ref(false)
 const connectionSettings = ref<InstanceType<typeof NetworkSettings>>()
 const lanSettings = ref<InstanceType<typeof NetworkSettings>>()
+const serviceAccessSettings = ref<InstanceType<typeof ServiceAccessSettings>>()
 async function closeSettings(done: () => void) {
   if (await connectionSettings.value?.confirmClose() === false) return
   if (await lanSettings.value?.confirmClose() === false) return
+  if (await serviceAccessSettings.value?.confirmClose() === false) return
   done()
 }
 import { useLocale } from './composables/useLocale'
@@ -2569,7 +2575,8 @@ watch(
   min-height: 300px;
 }
 
-:deep(.client-settings-dialog) { max-width: calc(100vw - 32px); }
+:deep(.client-settings-dialog) { max-width: calc(100vw - 32px); max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+:deep(.client-settings-dialog .el-dialog__body) { min-height: 0; overflow-y: auto; }
 :deep(.client-settings-dialog .el-tabs__content) { padding-left: 16px; }
 @media (max-width: 540px) {
   :deep(.client-settings-dialog .el-tabs--left) { display: flex; flex-direction: column; }

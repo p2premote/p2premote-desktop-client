@@ -378,72 +378,65 @@ fn set_macos_login_item(app: &AppHandle, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn get_wgvpn_lan_access_config() -> Result<WgvpnLanAccessConfig, String> {
-    match crate::commands::service::send_command_responsive(Data::GetWgvpnLanAccessConfig).await {
-        Ok(Data::CommandResponse {
-            ok: true,
-            data: Some(data),
-            ..
-        }) => serde_json::from_value::<WgvpnLanAccessConfig>(data).map_err(|e| e.to_string()),
-        Ok(Data::CommandResponse { message, .. }) => Err(message),
-        Ok(other) => Err(format!("unexpected service response: {:?}", other)),
-        Err(err) => Err(err),
-    }
+pub async fn get_wgvpn_lan_access_config(
+) -> Result<WgvpnLanAccessConfig, p2premote_core::control::CommandFailure> {
+    config_command(Data::GetWgvpnLanAccessConfig).await
+}
+
+#[tauri::command]
+pub async fn get_service_access_policy(
+) -> Result<serde_json::Value, p2premote_core::control::CommandFailure> {
+    config_command(Data::GetServiceAccessPolicy).await
+}
+
+#[tauri::command]
+pub async fn save_service_access_policy(
+    policy: p2premote_core::service_access::ServiceAccessPolicy,
+) -> Result<serde_json::Value, p2premote_core::control::CommandFailure> {
+    config_command(Data::SaveServiceAccessPolicy { policy }).await
+}
+
+async fn config_command<T: serde::de::DeserializeOwned>(
+    command: Data,
+) -> Result<T, p2premote_core::control::CommandFailure> {
+    let response = crate::commands::service::send_command_responsive(command)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "settings IPC command failed");
+            p2premote_core::control::CommandFailure::Structured(
+                p2premote_core::control::CommandError::from_service_status_error(&error),
+            )
+        })?;
+    p2premote_core::control::decode_command_data(response)
 }
 
 #[tauri::command]
 pub async fn save_wgvpn_lan_access_config(
     enabled: bool,
     cidrs: Vec<String>,
-) -> Result<WgvpnLanAccessConfig, String> {
-    match crate::commands::service::send_command_responsive(Data::SaveWgvpnLanAccessConfig {
-        enabled,
-        cidrs,
-    })
-    .await
-    {
-        Ok(Data::CommandResponse {
-            ok: true,
-            data: Some(data),
-            ..
-        }) => serde_json::from_value::<WgvpnLanAccessConfig>(data).map_err(|e| e.to_string()),
-        Ok(Data::CommandResponse { message, .. }) => Err(message),
-        Ok(other) => Err(format!("unexpected service response: {:?}", other)),
-        Err(err) => Err(err),
-    }
+) -> Result<WgvpnLanAccessConfig, p2premote_core::control::CommandFailure> {
+    config_command(Data::SaveWgvpnLanAccessConfig { enabled, cidrs }).await
 }
 
 /// 设置 UI 语言并持久化到 service 侧 MachineConfig.locale。
 #[tauri::command]
 pub async fn get_connection_preferences(
-) -> Result<p2premote_core::traversal_policy::Preferences, String> {
-    connection_preferences_response(Data::GetConnectionPreferences).await
+) -> Result<p2premote_core::traversal_policy::Preferences, p2premote_core::control::CommandFailure>
+{
+    config_command(Data::GetConnectionPreferences).await
 }
 
 #[tauri::command]
 pub async fn save_connection_preferences(
     prefer_ipv6: bool,
     prefer_tcp: bool,
-) -> Result<p2premote_core::traversal_policy::Preferences, String> {
-    connection_preferences_response(Data::SaveConnectionPreferences {
+) -> Result<p2premote_core::traversal_policy::Preferences, p2premote_core::control::CommandFailure>
+{
+    config_command(Data::SaveConnectionPreferences {
         prefer_ipv6,
         prefer_tcp,
     })
     .await
-}
-
-async fn connection_preferences_response(
-    command: Data,
-) -> Result<p2premote_core::traversal_policy::Preferences, String> {
-    match crate::commands::service::send_command_responsive(command).await? {
-        Data::CommandResponse {
-            ok: true,
-            data: Some(data),
-            ..
-        } => serde_json::from_value(data).map_err(|e| e.to_string()),
-        Data::CommandResponse { message, .. } => Err(message),
-        other => Err(format!("unexpected service response: {other:?}")),
-    }
 }
 
 /// 设置 UI 语言并持久化到 service 侧 MachineConfig.locale。

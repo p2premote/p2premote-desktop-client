@@ -8,6 +8,8 @@ export interface ClientError {
 }
 
 const ERROR_MESSAGE_KEYS: Record<string, string> = {
+  AUTO_KEEP_ACTIVE_SIDE_REQUIRED: 'devices.auto_keep.active_side_required',
+  INVALID_ARGUMENT: 'errors.invalid_argument',
   NETWORK_OFFLINE: 'errors.network_offline',
   NETWORK_DNS_FAILED: 'errors.network_dns_failed',
   NETWORK_TIMEOUT: 'errors.network_timeout',
@@ -55,7 +57,9 @@ function safeLegacyBusinessMessage(error: unknown): string {
   return message
 }
 
+// Used only for older service responses and commands not yet carrying error codes.
 function classifyLegacyError(message: string): string | null {
+  if (message.trim() === 'AUTO_KEEP_ACTIVE_SIDE_REQUIRED') return 'AUTO_KEEP_ACTIVE_SIDE_REQUIRED'
   const value = message.toLowerCase()
   if (/saved[_ -]session.*expired/.test(value)) return 'AUTH_SAVED_SESSION_EXPIRED'
   if (/invalid (?:token|credential)|unauthorized|session.*expired/.test(value)) return 'AUTH_SESSION_EXPIRED'

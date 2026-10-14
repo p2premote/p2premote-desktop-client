@@ -71,6 +71,10 @@ pub(super) async fn handle_client(
         conn.send(&Data::CommandResponse {
             ok: false,
             message: "unauthorized".to_string(),
+            error: Some(crate::control::CommandError::new(
+                "SERVICE_PERMISSION_DENIED",
+                false,
+            )),
             status: None,
             data: None,
         })
@@ -84,6 +88,7 @@ pub(super) async fn handle_client(
     conn.send(&Data::CommandResponse {
         ok: true,
         message: "ok".to_string(),
+        error: None,
         status: None,
         data: None,
     })
@@ -167,6 +172,11 @@ pub(super) fn cmd_response(ok: bool, message: &str, status: Option<RuntimeStatus
     Data::CommandResponse {
         ok,
         message: message.to_string(),
+        error: if ok {
+            None
+        } else {
+            crate::control::CommandError::from_legacy_message(message)
+        },
         status,
         data: None,
     }
@@ -182,6 +192,11 @@ pub(super) fn cmd_response_with_data(
     Data::CommandResponse {
         ok,
         message: message.to_string(),
+        error: if ok {
+            None
+        } else {
+            crate::control::CommandError::from_legacy_message(message)
+        },
         status,
         data: Some(data),
     }
@@ -230,7 +245,13 @@ pub(super) fn response_from_result<T>(
 ) -> Data {
     match result {
         Ok(v) => cmd_response_with_data(true, "ok", None, ok_data(v)),
-        Err(e) => cmd_response(false, &e.to_string(), None),
+        Err(e) => Data::CommandResponse {
+            ok: false,
+            message: e.to_string(),
+            error: crate::control::CommandError::from_error(&e),
+            status: None,
+            data: None,
+        },
     }
 }
 
@@ -244,8 +265,10 @@ async fn resume_saved_token_session(
     }
 
     let bundle = refresh_with_config(&mut config).await?;
-    config.auto_login = auto_login;
-    save_machine_config(&config)?;
+    crate::config::update_machine_settings(|config| {
+        config.auto_login = auto_login;
+        Ok(())
+    })?;
 
     let user_json = serde_json::to_value(&bundle.user).unwrap_or(serde_json::Value::Null);
     update_status(shared, |s| {
@@ -307,6 +330,8 @@ pub(super) fn data_variant(data: &Data) -> &'static str {
         Data::SetAutoStartConfig { .. } => "SetAutoStartConfig",
         Data::SetLocale { .. } => "SetLocale",
         Data::GetWgvpnLanAccessConfig => "GetWgvpnLanAccessConfig",
+        Data::GetServiceAccessPolicy => "GetServiceAccessPolicy",
+        Data::SaveServiceAccessPolicy { .. } => "SaveServiceAccessPolicy",
         Data::GetConnectionPreferences => "GetConnectionPreferences",
         Data::SaveConnectionPreferences { .. } => "SaveConnectionPreferences",
         Data::SaveWgvpnLanAccessConfig { .. } => "SaveWgvpnLanAccessConfig",
@@ -529,8 +554,7 @@ pub(super) async fn handle_data(
         Data::SetAutoKeep {
             target_device_id,
             enabled,
-            expected_revision,
-        } => set_auto_keep_setting(shared, target_device_id, enabled, expected_revision).await,
+        } => set_auto_keep_setting(shared, target_device_id, enabled).await,
         Data::UpdateDeviceAlias { device_id, alias } => {
             let mut config = match load_config_or_err() {
                 Ok(c) => c,
@@ -573,8 +597,9 @@ pub(super) async fn handle_data(
             // 本机设备的密码即邀请页展示的临时密码：成功后回写运行时状态并持久化，
             // 避免邀请页每次挂载（或 service 重启后）重新生成，使已分享未使用的邀请失效。
             if result.is_ok() && config.device_id == Some(device_id) && !password.is_empty() {
-                config.invite_temporary_password = Some(password.clone());
-                if let Err(err) = save_machine_config(&config) {
+                if let Err(err) = crate::config::update_machine_state(|state| {
+                    state.invite_temporary_password = Some(password.clone());
+                }) {
                     warn!("[ServiceControl] persist invite password failed: {}", err);
                 }
                 update_status(shared, |status| {
@@ -852,19 +877,19 @@ pub(super) async fn handle_data(
                 "[ServiceRuntime] saving login preferences: remember_me={}, auto_login={}",
                 remember_me, auto_login
             );
-            let mut config = match load_config_or_err() {
-                Ok(c) => c,
-                Err(resp) => return Some(resp),
-            };
-            // identifier 为空时保留已有登录标识，兼容不修改账号的设置更新。
-            if !identifier.trim().is_empty() {
-                config.user_email = Some(identifier);
-            }
-            config.remember_me = remember_me;
-            config.auto_login = auto_login;
-            Some(response_from_result(save_machine_config(&config), |_| {
-                serde_json::Value::Null
-            }))
+            let result = crate::config::update_machine_settings(|config| {
+                config.remember_me = remember_me;
+                config.auto_login = auto_login;
+                Ok(())
+            })
+            .and_then(|_| {
+                crate::config::update_machine_state(|state| {
+                    if !identifier.trim().is_empty() {
+                        state.user_email = Some(identifier);
+                    }
+                })
+            });
+            Some(response_from_result(result, |_| serde_json::Value::Null))
         }
         Data::GetSavedLogin => {
             let config = match load_config_or_err() {
@@ -908,10 +933,6 @@ pub(super) async fn handle_data(
             ))
         }
         Data::SetAutoStartConfig { enabled } => {
-            let mut config = match load_config_or_err() {
-                Ok(c) => c,
-                Err(resp) => return Some(resp),
-            };
             #[cfg(target_os = "linux")]
             let previous_enabled = match crate::service_control::query_service_status() {
                 Ok(status) => status.enabled,
@@ -928,8 +949,10 @@ pub(super) async fn handle_data(
                     return Some(cmd_response(false, &err.to_string(), None));
                 }
             }
-            config.auto_start = enabled;
-            let result = save_machine_config(&config);
+            let result = crate::config::update_machine_settings(|config| {
+                config.auto_start = enabled;
+                Ok(())
+            });
             #[cfg(target_os = "linux")]
             if result.is_err() {
                 let rollback = if previous_enabled {
@@ -952,13 +975,11 @@ pub(super) async fn handle_data(
                 "en" | "en-US" | "en-us" => "en".to_string(),
                 _ => "zh-CN".to_string(),
             };
-            let mut config = match load_config_or_err() {
-                Ok(c) => c,
-                Err(resp) => return Some(resp),
-            };
-            config.locale = Some(normalized.clone());
-            match save_machine_config(&config) {
-                Ok(()) => {
+            match crate::config::update_machine_settings(|config| {
+                config.locale = Some(normalized.clone());
+                Ok(())
+            }) {
+                Ok(_) => {
                     // Existing job/lifecycle messages are service-owned strings. Rebuild the
                     // current snapshot and broadcast it immediately so every UI switches as a
                     // whole instead of waiting for the next state transition.
@@ -992,18 +1013,13 @@ pub(super) async fn handle_data(
             prefer_ipv6,
             prefer_tcp,
         } => {
-            let mut config = match load_config_or_err() {
-                Ok(c) => c,
-                Err(resp) => return Some(resp),
-            };
-            config.prefer_ipv6 = prefer_ipv6;
-            config.prefer_tcp = prefer_tcp;
-            match save_machine_config(&config) {
-                Ok(()) => {
-                    shared.lock().connection_preferences = crate::traversal_policy::Preferences {
-                        prefer_ipv6,
-                        prefer_tcp,
-                    };
+            match crate::config::update_machine_settings(|config| {
+                config.prefer_ipv6 = prefer_ipv6;
+                config.prefer_tcp = prefer_tcp;
+                Ok(())
+            }) {
+                Ok(config) => {
+                    shared.lock().apply_connection_config(&config);
                     Some(cmd_response_with_data(
                         true,
                         "ok",
@@ -1015,6 +1031,18 @@ pub(super) async fn handle_data(
                 }
                 Err(error) => Some(cmd_response(false, &error.to_string(), None)),
             }
+        }
+        Data::GetServiceAccessPolicy => Some(response_from_result(
+            crate::service_access::status(),
+            |value| value,
+        )),
+        Data::SaveServiceAccessPolicy { policy } => {
+            let result =
+                tokio::task::spawn_blocking(move || crate::service_access::save(policy)).await;
+            Some(match result {
+                Ok(result) => response_from_result(result, |value| value),
+                Err(error) => cmd_response(false, &error.to_string(), None),
+            })
         }
         Data::GetWgvpnLanAccessConfig => {
             let config = match load_config_or_err() {
@@ -1044,17 +1072,16 @@ pub(super) async fn handle_data(
                 );
                 return Some(cmd_response(false, &msg, None));
             }
-            let mut config = match load_config_or_err() {
-                Ok(c) => c,
-                Err(resp) => return Some(resp),
-            };
-            config.wgvpn_lan_access_enabled = enabled;
-            config.wgvpn_lan_cidrs = if enabled {
-                normalized.clone()
-            } else {
-                Vec::new()
-            };
-            Some(response_from_result(save_machine_config(&config), |_| {
+            let result = crate::config::update_machine_settings(|config| {
+                config.wgvpn_lan_access_enabled = enabled;
+                config.wgvpn_lan_cidrs = if enabled {
+                    normalized.clone()
+                } else {
+                    Vec::new()
+                };
+                Ok(())
+            });
+            Some(response_from_result(result, |_| {
                 serde_json::json!({
                     "enabled": enabled,
                     "cidrs": if enabled { normalized } else { Vec::new() },
@@ -1072,6 +1099,9 @@ pub(super) async fn handle_data(
                     ));
                 }
             };
+            if let Err(error) = crate::service_access::initialize(&config) {
+                return Some(cmd_response(false, &error.to_string(), None));
+            }
             if let Err(err) = crate::logging::reload_log_level(&config.log_level) {
                 return Some(cmd_response(
                     false,
@@ -1079,7 +1109,11 @@ pub(super) async fn handle_data(
                     Some(shared.lock().status.clone()),
                 ));
             }
-            shared.lock().reconnect_requested = true;
+            {
+                let mut state = shared.lock();
+                state.apply_connection_config(&config);
+                state.reconnect_requested = true;
+            }
             Some(cmd_response(
                 true,
                 "config reloaded",
@@ -1096,41 +1130,21 @@ pub(super) async fn handle_data(
         }
         Data::StopTunnel { source_device_id } => stop_wgvpn_job(shared, source_device_id).await,
         Data::StopActiveTunnel { peer_device_id } => {
-            if shared
-                .lock()
-                .active_tunnel_job_cancels
-                .contains_key(&peer_device_id)
-            {
-                stop_active_tunnel_job(shared, peer_device_id);
-            } else {
-                clear_active_tunnel_job_status(shared, peer_device_id);
-            }
-            stop_wgvpn_job(shared, peer_device_id).await
+            stop_active_tunnel(shared, peer_device_id).await
         }
         Data::DisconnectActiveTunnel {
             peer_device_id,
             auto_keep_enabled,
-            expected_revision,
         } => {
             let setting_response =
-                set_auto_keep_setting(shared, peer_device_id, auto_keep_enabled, expected_revision)
-                    .await;
+                set_auto_keep_setting(shared, peer_device_id, auto_keep_enabled).await;
             if !matches!(
                 setting_response,
                 Some(Data::CommandResponse { ok: true, .. })
             ) {
                 return setting_response;
             }
-            if shared
-                .lock()
-                .active_tunnel_job_cancels
-                .contains_key(&peer_device_id)
-            {
-                stop_active_tunnel_job(shared, peer_device_id);
-            } else {
-                clear_active_tunnel_job_status(shared, peer_device_id);
-            }
-            stop_wgvpn_job(shared, peer_device_id).await
+            stop_active_tunnel(shared, peer_device_id).await
         }
         Data::TestTunnelSpeed { peer_device_id } => {
             let passive_health_server = {
@@ -1210,18 +1224,21 @@ pub(super) async fn handle_data(
         Data::Logout => {
             cancel_all_active_tunnel_jobs(shared);
             cancel_all_wgvpn_jobs(shared).await;
-            let mut config = load_machine_config().ok()?;
             // 登出：清除凭据（token/登录标识/设备绑定），下次启动不会自动登录。
             // "记住密码/自动登录"是登录偏好，保留——静默清除会让用户的
             // 无人值守配置在登出后失效。
-            clear_machine_credentials(&mut config);
-            save_machine_config(&config).ok()?;
+            if let Err(error) = crate::config::clear_persisted_credentials() {
+                return Some(cmd_response(false, &error.to_string(), None));
+            }
             {
                 let mut state = shared.lock();
                 state.current_user_id = None;
                 state.login_session_enabled = false;
                 state.reconnect_requested = true;
                 state.device_registration_abandoned = false;
+                state.auto_keep_settings.clear();
+                state.auto_keep_retries.clear();
+                state.status.auto_keep_statuses.clear();
             }
             update_status(shared, |s| {
                 s.logged_in = false;

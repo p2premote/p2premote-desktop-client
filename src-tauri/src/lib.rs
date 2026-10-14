@@ -142,9 +142,9 @@ use commands::{
         send_reset_password_verification_code, try_auto_login,
     },
     config::{
-        check_update, exit_application, get_connection_preferences, get_settings,
-        get_wgvpn_lan_access_config, save_connection_preferences, save_wgvpn_lan_access_config,
-        set_auto_start, set_locale,
+        check_update, exit_application, get_connection_preferences, get_service_access_policy,
+        get_settings, get_wgvpn_lan_access_config, save_connection_preferences,
+        save_service_access_policy, save_wgvpn_lan_access_config, set_auto_start, set_locale,
     },
     device::{
         delete_device, generate_connect_code, get_auto_keep_statuses, get_device_list,
@@ -321,6 +321,8 @@ pub fn run() {
             mark_current_device_offline,
             get_settings,
             get_wgvpn_lan_access_config,
+            get_service_access_policy,
+            save_service_access_policy,
             save_wgvpn_lan_access_config,
             get_connection_preferences,
             save_connection_preferences,

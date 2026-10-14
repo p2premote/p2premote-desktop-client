@@ -211,6 +211,7 @@ import { Close, CopyDocument, Monitor } from '@element-plus/icons-vue'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
 import { businessErrorMessage, errorMessage } from '../utils/errorMessage'
 import { copyTextToClipboard } from '../utils/clipboard'
+import { stopTunnelForRetry } from '../utils/tunnelRetry'
 import type { TunnelJobStatus, BackgroundServiceStatus } from '../types/api'
 import { useConnectingDots } from '../composables/useConnectingDots'
 const { t } = useI18n()
@@ -477,18 +478,18 @@ async function disableTcpAndRetry() {
   const peer = verifiedDevice.value.device_id
   connecting.value = true
   try {
-    const preferences = await invoke<{ prefer_ipv6: boolean }>('get_connection_preferences')
-    await invoke('save_connection_preferences', { preferIpv6: preferences.prefer_ipv6, preferTcp: false })
-    await invoke('stop_active_tunnel_job', { peerDeviceId: peer })
-    const deadline = Date.now() + 150_000
-    while (true) {
-      const status = await invoke<BackgroundServiceStatus>('get_service_status')
-      const job = status.runtime?.active_tunnel_jobs?.find(item => item.peer_device_id === peer)
-      if (!job || !['running', 'waiting'].includes(job.state)) break
-      if (Date.now() >= deadline) throw new Error(t('app.settings.draining'))
-      await new Promise(resolve => window.setTimeout(resolve, 500))
+    const parsed = await invoke<{ deviceCode: string; temporaryPassword: string } | null>('parse_invite_info', { input: form.inviteInfo })
+    if (!parsed) throw new Error(t('remote.message.invite_invalid'))
+    await stopTunnelForRetry(peer, true)
+    const result = await invoke<AnonymousConnectResponse>('start_service_anonymous_active_tunnel', {
+      connectCode: parsed.deviceCode, temporaryPassword: parsed.temporaryPassword,
+    })
+    if (!result.success || !result.device) {
+      throw new Error(businessErrorMessage(result.message, t('remote.message.device_verify_failed')))
     }
-    await handleConnect()
+    verifiedDevice.value = result.device
+    activeJob.value = null
+    ElMessage.success(t('devices.message.reconnect_started'))
   } catch (error) { ElMessage.error(errorMessage(error, t('common.unknown_error'))) }
   finally { connecting.value = false }
 }
@@ -527,7 +528,7 @@ async function handleConnect() {
     updateActiveJobFromList(serviceStatus?.runtime?.active_tunnel_jobs)
     ElMessage.success(t('remote.message.auto_tunnel_started'))
   } catch (error) {
-    const message = errorMessage(error, t('remote.message.remote_failed'))
+    const message = businessErrorMessage(error, t('remote.message.remote_failed'))
     ElMessage.error(message)
   } finally {
     connecting.value = false

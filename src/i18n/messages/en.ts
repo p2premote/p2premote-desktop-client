@@ -9,6 +9,21 @@ type MessageSchema<T> = {
  * the Chinese source-of-truth, so missing or extra keys fail type checking.
  */
 const en = {
+  service_access: {
+    security: 'Security', title: 'Allowed services',
+    scope: 'Controls access through this device’s tunnel virtual IP for all peers. LAN forwarding is configured separately under LAN access.',
+    mode: 'Access mode', all: 'Allow all services', allowlist: 'Allow listed services only', deny: 'Block access to local services',
+    tcp: 'TCP destination ports', udp: 'UDP destination ports', ping: 'Allow Ping',
+    port_hint: 'Enter ports or inclusive ranges, such as 443 or 1000-2000. Separate entries with commas or spaces. Valid ports: 1–65535.',
+    empty: 'With no ports listed, all TCP/UDP services are blocked. Ping is controlled separately.',
+    deny_hint: 'The tunnel stays online, but peers cannot access local services. Replies to locally initiated connections still pass.',
+    effects: 'Changes apply immediately, including to existing connections. Remote desktop, file transfer and management ports lose access unless allowed.',
+    applied: 'Saved and applied', not_applied: 'Policy has not been applied. Save it again.',
+    control_channel: 'The internal tunnel heartbeat and disconnect channel remains available. Application ports, including speed tests, still require whitelist entries.',
+    invalid_port: 'Invalid port or range: {value}', too_many: 'Each protocol supports up to 256 port entries.',
+    discard: 'Discard unsaved service access rules?',
+    save_failed: 'Could not save or apply the policy. Check the background service and retry. Your changes have been kept.',
+  },
   common: {
     confirm: 'Confirm',
     cancel: 'Cancel',
@@ -376,15 +391,13 @@ const en = {
     },
     auto_keep: {
       title: 'Keep tunnel available',
+      active_side_required: 'Establish the tunnel from this device before enabling automatic keep. The passive side cannot enable it.',
       description: 'Re-establish the tunnel after startup, network recovery, or an unexpected interruption.',
       pro_required: 'Available after upgrading to Pro.',
       upgrade: 'Upgrade to Pro',
-      paused: 'Paused',
-      paused_membership: 'Your membership expired. Renew to resume automatic tunnel keep.',
       paused_remote_stop: 'The peer disconnected. Reconnect manually when ready.',
       waiting_network: 'Waiting for this device\'s network.',
       waiting_peer: 'Waiting for the peer device to come online.',
-      blocked: 'Automatic recovery stopped. Review the reported error.',
       enabled: 'Automatic tunnel keep enabled',
       disabled: 'Automatic tunnel keep disabled',
       save_failed: 'Failed to save automatic tunnel keep: {error}',
@@ -662,6 +675,7 @@ const en = {
   },
 
   errors: {
+    invalid_argument: 'Invalid settings. Check the entered values.',
     login_failed: 'Sign-in failed',
     bridge_call_failed: 'Local management service call failed: {command}',
     network_offline: 'The network is unavailable. Check your connection.',

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use p2premote_core::config::{
     default_service_binary_name, default_service_path, load_machine_config, machine_config_path,
-    machine_log_dir, save_machine_config,
+    machine_log_dir,
 };
 use p2premote_core::control::{send_command, Data, RuntimeStatus};
 use p2premote_core::invite::parse_invite_info;
@@ -467,29 +467,32 @@ async fn main() -> Result<()> {
         Commands::Config {
             command: ConfigCommands::Set { key, value },
         } => {
-            let mut cfg = load_machine_config()?;
             let restart_for_webui_change = key == "webui_enabled";
             let service_was_running = if restart_for_webui_change {
                 false
             } else {
                 query_service_status()?.running
             };
-            match key.as_str() {
-                "server_url" => cfg.server_url = value,
-                "log_level" => cfg.log_level = value,
-                "p2p_punch_path" => cfg.p2p_punch_path = value,
-                "web_admin_allowed_ip" => cfg.web_admin_allowed_ip = non_empty_config_value(value),
-                "web_admin_security_code" => {
-                    cfg.web_admin_security_code = non_empty_config_value(value)
+            p2premote_core::config::update_machine_settings(|cfg| {
+                match key.as_str() {
+                    "server_url" => cfg.server_url = value,
+                    "log_level" => cfg.log_level = value,
+                    "p2p_punch_path" => cfg.p2p_punch_path = value,
+                    "web_admin_allowed_ip" => {
+                        cfg.web_admin_allowed_ip = non_empty_config_value(value)
+                    }
+                    "web_admin_security_code" => {
+                        cfg.web_admin_security_code = non_empty_config_value(value)
+                    }
+                    "webui_enabled" => {
+                        cfg.webui_enabled = value
+                            .parse::<bool>()
+                            .map_err(|_| anyhow!("webui_enabled must be true or false"))?
+                    }
+                    other => return Err(anyhow!("unsupported config key: {}", other)),
                 }
-                "webui_enabled" => {
-                    cfg.webui_enabled = value
-                        .parse::<bool>()
-                        .map_err(|_| anyhow!("webui_enabled must be true or false"))?
-                }
-                other => return Err(anyhow!("unsupported config key: {}", other)),
-            }
-            save_machine_config(&cfg)?;
+                Ok(())
+            })?;
             if restart_for_webui_change {
                 restart_service()?;
                 println!("config updated; service restarted");

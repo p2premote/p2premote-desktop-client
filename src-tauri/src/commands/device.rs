@@ -156,12 +156,10 @@ pub async fn get_auto_keep_statuses() -> Result<serde_json::Value, String> {
 pub async fn set_auto_keep(
     target_device_id: i64,
     enabled: bool,
-    expected_revision: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     match send_command_responsive(Data::SetAutoKeep {
         target_device_id,
         enabled,
-        expected_revision,
     })
     .await?
     {

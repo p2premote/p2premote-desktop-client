@@ -353,6 +353,7 @@ pub async fn start_active_wgvpn(
     lan_cidrs: Vec<String>,
 ) -> Result<WgVpnStartResult> {
     let _registration = crate::traversal::Registration(punch_token.clone());
+    crate::service_access::ensure_ready()?;
     if !lan_cidrs.is_empty() {
         return Err(anyhow!("only passive wgvpn may expose LAN CIDRs"));
     }
@@ -613,6 +614,7 @@ pub async fn start_passive_wgvpn(
     lan_cidrs: Vec<String>,
 ) -> Result<WgVpnStartResult> {
     let _registration = crate::traversal::Registration(punch_token.clone());
+    crate::service_access::ensure_ready()?;
     let requested_lan_cidrs = wgvpn_exchange::normalize_exposed_lan_cidrs(&lan_cidrs)?;
     validate_lan_routes_basic(&requested_lan_cidrs)?;
     // Each passive peer has a distinct virtual source IP, so multiple

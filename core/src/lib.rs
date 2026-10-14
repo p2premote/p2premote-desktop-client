@@ -27,5 +27,6 @@ pub mod wol;
 pub mod ws;
 
 pub mod gonc_ffi;
+pub mod service_access;
 pub mod wgvpn;
 pub mod wgvpn_exchange;

@@ -11,9 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Serialize configuration and runtime-state persistence inside the service process.
 /// This covers the complete temp-file write and atomic replacement operation.
 static CONFIG_WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static CONFIG_UPDATE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineConfig {
+    #[serde(default)]
+    pub service_access: crate::service_access::ServiceAccessPolicy,
     pub server_url: String,
     pub auth_token: Option<String>,
     pub refresh_token: Option<String>,
@@ -77,10 +80,9 @@ pub struct MachineConfig {
     /// 持久化以免邀请页每次挂载都重新生成、使已分享未使用的邀请失效。
     #[serde(default)]
     pub invite_temporary_password: Option<String>,
-    /// Target devices whose automatic recovery was paused by a peer's explicit
-    /// disconnect. Runtime state is local to this source device, not server data.
+    /// Automatic tunnel keep preferences saved only on this source device.
     #[serde(default)]
-    pub auto_keep_remote_stop_targets: Vec<i64>,
+    pub auto_keep_settings: Vec<crate::auto_keep::AutoKeepSetting>,
 }
 
 /// 不属于用户配置的持久化运行时状态。
@@ -89,26 +91,47 @@ pub struct MachineConfig {
 /// 避免 config.json 在用户未修改配置时仍因运行状态变化而出现内容。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-struct MachineState {
-    auth_token: Option<String>,
-    refresh_token: Option<String>,
-    access_token_expires_at: Option<i64>,
-    user_email: Option<String>,
-    device_id: Option<i64>,
-    device_uuid: Option<String>,
-    device_fingerprint: Option<String>,
-    device_fingerprint_platform: Option<String>,
-    device_fingerprint_version: u32,
-    cached_public_ip: Option<String>,
-    cached_public_ip_location: Option<String>,
-    cached_public_network_checked_at: i64,
-    invite_temporary_password: Option<String>,
-    auto_keep_remote_stop_targets: Vec<i64>,
+pub(crate) struct MachineState {
+    pub(crate) auth_token: Option<String>,
+    pub(crate) refresh_token: Option<String>,
+    pub(crate) access_token_expires_at: Option<i64>,
+    pub(crate) user_email: Option<String>,
+    pub(crate) device_id: Option<i64>,
+    pub(crate) device_uuid: Option<String>,
+    pub(crate) device_fingerprint: Option<String>,
+    pub(crate) device_fingerprint_platform: Option<String>,
+    pub(crate) device_fingerprint_version: u32,
+    pub(crate) cached_public_ip: Option<String>,
+    pub(crate) cached_public_ip_location: Option<String>,
+    pub(crate) cached_public_network_checked_at: i64,
+    pub(crate) invite_temporary_password: Option<String>,
+}
+
+/// Update only settings, using the latest snapshot under the read/modify/write lock.
+pub fn update_machine_settings(
+    update: impl FnOnce(&mut MachineConfig) -> Result<()>,
+) -> Result<MachineConfig> {
+    let _guard = CONFIG_UPDATE_LOCK.lock();
+    let mut config = load_machine_config()?;
+    update(&mut config)?;
+    save_machine_config_settings(&config)?;
+    Ok(config)
+}
+
+pub(crate) fn update_machine_state(update: impl FnOnce(&mut MachineState)) -> Result<()> {
+    let _guard = CONFIG_UPDATE_LOCK.lock();
+    ensure_machine_dirs()?;
+    // Also performs the supported config.json -> state.json migration before updating.
+    let config = load_machine_config()?;
+    let mut state = machine_state_from_config(&config);
+    update(&mut state);
+    save_machine_state(&state)
 }
 
 impl Default for MachineConfig {
     fn default() -> Self {
         Self {
+            service_access: Default::default(),
             server_url: "https://cli.p2premote.top".to_string(),
             auth_token: None,
             refresh_token: None,
@@ -136,21 +159,18 @@ impl Default for MachineConfig {
             cached_public_ip_location: None,
             cached_public_network_checked_at: 0,
             invite_temporary_password: None,
-            auto_keep_remote_stop_targets: Vec::new(),
+            auto_keep_settings: Vec::new(),
         }
     }
 }
 
 /// 旧进程留下的公网网络信息不能跨 service 重启复用。
 pub fn clear_cached_public_network_info() -> Result<()> {
-    let mut config = load_machine_config()?;
-    if config.cached_public_ip.is_some() || config.cached_public_ip_location.is_some() {
-        config.cached_public_ip = None;
-        config.cached_public_ip_location = None;
-        config.cached_public_network_checked_at = 0;
-        save_machine_config(&config)?;
-    }
-    Ok(())
+    update_machine_state(|state| {
+        state.cached_public_ip = None;
+        state.cached_public_ip_location = None;
+        state.cached_public_network_checked_at = 0;
+    })
 }
 
 pub fn platform_executable_name(base: &str) -> String {
@@ -750,32 +770,33 @@ fn config_overrides(config: &MachineConfig, defaults: &MachineConfig) -> Result<
     Ok(Value::Object(overrides))
 }
 
-pub fn save_machine_config(config: &MachineConfig) -> Result<()> {
+/// Persist user configuration without rewriting runtime state.json.
+fn save_machine_config_settings(config: &MachineConfig) -> Result<()> {
     ensure_machine_dirs()?;
     let defaults = load_default_machine_config()?;
-    let overrides = config_overrides(config, &defaults)?;
-    atomic_write_json(&machine_config_path(), &overrides)?;
-    save_machine_state(&machine_state_from_config(config))
+    save_machine_config_settings_to(config, &defaults, &machine_config_path())
+}
+
+fn save_machine_config_settings_to(
+    config: &MachineConfig,
+    defaults: &MachineConfig,
+    path: &Path,
+) -> Result<()> {
+    let overrides = config_overrides(config, defaults)?;
+    atomic_write_json(path, &overrides)
 }
 
 fn is_machine_state_field(key: &str) -> bool {
-    matches!(
-        key,
-        "auth_token"
-            | "refresh_token"
-            | "access_token_expires_at"
-            | "user_email"
-            | "device_id"
-            | "device_uuid"
-            | "device_fingerprint"
-            | "device_fingerprint_platform"
-            | "device_fingerprint_version"
-            | "cached_public_ip"
-            | "cached_public_ip_location"
-            | "cached_public_network_checked_at"
-            | "invite_temporary_password"
-            | "auto_keep_remote_stop_targets"
-    )
+    static FIELDS: Lazy<std::collections::HashSet<String>> = Lazy::new(|| {
+        serde_json::to_value(MachineState::default())
+            .expect("MachineState is a JSON object")
+            .as_object()
+            .expect("MachineState is a JSON object")
+            .keys()
+            .cloned()
+            .collect()
+    });
+    FIELDS.contains(key)
 }
 
 fn extract_state_fields(overrides: &mut Value) -> Option<Value> {
@@ -825,7 +846,6 @@ fn machine_state_from_config(config: &MachineConfig) -> MachineState {
         cached_public_ip_location: config.cached_public_ip_location.clone(),
         cached_public_network_checked_at: config.cached_public_network_checked_at,
         invite_temporary_password: config.invite_temporary_password.clone(),
-        auto_keep_remote_stop_targets: config.auto_keep_remote_stop_targets.clone(),
     }
 }
 
@@ -843,23 +863,18 @@ fn apply_machine_state(mut config: MachineConfig, state: MachineState) -> Machin
     config.cached_public_ip_location = state.cached_public_ip_location;
     config.cached_public_network_checked_at = state.cached_public_network_checked_at;
     config.invite_temporary_password = state.invite_temporary_password;
-    config.auto_keep_remote_stop_targets = state.auto_keep_remote_stop_targets;
     config
 }
 
-/// 清除凭据：token/refresh/expires/user_email/device 绑定。
-///
-/// 用于登出——token 必须清除，否则"登出"后仍可凭 refresh token 免密恢复会话。
-/// remember_me/auto_login 是用户对登录方式的偏好而非凭据，保留：
-/// 结束会话和清除偏好是两件事，静默重置偏好会让"记住密码/自动登录"
-/// 在用户无感知时失效；取消偏好只能由用户在登录页手动取消勾选。
-pub fn clear_machine_credentials(config: &mut MachineConfig) {
-    config.auth_token = None;
-    config.refresh_token = None;
-    config.access_token_expires_at = None;
-    config.user_email = None;
-    config.device_id = None;
-    config.auto_keep_remote_stop_targets.clear();
+/// Logout clears credentials and the device binding, retaining login preferences.
+pub(crate) fn clear_persisted_credentials() -> Result<()> {
+    update_machine_state(|state| {
+        state.auth_token = None;
+        state.refresh_token = None;
+        state.access_token_expires_at = None;
+        state.user_email = None;
+        state.device_id = None;
+    })
 }
 
 pub fn ensure_machine_config() -> Result<MachineConfig> {
@@ -1046,6 +1061,153 @@ fn replace_file_atomically(source: &Path, target: &Path) -> std::io::Result<()> 
 #[cfg(test)]
 mod wgvpn_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_setting_and_state_updates_preserve_independent_fields() {
+        // The config paths follow current_exe on Windows. Run a copied test binary
+        // so this integration test can never update a developer's machine config.
+        let dir =
+            std::env::temp_dir().join(format!("p2premote-update-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let child = dir.join("config-update-test.exe");
+        fs::copy(&executable, &child).unwrap();
+        fs::copy(
+            executable.parent().unwrap().join("p2premote-wg.dll"),
+            dir.join("p2premote-wg.dll"),
+        )
+        .unwrap();
+        let output = std::process::Command::new(&child)
+            .args([
+                "--exact",
+                "config::wgvpn_tests::isolated_config_updates_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("P2PREMOTE_CONFIG_UPDATE_TEST_CHILD", &dir)
+            .output()
+            .unwrap();
+        let result = output.status.success();
+        let resolved = dir.canonicalize().unwrap();
+        assert_eq!(
+            resolved.parent().unwrap(),
+            std::env::temp_dir().canonicalize().unwrap()
+        );
+        assert_eq!(resolved.file_name(), dir.file_name());
+        fs::remove_dir_all(&resolved).unwrap();
+        assert!(
+            result,
+            "isolated config update test failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "run by the isolated config update parent test"]
+    fn isolated_config_updates_child() {
+        let expected = PathBuf::from(
+            std::env::var_os("P2PREMOTE_CONFIG_UPDATE_TEST_CHILD").expect("isolated child only"),
+        );
+        assert_eq!(
+            install_root_dir().canonicalize().unwrap(),
+            expected.canonicalize().unwrap()
+        );
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let writers: Vec<_> = (0..4)
+            .map(|index| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for value in 0..20 {
+                        match index {
+                            0 => {
+                                update_machine_settings(|config| {
+                                    config.locale = Some("en".into());
+                                    Ok(())
+                                })
+                                .unwrap();
+                            }
+                            1 => {
+                                update_machine_settings(|config| {
+                                    config.prefer_tcp = true;
+                                    config.auto_keep_settings =
+                                        vec![crate::auto_keep::AutoKeepSetting {
+                                            server_url: "https://example.test".into(),
+                                            user_email: "a@example.test".into(),
+                                            source_device_uuid: "source".into(),
+                                            target_device_id: 42,
+                                            active_side: true,
+                                            paused_remote_stop: true,
+                                        }];
+                                    Ok(())
+                                })
+                                .unwrap();
+                            }
+                            2 => {
+                                update_machine_state(|state| {
+                                    state.auth_token = Some(format!("test-token-{value}"))
+                                })
+                                .unwrap();
+                            }
+                            _ => {
+                                update_machine_state(|state| {
+                                    state.invite_temporary_password = Some("test-password".into())
+                                })
+                                .unwrap();
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let config = load_machine_config().unwrap();
+        assert_eq!(config.locale.as_deref(), Some("en"));
+        assert!(config.prefer_tcp);
+        assert_eq!(config.auto_keep_settings.len(), 1);
+        assert!(config.auto_keep_settings[0].paused_remote_stop);
+        assert_eq!(config.auth_token.as_deref(), Some("test-token-19"));
+        assert_eq!(
+            config.invite_temporary_password.as_deref(),
+            Some("test-password")
+        );
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(machine_config_path()).unwrap()).unwrap();
+        assert!(settings.get("auth_token").is_none());
+        assert_eq!(settings["auto_keep_settings"][0]["target_device_id"], 42);
+        assert!(settings.get("invite_temporary_password").is_none());
+    }
+
+    #[test]
+    fn saving_settings_does_not_touch_unwritable_runtime_state() {
+        let dir =
+            std::env::temp_dir().join(format!("p2premote-settings-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("state.json");
+        // A directory cannot be replaced by atomic JSON persistence.
+        fs::create_dir(&state_path).unwrap();
+        let sentinel = state_path.join("keep");
+        fs::write(&sentinel, b"unchanged").unwrap();
+        let defaults = MachineConfig::default();
+        let mut config = defaults.clone();
+        config.service_access.mode = crate::service_access::AccessMode::Deny;
+        config.auth_token = Some("must-not-be-persisted".to_string());
+        let config_path = dir.join("config.json");
+        save_machine_config_settings_to(&config, &defaults, &config_path).unwrap();
+        let persisted: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(persisted["service_access"]["mode"], "deny");
+        assert!(persisted.get("auth_token").is_none());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"unchanged");
+        fs::remove_file(&config_path).unwrap();
+        fs::remove_file(&sentinel).unwrap();
+        fs::remove_dir(&state_path).unwrap();
+        fs::remove_dir(&dir).unwrap();
+    }
 
     #[test]
     fn concurrent_atomic_writes_always_leave_valid_json() {

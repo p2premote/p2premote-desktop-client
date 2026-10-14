@@ -18,76 +18,7 @@ use p2premote_core::service_control::{
     query_service_status, start_service, stop_service, ServiceStatus,
 };
 
-/// Error payload exposed to the UI. Diagnostic details stay in the application
-/// log; the renderer receives only a stable code and retry guidance.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientCommandError {
-    code: &'static str,
-    retryable: bool,
-}
-
-impl ClientCommandError {
-    fn from_network_message(message: &str) -> Self {
-        let value = message.to_ascii_lowercase();
-        let code = if value.contains("permission denied")
-            || value.contains("access denied")
-            || value.contains("authorization check failed")
-        {
-            "SERVICE_PERMISSION_DENIED"
-        } else if value.contains("timed out") || value.contains("timeout") {
-            "NETWORK_TIMEOUT"
-        } else if value.contains("dns")
-            || value.contains("name or service not known")
-            || value.contains("failed to lookup address")
-        {
-            "NETWORK_DNS_FAILED"
-        } else if value.contains("offline") || value.contains("network is unreachable") {
-            "NETWORK_OFFLINE"
-        } else if value.contains("connection refused")
-            || value.contains("connection reset")
-            || value.contains("failed to connect")
-            || value.contains("error sending request")
-        {
-            "NETWORK_REQUEST_FAILED"
-        } else {
-            "SERVER_UNAVAILABLE"
-        };
-        Self {
-            code,
-            retryable: code != "SERVICE_PERMISSION_DENIED",
-        }
-    }
-
-    fn service_not_ready() -> Self {
-        Self {
-            code: "SERVICE_NOT_READY",
-            retryable: true,
-        }
-    }
-
-    fn service_connection_failed() -> Self {
-        Self {
-            code: "SERVICE_CONNECTION_FAILED",
-            retryable: true,
-        }
-    }
-
-    fn from_service_status_error(message: &str) -> Self {
-        let value = message.to_ascii_lowercase();
-        if value.contains("permission denied")
-            || value.contains("access denied")
-            || value.contains("authorization check failed")
-        {
-            Self {
-                code: "SERVICE_PERMISSION_DENIED",
-                retryable: false,
-            }
-        } else {
-            Self::service_not_ready()
-        }
-    }
-}
+pub use p2premote_core::control::CommandError as ClientCommandError;
 
 // ---- UI 侧持久连接管理 ----
 
@@ -856,6 +787,28 @@ pub fn cleanup_background_service_on_app_exit() {
 
 /// 通过持久连接发送命令（带响应）。连接异常直接返回，由 UI 明确提示。
 pub(crate) async fn send_command_responsive(data: Data) -> Result<Data, String> {
+    if matches!(
+        data,
+        Data::StopActiveTunnel { .. } | Data::DisconnectActiveTunnel { .. }
+    ) {
+        // Stopping can wait for a native task. Use its own connection so that
+        // unrelated commands and status subscriptions remain responsive.
+        let mut conn = p2premote_core::control::connect_with_handshake()
+            .await
+            .map_err(|error| error.to_string())?;
+        conn.send(&data).await.map_err(|error| error.to_string())?;
+        return tokio::time::timeout(std::time::Duration::from_secs(180), async {
+            loop {
+                match conn.next().await.map_err(|error| error.to_string())? {
+                    Some(response @ Data::CommandResponse { .. }) => return Ok(response),
+                    Some(_) => {}
+                    None => return Err("service connection closed while stopping tunnel".into()),
+                }
+            }
+        })
+        .await
+        .map_err(|_| "tunnel stop timed out".to_string())?;
+    }
     send_req_via_persistent(data).await
 }
 
@@ -1099,12 +1052,10 @@ pub async fn stop_active_tunnel_job(peer_device_id: i64) -> Result<String, Strin
 pub async fn disconnect_active_tunnel(
     peer_device_id: i64,
     auto_keep_enabled: bool,
-    expected_revision: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     match send_command_responsive(Data::DisconnectActiveTunnel {
         peer_device_id,
         auto_keep_enabled,
-        expected_revision,
     })
     .await
     {

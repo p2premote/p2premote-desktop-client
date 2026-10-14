@@ -10,11 +10,8 @@ use crate::auth::{
     refresh_with_config, register_by_email_code, reset_password_by_email_code,
     send_verification_code,
 };
-use crate::auto_keep::{list_auto_keep, set_auto_keep, AutoKeepStatus};
-use crate::config::{
-    clear_machine_credentials, derive_control_secret, ensure_machine_config, load_machine_config,
-    save_machine_config,
-};
+use crate::auto_keep::{AutoKeepSetting, AutoKeepStatus};
+use crate::config::{derive_control_secret, ensure_machine_config, load_machine_config};
 use crate::control::{
     accept_ipc_client, Connection, Data, IpcStream, RuntimeStatus, TunnelJobState, TunnelJobStatus,
     TunnelLastResult, TunnelLifecycleRole, TunnelLifecycleState, TunnelLifecycleStatus,
@@ -44,7 +41,7 @@ use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -147,6 +144,7 @@ pub(super) struct SharedRuntimeState {
     status: RuntimeStatus,
     /// 连接偏好在 service 生命周期内以内存为准；仅保存时落盘。
     connection_preferences: crate::traversal_policy::Preferences,
+    config_server_url: String,
     /// 当前 service 生命周期是否已获准使用持久化令牌登录。
     /// service 启动时仅由记住会话 + 自动登录 + token 开启；显式登录后保持到进程退出。
     login_session_enabled: bool,
@@ -184,10 +182,18 @@ pub(super) struct SharedRuntimeState {
     /// 打一次注定失败的请求。重新登录或 service 重启后才会再试。
     device_registration_abandoned: bool,
     auto_keep_retries: HashMap<i64, AutoKeepRetryRuntime>,
-    /// A remote manual stop is safety-sensitive: keep the local pause even if
-    /// persisting it fails or a later server snapshot is stale.
-    auto_keep_remote_stop_barriers: HashSet<i64>,
+    auto_keep_settings: Vec<AutoKeepSetting>,
     status_tx: Option<tokio::sync::broadcast::Sender<RuntimeStatus>>,
+}
+
+impl SharedRuntimeState {
+    fn apply_connection_config(&mut self, config: &crate::config::MachineConfig) {
+        self.connection_preferences = crate::traversal_policy::Preferences {
+            prefer_ipv6: config.prefer_ipv6,
+            prefer_tcp: config.prefer_tcp,
+        };
+        self.config_server_url = config.server_url.clone();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -419,9 +425,10 @@ async fn rotate_invite_temporary_password(shared: &Arc<Mutex<SharedRuntimeState>
     let mut config = load_machine_config()?;
     let password = generate_temporary_password();
     set_connect_password(&mut config, &password).await?;
-    config.invite_temporary_password = Some(password.clone());
     // 密码已在服务器端生效；持久化失败只影响重启后复用，不应视为轮换失败。
-    if let Err(err) = save_machine_config(&config) {
+    if let Err(err) = crate::config::update_machine_state(|state| {
+        state.invite_temporary_password = Some(password.clone());
+    }) {
         warn!(
             "[ServiceRuntime] persist rotated invite password failed: {}",
             err
@@ -452,31 +459,27 @@ pub async fn run_service_foreground() -> Result<()> {
     }
     // 启动路径只加载一次 machine config：locale 恢复、wgvpn 残留清理、
     // 登录会话判定与 Web Admin 启动/日志共用，避免同一文件重复读 4-6 次。
-    // 读失败时各消费点沿用原先的默认值语义（default / false / 跳过恢复）。
+    // 无法读取安全配置时停止启动，避免静默恢复为无限制访问。
     let startup_config = match crate::config::load_machine_config() {
-        Ok(config) => Some(config),
+        Ok(config) => config,
         Err(err) => {
             info!(
-                "[ServiceRuntime] config load failed during startup; using defaults: {}",
+                "[ServiceRuntime] config load failed during startup: {}",
                 err
             );
-            None
+            return Err(err.context("Cannot start service with unreadable security configuration"));
         }
     };
-    let startup_locale = startup_config
-        .as_ref()
-        .and_then(|config| config.locale.clone());
+    let startup_locale = startup_config.locale.clone();
     crate::device::initialize_public_network_group(startup_locale.as_deref());
 
     // WGVPN 数据面属于 service 进程，重启后不可恢复；这里只清理崩溃残留。
-    let cleanup_config = startup_config.clone().unwrap_or_default();
-    wgvpn_flow::cleanup_stale_sessions(&cleanup_config)
+    wgvpn_flow::cleanup_stale_sessions(&startup_config)
         .context("failed to clear stale wgvpn state before service startup")?;
+    crate::service_access::initialize(&startup_config)
+        .context("failed to initialize service access policy")?;
 
-    let startup_login_enabled = startup_config
-        .as_ref()
-        .map(persistent_login_enabled)
-        .unwrap_or(false);
+    let startup_login_enabled = persistent_login_enabled(&startup_config);
     let (status_tx, _) = tokio::sync::broadcast::channel(STATUS_BROADCAST_CAPACITY);
     let shared = Arc::new(Mutex::new(SharedRuntimeState {
         status: RuntimeStatus {
@@ -485,18 +488,13 @@ pub async fn run_service_foreground() -> Result<()> {
         },
         status_tx: Some(status_tx),
         login_session_enabled: startup_login_enabled,
-        connection_preferences: startup_config
-            .as_ref()
-            .map(|config| crate::traversal_policy::Preferences {
-                prefer_ipv6: config.prefer_ipv6,
-                prefer_tcp: config.prefer_tcp,
-            })
-            .unwrap_or_default(),
         ..Default::default()
     }));
     // 从持久化配置恢复 locale 到内存缓存，保证 service 重启后
     // 第一批 message（批次4）能按正确语言选词，避免短暂显示默认语言。
-    if let Some(config) = startup_config.as_ref() {
+    {
+        let config = &startup_config;
+        shared.lock().apply_connection_config(config);
         if let Some(locale) = config.locale.clone() {
             shared.lock().status.locale = Some(locale);
         }
@@ -517,7 +515,7 @@ pub async fn run_service_foreground() -> Result<()> {
     web_admin::spawn_web_admin_server(shared.clone(), wake.clone(), startup_config.clone());
     info!(
         "[ServiceRuntime] web admin server scheduled on {}",
-        web_admin::web_admin_addr_for_log(startup_config.as_ref())
+        web_admin::web_admin_addr_for_log(&startup_config)
     );
 
     let health_shared = shared.clone();
@@ -607,7 +605,7 @@ pub async fn run_service_foreground() -> Result<()> {
         }
         Err(err) => {
             warn!("[ServiceRuntime] health server start failed: {}", err);
-            None
+            return Err(err.context("Cannot reserve the tunnel health control listener"));
         }
     };
     let ws_client = ServiceWsClient::new();
@@ -870,7 +868,13 @@ async fn bootstrap_service(
             CloneDetectionResult::BaselineCreated | CloneDetectionResult::CloneDetected
         );
     if config_changed {
-        save_machine_config(&config)?;
+        crate::config::update_machine_state(|state| {
+            state.device_id = config.device_id;
+            state.device_uuid = config.device_uuid.clone();
+            state.device_fingerprint = config.device_fingerprint.clone();
+            state.device_fingerprint_platform = config.device_fingerprint_platform.clone();
+            state.device_fingerprint_version = config.device_fingerprint_version;
+        })?;
     }
     match &clone_result {
         CloneDetectionResult::CloneDetected => {
@@ -1097,15 +1101,17 @@ fn is_auth_session_error(error: &anyhow::Error) -> bool {
 }
 
 fn invalidate_saved_session(shared: &Arc<Mutex<SharedRuntimeState>>) -> Result<()> {
-    let mut config = load_machine_config()?;
-    clear_machine_credentials(&mut config);
-    save_machine_config(&config)?;
+    cancel_all_active_tunnel_jobs(shared);
+    crate::config::clear_persisted_credentials()?;
     {
         let mut state = shared.lock();
         state.login_session_enabled = false;
         state.reconnect_requested = false;
         state.current_user_id = None;
         state.device_registration_abandoned = false;
+        state.auto_keep_settings.clear();
+        state.auto_keep_retries.clear();
+        state.status.auto_keep_statuses.clear();
     }
     update_status(shared, |status| {
         status.logged_in = false;

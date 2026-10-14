@@ -34,6 +34,179 @@ pub fn ipc_socket_path() -> std::path::PathBuf {
 
 // ---- 消息定义 ----
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandError {
+    pub code: String,
+    pub retryable: bool,
+}
+
+impl CommandError {
+    pub fn new(code: &str, retryable: bool) -> Self {
+        Self {
+            code: code.into(),
+            retryable,
+        }
+    }
+
+    /// Compatibility boundary for commands still returning diagnostic strings.
+    pub fn from_legacy_message(message: &str) -> Option<Self> {
+        let value = message.to_lowercase();
+        let code = if value.contains("saved")
+            && value.contains("session")
+            && (value.contains("expired") || value.contains("invalid"))
+        {
+            "AUTH_SAVED_SESSION_EXPIRED"
+        } else if value.contains("invalid token")
+            || value.contains("invalid credential")
+            || value.contains("unauthorized")
+            || value.contains("session expired")
+        {
+            "AUTH_SESSION_EXPIRED"
+        } else if value.contains("permission denied")
+            || value.contains("access denied")
+            || value.contains("authorization check failed")
+        {
+            "SERVICE_PERMISSION_DENIED"
+        } else if value.contains("service")
+            && (value.contains("not installed") || value.contains("installation is incomplete"))
+        {
+            "SERVICE_NOT_INSTALLED"
+        } else if value.contains("service") && value.contains("disabled") {
+            "SERVICE_DISABLED"
+        } else if value.contains("service")
+            && (value.contains("not ready") || value.contains("unavailable"))
+            || value.contains("no persistent connection")
+        {
+            "SERVICE_NOT_READY"
+        } else if value.contains("timed out") || value.contains("timeout") || value.contains("超时")
+        {
+            "NETWORK_TIMEOUT"
+        } else if value.contains("dns")
+            || value.contains("name or service not known")
+            || value.contains("failed to lookup address")
+            || value.contains("域名解析")
+        {
+            "NETWORK_DNS_FAILED"
+        } else if value.contains("offline")
+            || value.contains("network is unreachable")
+            || value.contains("not connected to a network")
+            || value.contains("网络不可用")
+            || value.contains("设备不在线")
+        {
+            "NETWORK_OFFLINE"
+        } else if value.contains("connection refused")
+            || value.contains("connection reset")
+            || value.contains("failed to connect")
+            || value.contains("error sending request")
+            || value.contains("无法连接服务器")
+            || value.contains("网络请求失败")
+        {
+            "NETWORK_REQUEST_FAILED"
+        } else {
+            return None;
+        };
+        Some(Self::new(
+            code,
+            !code.starts_with("AUTH_")
+                && !matches!(
+                    code,
+                    "SERVICE_PERMISSION_DENIED" | "SERVICE_NOT_INSTALLED" | "SERVICE_DISABLED"
+                ),
+        ))
+    }
+
+    pub fn from_error(error: &anyhow::Error) -> Option<Self> {
+        if crate::auth::is_invalid_saved_session(error) {
+            return Some(Self::new("AUTH_SAVED_SESSION_EXPIRED", false));
+        }
+        if error
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|error| error.is_timeout())
+        {
+            return Some(Self::new("NETWORK_TIMEOUT", true));
+        }
+        Self::from_legacy_message(&error.to_string())
+    }
+
+    pub fn from_network_message(message: &str) -> Self {
+        Self::from_legacy_message(message).unwrap_or_else(|| Self::new("SERVER_UNAVAILABLE", true))
+    }
+
+    pub fn service_not_ready() -> Self {
+        Self::new("SERVICE_NOT_READY", true)
+    }
+    pub fn service_connection_failed() -> Self {
+        Self::new("SERVICE_CONNECTION_FAILED", true)
+    }
+    pub fn from_service_status_error(message: &str) -> Self {
+        if Self::from_legacy_message(message)
+            .is_some_and(|error| error.code == "SERVICE_PERMISSION_DENIED")
+        {
+            Self::new("SERVICE_PERMISSION_DENIED", false)
+        } else {
+            Self::service_not_ready()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum CommandFailure {
+    Structured(CommandError),
+    Legacy(String),
+}
+
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        match CommandError::from_legacy_message(&message) {
+            Some(error) => {
+                tracing::debug!(%message, code = %error.code, "service command failed");
+                Self::Structured(error)
+            }
+            None => Self::Legacy(message),
+        }
+    }
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Structured(error) => formatter.write_str(&error.code),
+            Self::Legacy(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for CommandFailure {}
+
+pub fn decode_command_data<T: serde::de::DeserializeOwned>(
+    response: Data,
+) -> Result<T, CommandFailure> {
+    match response {
+        Data::CommandResponse { ok: true, data, .. } => {
+            serde_json::from_value(data.unwrap_or(serde_json::Value::Null))
+                .map_err(|error| format!("invalid service response data: {error}").into())
+        }
+        Data::CommandResponse { message, error, .. } => Err(error
+            .map(CommandFailure::Structured)
+            .unwrap_or_else(|| message.into())),
+        other => Err(format!("unexpected service response: {other:?}").into()),
+    }
+}
+
+pub fn decode_command_message(response: Data) -> Result<String, CommandFailure> {
+    match response {
+        Data::CommandResponse {
+            ok: true, message, ..
+        } => Ok(message),
+        Data::CommandResponse { message, error, .. } => Err(error
+            .map(CommandFailure::Structured)
+            .unwrap_or_else(|| message.into())),
+        other => Err(format!("unexpected service response: {other:?}").into()),
+    }
+}
+
 /// IPC 消息（tagged enum 序列化，双向统一）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", content = "c")]
@@ -91,8 +264,6 @@ pub enum Data {
     DisconnectActiveTunnel {
         peer_device_id: i64,
         auto_keep_enabled: bool,
-        #[serde(default)]
-        expected_revision: Option<i64>,
     },
     TestTunnelSpeed {
         peer_device_id: i64,
@@ -122,8 +293,6 @@ pub enum Data {
     SetAutoKeep {
         target_device_id: i64,
         enabled: bool,
-        #[serde(default)]
-        expected_revision: Option<i64>,
     },
     MarkCurrentDeviceOffline,
 
@@ -185,6 +354,10 @@ pub enum Data {
     },
     /// 读取本机 wgvpn LAN 访问配置。
     GetWgvpnLanAccessConfig,
+    GetServiceAccessPolicy,
+    SaveServiceAccessPolicy {
+        policy: crate::service_access::ServiceAccessPolicy,
+    },
     GetConnectionPreferences,
     SaveConnectionPreferences {
         prefer_ipv6: bool,
@@ -200,6 +373,8 @@ pub enum Data {
     CommandResponse {
         ok: bool,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<CommandError>,
         #[serde(default)]
         status: Option<RuntimeStatus>,
         /// 结构化响应数据（如设备列表 JSON）。
@@ -783,6 +958,7 @@ pub async fn accept_ipc_client() -> Result<IpcStream> {
                     .send(&Data::CommandResponse {
                         ok: false,
                         message,
+                        error: Some(CommandError::new("SERVICE_PERMISSION_DENIED", false)),
                         status: None,
                         data: None,
                     })
@@ -1001,6 +1177,7 @@ mod tests {
         roundtrip_serialize(&Data::CommandResponse {
             ok: true,
             message: "ok".to_string(),
+            error: None,
             status: Some(RuntimeStatus {
                 service_session_id: "service-session-1".to_string(),
                 logged_in: true,
@@ -1026,6 +1203,28 @@ mod tests {
             }),
             data: None,
         });
+    }
+
+    #[test]
+    fn legacy_responses_remain_readable_and_structured_errors_survive_decoding() {
+        let legacy: Data = serde_json::from_str(
+            r#"{"t":"CommandResponse","c":{"ok":true,"message":"ok","data":{"value":42}}}"#,
+        )
+        .unwrap();
+        let value: serde_json::Value = decode_command_data(legacy).unwrap();
+        assert_eq!(value["value"], 42);
+        let response = Data::CommandResponse {
+            ok: false,
+            message: "diagnostic changed".into(),
+            status: None,
+            data: None,
+            error: Some(CommandError::new("NETWORK_DNS_FAILED", true)),
+        };
+        let error = decode_command_message(response).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({"code":"NETWORK_DNS_FAILED","retryable":true})
+        );
     }
 
     /// RuntimeStatus.locale 默认为 None（向后兼容：旧 config 文件无此字段时反序列化得到 None）
@@ -1070,6 +1269,7 @@ mod tests {
             .send(&Data::CommandResponse {
                 ok: true,
                 message: "pong".to_string(),
+                error: None,
                 status: None,
                 data: None,
             })

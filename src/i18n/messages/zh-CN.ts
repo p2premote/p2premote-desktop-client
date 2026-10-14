@@ -10,6 +10,21 @@
  *   - 带参数的文案用 vue-i18n 的 `{name}` 插值，如 `t('a.b', { name })`
  */
 export default {
+  service_access: {
+    security: '安全', title: '允许访问的服务',
+    scope: '限制其他设备通过本机隧道虚拟 IP 访问的服务，适用于所有对端。局域网转发由“局域网访问”单独配置。',
+    mode: '访问模式', all: '允许全部服务', allowlist: '仅允许指定服务', deny: '禁止访问本机服务',
+    tcp: 'TCP 目标端口', udp: 'UDP 目标端口', ping: '允许 Ping',
+    port_hint: '输入端口或端口范围，例如 443、1000-2000。多个条目用逗号或空格分隔，范围为 1–65535。',
+    empty: '未填写端口时，所有 TCP/UDP 服务均被禁止；Ping 由独立开关控制。',
+    deny_hint: '隧道保持在线，但对端无法访问本机服务。本机主动发起连接的回包仍可通过。',
+    effects: '保存后立即生效，已有连接也按新规则检查。未允许的远程桌面、文件传输或管理端口会失去访问权限。',
+    applied: '已保存并生效', not_applied: '配置尚未生效，请重新保存',
+    control_channel: '隧道内部的心跳和断开通知通道始终保留。测速等业务端口仍须列入白名单。',
+    invalid_port: '无效端口或范围：{value}', too_many: '每个协议最多允许 256 个端口条目。',
+    discard: '放弃尚未保存的服务访问规则？',
+    save_failed: '无法保存或应用规则，请检查后台服务后重试。修改已保留。',
+  },
   // ============ 通用 ============
   common: {
     confirm: '确定',
@@ -395,15 +410,13 @@ export default {
     },
     auto_keep: {
       title: '自动保持隧道',
+      active_side_required: '请先由本机建立隧道，再开启自动保持；被动端不能开启。',
       description: '开机、网络恢复或隧道意外中断后，自动重新建立隧道。',
       pro_required: '升级会员后可用。',
       upgrade: '升级会员',
-      paused: '已暂停',
-      paused_membership: '会员已到期，续费后恢复自动保持。',
       paused_remote_stop: '对端已断开，等待你重新连接。',
       waiting_network: '等待本机网络恢复。',
       waiting_peer: '等待目标设备上线。',
-      blocked: '自动恢复已停止，请检查错误信息。',
       enabled: '已开启自动保持隧道',
       disabled: '已关闭自动保持隧道',
       save_failed: '保存自动保持设置失败：{error}',
@@ -687,6 +700,7 @@ export default {
 
   // ============ stores/runtime/utils ============
   errors: {
+    invalid_argument: '设置参数无效，请检查输入内容',
     login_failed: '登录失败',
     bridge_call_failed: '本地管理服务调用失败: {command}',
     network_offline: '当前网络不可用，请检查网络连接',

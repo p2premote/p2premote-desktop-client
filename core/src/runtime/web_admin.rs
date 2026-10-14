@@ -1,7 +1,7 @@
 // ---- 浏览器管理服务（默认 http://127.0.0.1:48083）----
 
 use super::{handle_data, SharedRuntimeState};
-use crate::config::{load_machine_config, save_machine_config};
+use crate::config::{load_machine_config, update_machine_settings};
 use crate::control::{Data, RuntimeStatus};
 use crate::service_control::query_service_status;
 use anyhow::{Context, Result};
@@ -100,6 +100,48 @@ struct WebAccessConfigRequest {
     allowed_cidr: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConnectionPreferencesArgs {
+    #[serde(alias = "prefer_ipv6")]
+    prefer_ipv6: bool,
+    #[serde(alias = "prefer_tcp")]
+    prefer_tcp: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetAutoKeepArgs {
+    #[serde(alias = "target_device_id")]
+    target_device_id: i64,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceAccessArgs {
+    policy: crate::service_access::ServiceAccessPolicy,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LanAccessArgs {
+    enabled: bool,
+    cidrs: Vec<String>,
+}
+
+fn command_args<T: serde::de::DeserializeOwned>(
+    args: serde_json::Value,
+) -> Result<T, crate::control::CommandFailure> {
+    serde_json::from_value(args).map_err(|error| {
+        tracing::debug!(%error, "invalid Web command arguments");
+        crate::control::CommandFailure::Structured(crate::control::CommandError::new(
+            "INVALID_ARGUMENT",
+            false,
+        ))
+    })
+}
+
 #[derive(Serialize)]
 struct WebAuthStatus {
     authenticated: bool,
@@ -116,7 +158,7 @@ struct WebInvokeResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    error: Option<crate::control::CommandFailure>,
 }
 
 #[derive(Debug, Serialize)]
@@ -401,15 +443,10 @@ fn session_cookie_value(token: &str, max_age: u64) -> String {
 pub(super) fn spawn_web_admin_server(
     shared: Arc<Mutex<SharedRuntimeState>>,
     wake: Arc<Notify>,
-    startup_config: Option<crate::config::MachineConfig>,
+    startup_config: crate::config::MachineConfig,
 ) {
     tokio::spawn(async move {
-        // 读失败（None）时沿用 MachineConfig::default 的 webui_enabled=true 语义。
-        if !startup_config
-            .as_ref()
-            .map(|config| config.webui_enabled)
-            .unwrap_or(true)
-        {
+        if !startup_config.webui_enabled {
             info!("[WebAdmin] listener disabled by webui_enabled=false");
             return;
         }
@@ -536,18 +573,15 @@ fn web_admin_addr(remote_enabled: bool) -> Result<SocketAddr> {
 }
 
 /// 启动日志用的 Web Admin 监听地址（复用启动路径已加载的 config，避免双读）。
-pub(super) fn web_admin_addr_for_log(config: Option<&crate::config::MachineConfig>) -> String {
-    // 读失败（None）时沿用 MachineConfig::default 的 webui_enabled=true 语义。
-    if !config.map(|config| config.webui_enabled).unwrap_or(true) {
+pub(super) fn web_admin_addr_for_log(config: &crate::config::MachineConfig) -> String {
+    if !config.webui_enabled {
         return "disabled".to_string();
     }
-    let security = config.and_then(|config| {
-        WebSecurityState::from_values(
-            config.web_admin_allowed_ip.as_deref(),
-            config.web_admin_security_code.as_deref(),
-        )
-        .ok()
-    });
+    let security = WebSecurityState::from_values(
+        config.web_admin_allowed_ip.as_deref(),
+        config.web_admin_security_code.as_deref(),
+    )
+    .ok();
     let remote_enabled = security
         .as_ref()
         .is_some_and(|security| security.allowed_remote_ip.lock().is_some())
@@ -710,7 +744,7 @@ async fn web_auth_complete_first_trust(
                 .into_response()
         }
     };
-    let mut config = match load_machine_config() {
+    let config = match load_machine_config() {
         Ok(config) => config,
         Err(err) => {
             error!("[WebAdmin] failed to load config during first-use setup: {err}");
@@ -720,11 +754,16 @@ async fn web_auth_complete_first_trust(
     if config.web_admin_security_code.is_some() || config.web_admin_allowed_ip.is_some() {
         return StatusCode::CONFLICT.into_response();
     }
-    config.web_admin_security_code = Some(encode_security_code_hash(&hash_security_code(
-        security_code,
-    )));
-    config.web_admin_allowed_ip = Some(allowed_cidr.clone());
-    if let Err(err) = save_machine_config(&config) {
+    if let Err(err) = update_machine_settings(|config| {
+        if config.web_admin_security_code.is_some() || config.web_admin_allowed_ip.is_some() {
+            anyhow::bail!("Web first-use settings already configured");
+        }
+        config.web_admin_security_code = Some(encode_security_code_hash(&hash_security_code(
+            security_code,
+        )));
+        config.web_admin_allowed_ip = Some(allowed_cidr.clone());
+        Ok(())
+    }) {
         error!("[WebAdmin] failed to save first-use settings: {err}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -860,15 +899,10 @@ async fn web_auth_change_security_code(
             .into_response();
     }
 
-    let mut config = match load_machine_config() {
-        Ok(config) => config,
-        Err(err) => {
-            error!("[WebAdmin] failed to load config while changing security code: {err}");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-    config.web_admin_security_code = Some(encode_security_code_hash(&new_hash));
-    if let Err(err) = save_machine_config(&config) {
+    if let Err(err) = update_machine_settings(|config| {
+        config.web_admin_security_code = Some(encode_security_code_hash(&new_hash));
+        Ok(())
+    }) {
         error!("[WebAdmin] failed to save changed security code: {err}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -936,7 +970,7 @@ async fn web_admin_update_access(
             Err(error) => return web_access_error(error),
         };
 
-    let mut config = match load_machine_config() {
+    let config = match load_machine_config() {
         Ok(config) => config,
         Err(err) => {
             error!("[WebAdmin] failed to load config while changing Web access: {err}");
@@ -966,11 +1000,25 @@ async fn web_admin_update_access(
         .into_response();
     }
 
-    config.web_admin_allowed_ip = requested_cidr.clone();
-    if let Err(err) = save_machine_config(&config) {
-        error!("[WebAdmin] failed to save Web access settings: {err}");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
+    let config = match update_machine_settings(|config| {
+        if requested_cidr.is_some()
+            && config
+                .web_admin_security_code
+                .as_deref()
+                .map(str::trim)
+                .map_or(true, str::is_empty)
+        {
+            anyhow::bail!("security_code_required");
+        }
+        config.web_admin_allowed_ip = requested_cidr.clone();
+        Ok(())
+    }) {
+        Ok(config) => config,
+        Err(err) => {
+            error!("[WebAdmin] failed to save Web access settings: {err}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     let source_ip = normalize_ip(peer.ip());
     let source_allowed = source_ip.is_loopback()
@@ -1207,7 +1255,7 @@ async fn web_invoke(
             Json(WebInvokeResponse {
                 ok: false,
                 value: None,
-                error: Some("forbidden_origin".to_string()),
+                error: Some("forbidden_origin".to_string().into()),
             }),
         );
     }
@@ -1217,7 +1265,7 @@ async fn web_invoke(
             Json(WebInvokeResponse {
                 ok: false,
                 value: None,
-                error: Some("web_auth_required".to_string()),
+                error: Some("web_auth_required".to_string().into()),
             }),
         );
     }
@@ -1245,7 +1293,7 @@ async fn handle_web_command(
     command: &str,
     args: serde_json::Value,
     state: &WebAdminState,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, crate::control::CommandFailure> {
     match command {
         "check_required_client_files" => Ok(serde_json::json!([])),
         "ensure_background_service_session" | "get_service_status" => Ok(web_status_value(state)),
@@ -1418,15 +1466,12 @@ async fn handle_web_command(
             command_data(dispatch_web_data(Data::GetConnectionPreferences, state).await?)
         }
         "save_connection_preferences" => {
-            let prefer_ipv6 = arg_bool(&args, &["preferIpv6", "prefer_ipv6"])
-                .ok_or_else(|| "missing prefer_ipv6".to_string())?;
-            let prefer_tcp = arg_bool(&args, &["preferTcp", "prefer_tcp"])
-                .ok_or_else(|| "missing prefer_tcp".to_string())?;
+            let args: ConnectionPreferencesArgs = command_args(args)?;
             command_data(
                 dispatch_web_data(
                     Data::SaveConnectionPreferences {
-                        prefer_ipv6,
-                        prefer_tcp,
+                        prefer_ipv6: args.prefer_ipv6,
+                        prefer_tcp: args.prefer_tcp,
                     },
                     state,
                 )
@@ -1437,9 +1482,23 @@ async fn handle_web_command(
             let resp = dispatch_web_data(Data::GetWgvpnLanAccessConfig, state).await?;
             command_data(resp)
         }
+        "get_service_access_policy" => {
+            command_data(dispatch_web_data(Data::GetServiceAccessPolicy, state).await?)
+        }
+        "save_service_access_policy" => {
+            let args: ServiceAccessArgs = command_args(args)?;
+            command_data(
+                dispatch_web_data(
+                    Data::SaveServiceAccessPolicy {
+                        policy: args.policy,
+                    },
+                    state,
+                )
+                .await?,
+            )
+        }
         "save_wgvpn_lan_access_config" => {
-            let enabled = arg_bool(&args, &["enabled"]).unwrap_or(false);
-            let cidrs = arg_string_array(&args, &["cidrs"]).unwrap_or_default();
+            let LanAccessArgs { enabled, cidrs } = command_args(args)?;
             let resp =
                 dispatch_web_data(Data::SaveWgvpnLanAccessConfig { enabled, cidrs }, state).await?;
             command_data(resp)
@@ -1453,17 +1512,14 @@ async fn handle_web_command(
             command_data(resp)
         }
         "set_auto_keep" => {
-            let target_device_id = arg_i64(&args, &["targetDeviceId", "target_device_id"])?;
-            let enabled = arg_bool(&args, &["enabled"]).unwrap_or(false);
-            let expected_revision = args
-                .get("expectedRevision")
-                .or_else(|| args.get("expected_revision"))
-                .and_then(|value| value.as_i64());
+            let SetAutoKeepArgs {
+                target_device_id,
+                enabled,
+            } = command_args(args)?;
             let resp = dispatch_web_data(
                 Data::SetAutoKeep {
                     target_device_id,
                     enabled,
-                    expected_revision,
                 },
                 state,
             )
@@ -1547,7 +1603,7 @@ async fn handle_web_command(
             )
             .await?;
             let Data::CommandResponse { message, data, .. } = resp else {
-                return Err("unexpected service response".to_string());
+                return Err("unexpected service response".to_string().into());
             };
             Ok(serde_json::json!({
                 "success": true,
@@ -1580,15 +1636,10 @@ async fn handle_web_command(
             let peer_device_id = arg_i64(&args, &["peerDeviceId", "peer_device_id"])?;
             let auto_keep_enabled =
                 arg_bool(&args, &["autoKeepEnabled", "auto_keep_enabled"]).unwrap_or(false);
-            let expected_revision = args
-                .get("expectedRevision")
-                .or_else(|| args.get("expected_revision"))
-                .and_then(|value| value.as_i64());
             let _ = dispatch_web_data(
                 Data::DisconnectActiveTunnel {
                     peer_device_id,
                     auto_keep_enabled,
-                    expected_revision,
                 },
                 state,
             )
@@ -1610,11 +1661,14 @@ async fn handle_web_command(
             let _ = dispatch_web_data(Data::AcknowledgeDeviceIdentityNotification, state).await?;
             Ok(serde_json::Value::Null)
         }
-        other => Err(format!("unsupported browser command: {}", other)),
+        other => Err(format!("unsupported browser command: {}", other).into()),
     }
 }
 
-async fn dispatch_web_data(data: Data, state: &WebAdminState) -> Result<Data, String> {
+async fn dispatch_web_data(
+    data: Data,
+    state: &WebAdminState,
+) -> Result<Data, crate::control::CommandFailure> {
     let response = handle_data(data, &state.shared)
         .await
         .ok_or_else(|| "service command produced no response".to_string())?;
@@ -1626,27 +1680,24 @@ async fn dispatch_web_data(data: Data, state: &WebAdminState) -> Result<Data, St
     }
     match &response {
         Data::CommandResponse {
-            ok: false, message, ..
-        } => Err(message.clone()),
+            ok: false,
+            message,
+            error,
+            ..
+        } => Err(error
+            .clone()
+            .map(crate::control::CommandFailure::Structured)
+            .unwrap_or_else(|| message.clone().into())),
         _ => Ok(response),
     }
 }
 
-fn command_data(resp: Data) -> Result<serde_json::Value, String> {
-    match resp {
-        Data::CommandResponse {
-            data: Some(data), ..
-        } => Ok(data),
-        Data::CommandResponse { data: None, .. } => Ok(serde_json::Value::Null),
-        other => Err(format!("unexpected service response: {:?}", other)),
-    }
+fn command_data(resp: Data) -> Result<serde_json::Value, crate::control::CommandFailure> {
+    crate::control::decode_command_data(resp)
 }
 
-fn command_message(resp: Data) -> Result<serde_json::Value, String> {
-    match resp {
-        Data::CommandResponse { message, .. } => Ok(serde_json::json!(message)),
-        other => Err(format!("unexpected service response: {:?}", other)),
-    }
+fn command_message(resp: Data) -> Result<serde_json::Value, crate::control::CommandFailure> {
+    crate::control::decode_command_message(resp).map(serde_json::Value::String)
 }
 
 fn web_status_value(state: &WebAdminState) -> serde_json::Value {
@@ -1666,7 +1717,9 @@ fn web_status_value(state: &WebAdminState) -> serde_json::Value {
     serde_json::to_value(status).unwrap_or(serde_json::Value::Null)
 }
 
-async fn web_settings_value(state: &WebAdminState) -> Result<serde_json::Value, String> {
+async fn web_settings_value(
+    state: &WebAdminState,
+) -> Result<serde_json::Value, crate::control::CommandFailure> {
     let data = command_data(dispatch_web_data(Data::GetLoginPreferences, state).await?)?;
     Ok(serde_json::json!({
         "auto_start": data.get("auto_start").and_then(|value| value.as_bool()).unwrap_or(false),
@@ -1702,7 +1755,7 @@ fn set_service_auto_start_type(enabled: bool) -> anyhow::Result<()> {
 async fn set_web_auto_start(
     enabled: bool,
     state: &WebAdminState,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, crate::control::CommandFailure> {
     #[cfg(target_os = "linux")]
     return dispatch_web_data(Data::SetAutoStartConfig { enabled }, state)
         .await
@@ -1855,6 +1908,43 @@ fn web_origin_allowed(headers: &HeaderMap) -> bool {
 mod tests {
     use super::*;
     use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn setting_commands_reject_missing_or_wrong_boolean_arguments() {
+        for args in [
+            serde_json::json!({"targetDeviceId": 42}),
+            serde_json::json!({"targetDeviceId": 42, "enabled": "false"}),
+        ] {
+            assert!(command_args::<SetAutoKeepArgs>(args).is_err());
+        }
+        let args: SetAutoKeepArgs =
+            command_args(serde_json::json!({"target_device_id": 42, "enabled": false})).unwrap();
+        assert!(!args.enabled);
+        assert_eq!(args.target_device_id, 42);
+        assert!(command_args::<LanAccessArgs>(
+            serde_json::json!({"enabled": false, "cidrs": [42]})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn browser_response_preserves_structured_service_errors() {
+        let error = command_data(Data::CommandResponse {
+            ok: false,
+            message: "diagnostic may change".into(),
+            error: Some(crate::control::CommandError::new(
+                "NETWORK_DNS_FAILED",
+                true,
+            )),
+            status: None,
+            data: None,
+        })
+        .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({"code": "NETWORK_DNS_FAILED", "retryable": true})
+        );
+    }
 
     fn headers_with_origin(origin: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();

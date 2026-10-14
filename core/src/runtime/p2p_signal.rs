@@ -169,6 +169,10 @@ pub(super) async fn handle_p2p_notify(
                     attempt_id: attempt_id.clone(),
                 },
             );
+            if let Err(error) = disable_auto_keep_for_passive(shared, source_device_id).await {
+                shared.lock().passive_p2p_attempts.remove(&source_device_id);
+                return Err(error);
+            }
             {
                 let mut state = shared.lock();
                 let locale = state.status.locale.clone();

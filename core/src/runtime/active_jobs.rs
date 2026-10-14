@@ -3,12 +3,10 @@
 use super::*;
 
 pub(super) fn cancel_all_active_tunnel_jobs(shared: &Arc<Mutex<SharedRuntimeState>>) {
-    let cancel_txs: Vec<watch::Sender<bool>> = shared
-        .lock()
-        .active_tunnel_job_cancels
-        .values()
-        .cloned()
-        .collect();
+    let cancel_txs: Vec<watch::Sender<bool>> = {
+        let state = shared.lock();
+        state.active_tunnel_job_cancels.values().cloned().collect()
+    };
     for tx in cancel_txs {
         let _ = tx.send(true);
     }
@@ -73,8 +71,73 @@ pub(super) fn start_active_tunnel_job(
     temporary_password: Option<String>,
     lan_cidrs: Vec<String>,
 ) -> Option<Data> {
+    launch_active_tunnel_job(
+        shared,
+        peer_device_id,
+        peer_device_uuid,
+        connect_code,
+        temporary_password,
+        lan_cidrs,
+        ActiveTunnelJobOrigin::Manual,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ActiveTunnelJobOrigin {
+    Manual,
+    AutoKeep,
+}
+
+pub(super) fn start_auto_keep_tunnel_job(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    peer_device_id: i64,
+    peer_device_uuid: String,
+    lan_cidrs: Vec<String>,
+) -> Option<Data> {
+    launch_active_tunnel_job(
+        shared,
+        peer_device_id,
+        peer_device_uuid,
+        None,
+        None,
+        lan_cidrs,
+        ActiveTunnelJobOrigin::AutoKeep,
+    )
+}
+
+fn launch_active_tunnel_job(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    peer_device_id: i64,
+    peer_device_uuid: String,
+    connect_code: Option<String>,
+    temporary_password: Option<String>,
+    lan_cidrs: Vec<String>,
+    origin: ActiveTunnelJobOrigin,
+) -> Option<Data> {
     {
         let mut state = shared.lock();
+        if state.shutdown_requested {
+            return Some(cmd_response(
+                false,
+                "service session unavailable",
+                Some(state.status.clone()),
+            ));
+        }
+        if matches!(origin, ActiveTunnelJobOrigin::AutoKeep)
+            && (!state.active_tunnel_job_cancels.is_empty()
+                || !state.status.logged_in
+                || !state.status.ws_connected
+                || has_passive_tunnel(&state, peer_device_id)
+                || !state.auto_keep_settings.iter().any(|setting| {
+                    setting.target_device_id == peer_device_id && !setting.paused_remote_stop
+                }))
+        {
+            return Some(cmd_response(
+                false,
+                "auto keep target is no longer ready",
+                None,
+            ));
+        }
         let Some(ws_client) = state.ws_client.clone() else {
             return Some(cmd_response(
                 false,
@@ -107,6 +170,12 @@ pub(super) fn start_active_tunnel_job(
         state
             .active_tunnel_job_cancels
             .insert(peer_device_id, cancel_tx);
+        if matches!(origin, ActiveTunnelJobOrigin::AutoKeep) {
+            note_auto_keep_job_started(&mut state, peer_device_id, now_ts());
+            if let Some(tx) = &state.status_tx {
+                let _ = tx.send(state.status.clone());
+            }
+        }
         drop(state);
 
         spawn_active_tunnel_job_task(
@@ -141,6 +210,12 @@ pub(super) fn spawn_active_tunnel_job_task(
     let shared_for_task = shared.clone();
     let target_uuid_for_task = peer_device_uuid.clone();
     tokio::spawn(async move {
+        // Keep the slot until the task has finished native cleanup and reporting.
+        // A cancellation request or terminal display status is not task completion.
+        let _slot = ActiveTunnelJobSlot {
+            shared: shared_for_task.clone(),
+            peer_device_id,
+        };
         let mut last_message = String::new();
         let mut last_attempt = 0;
         let mut last_attempt_id = String::new();
@@ -150,7 +225,7 @@ pub(super) fn spawn_active_tunnel_job_task(
         let mut last_source_nat = String::new();
         let mut last_target_nat = String::new();
         let mut last_network = String::new();
-        let config = match load_machine_config() {
+        let mut config = match load_machine_config() {
             Ok(config) => config,
             Err(err) => {
                 publish_active_tunnel_job_failed(
@@ -160,13 +235,12 @@ pub(super) fn spawn_active_tunnel_job_task(
                     0,
                     err.to_string(),
                 );
-                shared_for_task
-                    .lock()
-                    .active_tunnel_job_cancels
-                    .remove(&peer_device_id);
                 return;
             }
         };
+        let preferences = shared_for_task.lock().connection_preferences;
+        config.prefer_ipv6 = preferences.prefer_ipv6;
+        config.prefer_tcp = preferences.prefer_tcp;
         let client_job_id = build_punch_token(&format!(
             "job-{}-{}-{}",
             peer_device_id,
@@ -192,10 +266,6 @@ pub(super) fn spawn_active_tunnel_job_task(
                     0,
                     err.to_string(),
                 );
-                shared_for_task
-                    .lock()
-                    .active_tunnel_job_cancels
-                    .remove(&peer_device_id);
                 return;
             }
         };
@@ -424,10 +494,6 @@ pub(super) fn spawn_active_tunnel_job_task(
                             "missing_peer_virtual_ip",
                         );
                     }
-                    shared_for_task
-                        .lock()
-                        .active_tunnel_job_cancels
-                        .remove(&peer_device_id);
                     let _ = crate::p2p::close_active_p2p_job_with_nat(
                         &config,
                         &opened,
@@ -557,10 +623,6 @@ pub(super) fn spawn_active_tunnel_job_task(
                 updated_at: now_ts(),
             },
         );
-        shared_for_task
-            .lock()
-            .active_tunnel_job_cancels
-            .remove(&peer_device_id);
         let error_code = classify_tunnel_error_code(&last_message).to_string();
         let _ = crate::p2p::close_active_p2p_job_with_nat(
             &config,
@@ -847,6 +909,20 @@ pub(super) fn publish_active_tunnel_job_failed(
     );
 }
 
+struct ActiveTunnelJobSlot {
+    shared: Arc<Mutex<SharedRuntimeState>>,
+    peer_device_id: i64,
+}
+
+impl Drop for ActiveTunnelJobSlot {
+    fn drop(&mut self) {
+        self.shared
+            .lock()
+            .active_tunnel_job_cancels
+            .remove(&self.peer_device_id);
+    }
+}
+
 pub(super) fn publish_active_tunnel_job_cancelled(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
@@ -869,10 +945,6 @@ pub(super) fn publish_active_tunnel_job_cancelled(
             updated_at: now_ts(),
         },
     );
-    shared
-        .lock()
-        .active_tunnel_job_cancels
-        .remove(&peer_device_id);
 }
 
 pub(super) fn stop_active_tunnel_job(
@@ -898,6 +970,81 @@ pub(super) fn stop_active_tunnel_job(
             "active tunnel job not found",
             Some(shared.lock().status.clone()),
         )),
+    }
+}
+
+/// Complete the stop before acknowledging it; callers decide whether to start again.
+pub(super) async fn stop_active_tunnel(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    peer_device_id: i64,
+) -> Option<Data> {
+    let task = shared
+        .lock()
+        .active_tunnel_job_cancels
+        .get(&peer_device_id)
+        .cloned();
+    if let Some(task) = task {
+        let _ = task.send(true);
+        task.closed().await;
+    }
+    let mut response = stop_wgvpn_job(shared, peer_device_id).await;
+    if let Some(Data::CommandResponse {
+        ok: true, status, ..
+    }) = &mut response
+    {
+        clear_active_tunnel_job_status(shared, peer_device_id);
+        *status = Some(shared.lock().status.clone());
+    }
+    response
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn auto_keep_rechecks_readiness_when_claiming_the_job_slot() {
+        let shared = Arc::new(Mutex::new(SharedRuntimeState::default()));
+        {
+            let mut state = shared.lock();
+            state.status.logged_in = true;
+            state.status.ws_connected = true;
+        }
+        assert!(
+            matches!(start_auto_keep_tunnel_job(&shared, 42, "peer".into(), Vec::new()),
+            Some(Data::CommandResponse { ok: false, message, .. }) if message == "auto keep target is no longer ready")
+        );
+        assert!(shared.lock().active_tunnel_job_cancels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_task_completion_after_cancellation() {
+        let (old_job, mut old_receiver) = watch::channel(false);
+        let shared = Arc::new(Mutex::new(SharedRuntimeState::default()));
+        {
+            let mut state = shared.lock();
+            state.status.logged_in = true;
+            state.active_tunnel_job_cancels.insert(42, old_job);
+        }
+        let shared_for_stop = shared.clone();
+        let stop = tokio::spawn(async move { stop_active_tunnel(&shared_for_stop, 42).await });
+        tokio::time::timeout(Duration::from_secs(1), old_receiver.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(*old_receiver.borrow());
+        let slot = ActiveTunnelJobSlot {
+            shared: shared.clone(),
+            peer_device_id: 42,
+        };
+        publish_active_tunnel_job_cancelled(&shared, 42, "peer".into());
+        tokio::task::yield_now().await;
+        assert!(!stop.is_finished());
+        assert!(shared.lock().active_tunnel_job_cancels.contains_key(&42));
+        stop.abort();
+        let _ = stop.await;
+        drop(slot);
+        assert!(!shared.lock().active_tunnel_job_cancels.contains_key(&42));
     }
 }
 

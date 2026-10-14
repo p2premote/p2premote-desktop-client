@@ -1,5 +1,5 @@
 use crate::auth_http::{send_authed, AuthedResponse};
-use crate::config::{save_machine_config, MachineConfig};
+use crate::config::MachineConfig;
 use crate::http::{shared_client, ApiResponse};
 use crate::i18n::localized_message;
 use crate::wol::WOLCapability;
@@ -294,7 +294,9 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
 
     if crate::device_identity::ensure_device_uuid(config) {
         // 设备身份必须先落盘再发起网络注册，避免响应丢失后生成另一个 UUID。
-        crate::config::save_machine_config(config)?;
+        crate::config::update_machine_state(|state| {
+            state.device_uuid = config.device_uuid.clone()
+        })?;
     }
     let device_uuid = config
         .device_uuid
@@ -348,7 +350,10 @@ pub async fn register_current_device_auto(config: &mut MachineConfig) -> Result<
 
     config.device_id = Some(device.device_id);
     config.device_uuid = Some(device.device_uuid.clone());
-    save_machine_config(config)?;
+    crate::config::update_machine_state(|state| {
+        state.device_id = config.device_id;
+        state.device_uuid = config.device_uuid.clone();
+    })?;
     Ok(device)
 }
 
@@ -1009,7 +1014,11 @@ pub async fn refresh_public_network_info(
         config.cached_public_ip_location =
             (!result.location.is_empty()).then(|| result.location.clone());
         config.cached_public_network_checked_at = now;
-        if let Err(error) = save_machine_config(config) {
+        if let Err(error) = crate::config::update_machine_state(|state| {
+            state.cached_public_ip = config.cached_public_ip.clone();
+            state.cached_public_ip_location = config.cached_public_ip_location.clone();
+            state.cached_public_network_checked_at = config.cached_public_network_checked_at;
+        }) {
             debug!(
                 "[PublicNetwork] failed to persist current network info: {}",
                 error

@@ -114,7 +114,8 @@ static SESSIONS: Lazy<Mutex<HashMap<String, Arc<Session>>>> =
 /// report. Entries are consumed by take_plan when the job reports its result;
 /// the registry is bounded so a crash between punch and report cannot grow it
 /// without limit.
-static PLANS: Lazy<Mutex<HashMap<String, PlanRecord>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static PLANS: Lazy<Mutex<HashMap<String, (std::time::Instant, PlanRecord)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Default, Clone)]
 struct PlanRecord {
@@ -146,13 +147,29 @@ pub fn udp4_nat(evidence: &[NatEvidence]) -> String {
         .unwrap_or_default()
 }
 
+fn plan_entry<'a>(
+    plans: &'a mut HashMap<String, (std::time::Instant, PlanRecord)>,
+    attempt: &str,
+) -> &'a mut PlanRecord {
+    if plans.len() >= 512 && !plans.contains_key(attempt) {
+        if let Some(oldest) = plans
+            .iter()
+            .min_by_key(|(_, (created, _))| *created)
+            .map(|(key, _)| key.clone())
+        {
+            tracing::warn!(attempt = %oldest, "traversal plan registry full; evicting oldest report");
+            plans.remove(&oldest);
+        }
+    }
+    &mut plans
+        .entry(attempt.to_string())
+        .or_insert_with(|| (std::time::Instant::now(), PlanRecord::default()))
+        .1
+}
+
 fn record_plan(attempt: &str, proposed: Option<String>, acknowledged: Option<String>) {
     let mut plans = PLANS.lock();
-    if plans.len() >= 512 {
-        tracing::warn!("traversal plan registry overflow; clearing stale entries");
-        plans.clear();
-    }
-    let entry = plans.entry(attempt.to_string()).or_default();
+    let entry = plan_entry(&mut plans, attempt);
     if let Some(value) = proposed {
         entry.proposed = value;
     }
@@ -162,17 +179,17 @@ fn record_plan(attempt: &str, proposed: Option<String>, acknowledged: Option<Str
 }
 
 fn record_evidence_nat(attempt: &str, local: String, remote: String) {
-    if let Some(entry) = PLANS.lock().get_mut(attempt) {
-        entry.local_nat = local;
-        entry.remote_nat = remote;
-    }
+    let mut plans = PLANS.lock();
+    let entry = plan_entry(&mut plans, attempt);
+    entry.local_nat = local;
+    entry.remote_nat = remote;
 }
 
 /// Take the negotiated plan and evidence NAT for the server-side p2p/end
 /// report; consumes the record.
 pub fn take_plan(attempt: &str) -> NegotiatedReport {
     match PLANS.lock().remove(attempt) {
-        Some(record) => NegotiatedReport {
+        Some((_, record)) => NegotiatedReport {
             plan: record.proposed,
             selection: record.acknowledged,
             local_nat: record.local_nat,
@@ -509,6 +526,32 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_lan_budget_vectors_match_android() {
+        #[derive(Deserialize)]
+        struct BudgetCase {
+            local: Option<u64>,
+            remote: Option<u64>,
+            expected: Option<u64>,
+        }
+        #[derive(Deserialize)]
+        struct Vectors {
+            budget_cases: Vec<BudgetCase>,
+        }
+        let vectors: Vectors = serde_json::from_str(include_str!(
+            "../../../p2premote-punch-rs/testdata/traversal-policy-v2.json"
+        ))
+        .unwrap();
+        for case in vectors.budget_cases {
+            match case.expected {
+                Some(expected) => assert_eq!(
+                    negotiate_lan_probe_budget(case.local, case.remote).unwrap(),
+                    expected
+                ),
+                None => assert!(negotiate_lan_probe_budget(case.local, case.remote).is_err()),
+            }
+        }
+    }
     fn session() -> Session {
         let (tx, rx) = mpsc::channel(64);
         Session {
@@ -571,6 +614,37 @@ mod tests {
         );
         assert_eq!(udp4_nat(&[nat("udp4", "unknown")]), "");
         assert_eq!(udp4_nat(&[]), "");
+    }
+
+    #[test]
+    fn evidence_written_before_plan_survives_report_collection() {
+        let attempt = uuid::Uuid::new_v4().to_string();
+        record_evidence_nat(&attempt, "easy".into(), "symm".into());
+        record_plan(&attempt, Some("udp4".into()), Some("udp4".into()));
+        let report = take_plan(&attempt);
+        assert_eq!(report.local_nat, "easy");
+        assert_eq!(report.remote_nat, "symm");
+        assert_eq!(report.plan, "udp4");
+        assert_eq!(report.selection, "udp4");
+        assert_eq!(take_plan(&attempt).plan, "");
+    }
+
+    #[test]
+    fn report_capacity_evicts_only_the_oldest_new_entry() {
+        let now = std::time::Instant::now();
+        let mut reports = HashMap::new();
+        for index in 0..512 {
+            reports.insert(
+                format!("attempt-{index}"),
+                (now + Duration::from_secs(index), PlanRecord::default()),
+            );
+        }
+        plan_entry(&mut reports, "attempt-511").proposed = "udp4".into();
+        assert_eq!(reports.len(), 512);
+        plan_entry(&mut reports, "new").local_nat = "easy".into();
+        assert_eq!(reports.len(), 512);
+        assert!(!reports.contains_key("attempt-0"));
+        assert_eq!(reports["attempt-511"].1.proposed, "udp4");
     }
     #[test]
     fn capability_address_family_is_optional_and_boolean() {

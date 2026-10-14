@@ -109,17 +109,10 @@ export interface AutoKeepStatus {
     | 'active'
     | 'waiting_network'
     | 'waiting_peer_online'
-    | 'paused_membership'
-    | 'paused_logout'
     | 'paused_remote_stop'
-    | 'blocked'
     | 'stopped'
-  revision: number
-  eligible: boolean
-  ineligible_reason?: string | null
   last_trigger?: string | null
   stop_reason?: string | null
-  error_code?: string | null
   next_retry_at?: number | null
   updated_at: number
 }

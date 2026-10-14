@@ -169,13 +169,10 @@
 						<div class="auto-keep-copy">
 						  <div class="auto-keep-title-row">
 							<strong>{{ $t('devices.auto_keep.title') }}</strong>
-							<el-tag v-if="!isProMember" size="small" type="warning">Pro</el-tag>
-							<span v-if="autoKeepStatus(selectedDevice)?.state === 'paused_membership'" class="auto-keep-paused">
-							  {{ $t('devices.auto_keep.paused') }}
-							</span>
+							<el-tag v-if="!isProMember && !autoKeepEnabled(selectedDevice)" size="small" type="warning">Pro</el-tag>
 						  </div>
 						  <p>{{ autoKeepDescription(selectedDevice) }}</p>
-						  <p v-if="!isProMember" class="auto-keep-pro-hint">
+						  <p v-if="!isProMember && !autoKeepEnabled(selectedDevice)" class="auto-keep-pro-hint">
 							{{ $t('devices.auto_keep.pro_required') }}
 							<a href="#" @click.prevent="openMembershipPage">{{ $t('devices.auto_keep.upgrade') }}</a>
 						  </p>
@@ -404,10 +401,10 @@
           :disabled="disconnectAutoKeepCheckboxDisabled || disconnectDialogSubmitting"
         >
           {{ $t('devices.auto_keep.title') }}
-          <el-tag v-if="!isProMember" size="small" type="warning">Pro</el-tag>
+          <el-tag v-if="!isProMember && !disconnectAutoKeepDraft" size="small" type="warning">Pro</el-tag>
         </el-checkbox>
         <p>{{ disconnectAutoKeepDraft ? $t('devices.auto_keep.disconnect_enabled') : $t('devices.auto_keep.disconnect_disabled') }}</p>
-        <p v-if="!isProMember" class="auto-keep-pro-hint">
+        <p v-if="!isProMember && !disconnectAutoKeepDraft" class="auto-keep-pro-hint">
           {{ $t('devices.auto_keep.pro_required') }}
           <a href="#" @click.prevent="openMembershipFromDisconnect">{{ $t('devices.auto_keep.upgrade') }}</a>
         </p>
@@ -444,8 +441,9 @@ import {
 import mstscIcon from '../assets/icons/mstsc.png'
 import rustdeskTinyIcon from '../assets/icons/rustdesk-tiny.png'
 import { useDeviceStore, type DeviceInfo } from '../stores/device'
-import { errorMessage } from '../utils/errorMessage'
+import { businessErrorMessage, errorMessage } from '../utils/errorMessage'
 import { copyTextToClipboard } from '../utils/clipboard'
+import { stopTunnelForRetry } from '../utils/tunnelRetry'
 import type { AutoKeepStatus, TunnelJobStatus, TunnelLifecycleStatus } from '../types/api'
 import { useAuthStore } from '../stores/auth'
 import DevicePlatformIcon from '../components/DevicePlatformIcon.vue'
@@ -504,7 +502,7 @@ const selectedDisconnecting = computed(() => (
 ))
 const isProMember = computed(() => Boolean(authStore.userInfo?.is_pro))
 const disconnectAutoKeepCheckboxDisabled = computed(() => (
-  !isProMember.value && !disconnectAutoKeepDraft.value
+  !disconnectAutoKeepDraft.value && (!isProMember.value || !disconnectDialogDevice.value || !canEnableAutoKeep(disconnectDialogDevice.value))
 ))
 const disconnectDialogConfirmText = computed(() => (
   disconnectDialogRole.value === 'active' && disconnectAutoKeepDraft.value
@@ -613,16 +611,21 @@ function showImmediateRebuild(device: DeviceInfo | null): boolean {
 
 function autoKeepSwitchDisabled(device: DeviceInfo | null): boolean {
   if (!device || autoKeepSavingIds.has(device.device_id)) return true
+  if (!autoKeepEnabled(device) && !canEnableAutoKeep(device)) return true
   return !isProMember.value && !autoKeepEnabled(device)
+}
+
+function canEnableAutoKeep(device: DeviceInfo): boolean {
+  const lifecycle = deviceTunnelLifecycle(device)
+  return lifecycle.role === 'active' && lifecycle.state === 'connected'
 }
 
 function autoKeepDescription(device: DeviceInfo | null): string {
   const status = autoKeepStatus(device)
   if (status?.state === 'waiting_network') return t('devices.auto_keep.waiting_network')
   if (status?.state === 'waiting_peer_online') return t('devices.auto_keep.waiting_peer')
-  if (status?.state === 'paused_membership') return t('devices.auto_keep.paused_membership')
   if (status?.state === 'paused_remote_stop') return t('devices.auto_keep.paused_remote_stop')
-  if (status?.state === 'blocked') return t('devices.auto_keep.blocked')
+  if (device && !autoKeepEnabled(device) && !canEnableAutoKeep(device)) return t('devices.auto_keep.active_side_required')
   return t('devices.auto_keep.description')
 }
 
@@ -649,19 +652,18 @@ async function refreshAutoKeepStatuses() {
 
 async function handleAutoKeepChange(device: DeviceInfo, enabled: boolean) {
   if (autoKeepSavingIds.has(device.device_id)) return
-  const previous = autoKeepStatus(device)
   autoKeepSavingIds.add(device.device_id)
   try {
     const status = await invoke<AutoKeepStatus>('set_auto_keep', {
       targetDeviceId: device.device_id,
       enabled,
-      expectedRevision: previous?.revision || null,
     })
     autoKeepStatusMap.value = { ...autoKeepStatusMap.value, [device.device_id]: status }
     ElMessage.success(enabled ? t('devices.auto_keep.enabled') : t('devices.auto_keep.disabled'))
   } catch (error) {
+    console.error('[Devices] saving auto keep setting failed:', error)
     ElMessage.error(t('devices.auto_keep.save_failed', {
-      error: errorMessage(error, t('common.unknown_error')),
+      error: businessErrorMessage(error, t('common.unknown_error')),
     }))
   } finally {
     autoKeepSavingIds.delete(device.device_id)
@@ -959,8 +961,9 @@ function selectDevice(device: DeviceInfo) {
 async function refreshDevices(options: { force?: boolean } = {}) {
   try {
     await deviceStore.fetchDevices(options)
-    await alignCurrentDeviceUUIDFromService()
-    await refreshTunnelStatusMap()
+    const serviceStatus = await invoke<any>('get_service_status')
+    applyCurrentDeviceUUIDFromRuntime(serviceStatus?.runtime)
+    applyTunnelRuntimeStatus(serviceStatus?.runtime)
   } catch (e) {
     console.error('Failed to fetch devices:', e)
   }
@@ -968,11 +971,6 @@ async function refreshDevices(options: { force?: boolean } = {}) {
 
 function isDevicesPageInForeground(): boolean {
   return document.visibilityState === 'visible' && document.hasFocus()
-}
-
-async function alignCurrentDeviceUUIDFromService() {
-  const serviceStatus = await invoke<any>('get_service_status').catch(() => null)
-  applyCurrentDeviceUUIDFromRuntime(serviceStatus?.runtime)
 }
 
 function applyCurrentDeviceUUIDFromRuntime(runtime: any) {
@@ -1012,7 +1010,7 @@ async function handleForegroundResume() {
 
 async function refreshTunnelStatusMap() {
   try {
-    const serviceStatus = await invoke<any>('get_service_status').catch(() => null)
+    const serviceStatus = await invoke<any>('get_service_status')
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
   } catch (e) {
     console.error('[Devices] 刷新隧道状态失败:', e)
@@ -1083,12 +1081,7 @@ function applyTunnelRuntimeStatus(runtime: any) {
     if (Array.isArray(runtime?.auto_keep_statuses)) {
       const next: Record<number, AutoKeepStatus> = {}
       for (const status of runtime.auto_keep_statuses as AutoKeepStatus[]) {
-        const current = autoKeepStatusMap.value[status.target_device_id]
-        if (!current || status.revision > current.revision || status.updated_at >= current.updated_at) {
-          next[status.target_device_id] = status
-        } else {
-          next[status.target_device_id] = current
-        }
+        next[status.target_device_id] = status
       }
       autoKeepStatusMap.value = next
     }
@@ -1152,22 +1145,13 @@ async function handleCancelRecoveringTunnel(device: DeviceInfo) {
   }
 }
 
-async function handleRetryTunnel(device: DeviceInfo) {
+async function handleRetryTunnel(device: DeviceInfo, disableTcp = false) {
+  if (preparingTunnelIds.value.has(device.device_id)) return
   const preparing = new Set(preparingTunnelIds.value)
   preparing.add(device.device_id)
   preparingTunnelIds.value = preparing
   try {
-    await invoke('stop_service_active_tunnel', { peerDeviceId: device.device_id })
-    // A native punch call may still be draining. Starting early would reuse
-    // the old job rather than the newly saved machine preferences.
-    const deadline = Date.now() + 150_000
-    while (true) {
-      const status = await invoke<any>('get_service_status')
-      const job = status.runtime?.active_tunnel_jobs?.find((item: TunnelJobStatus) => item.peer_device_id === device.device_id)
-      if (!job || !['running', 'waiting'].includes(job.state)) break
-      if (Date.now() >= deadline) throw new Error(t('app.settings.draining'))
-      await new Promise(resolve => window.setTimeout(resolve, 500))
-    }
+    await stopTunnelForRetry(device.device_id, disableTcp)
     await invoke<string>('start_service_active_tunnel', {
       peerDeviceId: device.device_id,
       peerDeviceUuid: device.device_uuid,
@@ -1189,11 +1173,7 @@ async function handleRetryTunnel(device: DeviceInfo) {
 }
 
 async function disableTcpAndRetry(device: DeviceInfo) {
-  try {
-    const preferences = await invoke<{ prefer_ipv6: boolean; prefer_tcp: boolean }>('get_connection_preferences')
-    await invoke('save_connection_preferences', { preferIpv6: preferences.prefer_ipv6, preferTcp: false })
-    await handleRetryTunnel(device)
-  } catch (error) { ElMessage.error(errorMessage(error, t('common.unknown_error'))) }
+  await handleRetryTunnel(device, true)
 }
 
 const SYMMETRIC_NAT_HELP_URL = 'https://www.p2premote.top/zh/docs/improve-p2p-success'
@@ -1211,7 +1191,6 @@ async function startTunnelSilently(device: DeviceInfo) {
       const resumed = await invoke<AutoKeepStatus>('set_auto_keep', {
         targetDeviceId: device.device_id,
         enabled: true,
-        expectedRevision: keepStatus.revision,
       })
       autoKeepStatusMap.value = { ...autoKeepStatusMap.value, [device.device_id]: resumed }
     }
@@ -1267,13 +1246,11 @@ async function confirmDisconnectTunnel() {
   next.add(device.device_id)
   disconnectingIds.value = next
   try {
-    const current = autoKeepStatus(device)
     const serviceStatus = disconnectDialogRole.value === 'passive'
       ? await invoke<any>('stop_service_tunnel', { sourceDeviceId: device.device_id })
       : await invoke<any>('disconnect_active_tunnel', {
           peerDeviceId: device.device_id,
           autoKeepEnabled: disconnectAutoKeepDraft.value,
-          expectedRevision: current?.revision || null,
         })
     applyTunnelRuntimeStatus(serviceStatus?.runtime)
     disconnectDialogVisible.value = false
@@ -1952,7 +1929,6 @@ async function confirmDeleteDevice(device: DeviceInfo) {
   line-height: 1.5;
 }
 .auto-keep-pro-hint a { margin-left: 4px; }
-.auto-keep-paused { color: var(--fluent-warning); font-size: 12px; }
 .disconnect-auto-keep {
   margin-top: 18px;
   padding: 14px;

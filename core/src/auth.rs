@@ -1,5 +1,5 @@
 use crate::auth_http::send_authed;
-use crate::config::{load_machine_config, save_machine_config, MachineConfig};
+use crate::config::{load_machine_config, update_machine_state, MachineConfig};
 use crate::http::{shared_client, ApiResponse};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -183,7 +183,7 @@ pub async fn login_and_persist(identifier: &str, password: &str) -> Result<AuthB
     let mut config = load_machine_config()?;
     let bundle = login(&config.server_url, identifier, password).await?;
     apply_auth_bundle(&mut config, &bundle);
-    save_machine_config(&config)?;
+    persist_auth_credentials(&config)?;
     Ok(bundle)
 }
 
@@ -217,7 +217,7 @@ pub async fn refresh_with_config(config: &mut MachineConfig) -> Result<AuthBundl
         .ok_or_else(|| anyhow!("missing refresh token"))?;
     let bundle = refresh(&config.server_url, refresh_token.as_str()).await?;
     apply_auth_bundle(config, &bundle);
-    save_machine_config(config)?;
+    persist_auth_credentials(config)?;
     Ok(bundle)
 }
 
@@ -255,6 +255,15 @@ pub fn apply_auth_bundle(config: &mut MachineConfig, bundle: &AuthBundle) {
     config.refresh_token = Some(bundle.refresh_token.clone());
     config.access_token_expires_at = Some(now + bundle.expires_in);
     config.user_email = Some(bundle.user.email.clone());
+}
+
+fn persist_auth_credentials(config: &MachineConfig) -> Result<()> {
+    update_machine_state(|state| {
+        state.auth_token = config.auth_token.clone();
+        state.refresh_token = config.refresh_token.clone();
+        state.access_token_expires_at = config.access_token_expires_at;
+        state.user_email = config.user_email.clone();
+    })
 }
 
 #[cfg(test)]
