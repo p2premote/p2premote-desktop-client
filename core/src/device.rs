@@ -28,6 +28,13 @@ fn rustdesk_tiny_executable_installed(path: &std::path::Path) -> bool {
 
 fn current_capabilities() -> Vec<String> {
     let mut capabilities = vec![CAPABILITY_STRUCTURED_TUNNEL_STOP_REASON.to_string()];
+    if crate::punch_signal::local_offer()
+        .supported
+        .iter()
+        .any(|s| s == p2premote_punch::easyp2p::signal::WS_TRANSPORT)
+    {
+        capabilities.push("punch_signal_ws_v1".into());
+    }
     #[cfg(windows)]
     {
         capabilities.push(CAPABILITY_RUSTDESK_TINY.to_string());

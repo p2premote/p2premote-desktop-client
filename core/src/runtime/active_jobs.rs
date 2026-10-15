@@ -2,6 +2,20 @@
 
 use super::*;
 
+struct AttemptWaiterRegistration {
+    shared: Arc<Mutex<SharedRuntimeState>>,
+    attempt_id: String,
+}
+
+impl Drop for AttemptWaiterRegistration {
+    fn drop(&mut self) {
+        self.shared
+            .lock()
+            .p2p_attempt_waiters
+            .remove(&self.attempt_id);
+    }
+}
+
 pub(super) fn cancel_all_active_tunnel_jobs(shared: &Arc<Mutex<SharedRuntimeState>>) {
     let cancel_txs: Vec<watch::Sender<bool>> = {
         let state = shared.lock();
@@ -661,6 +675,11 @@ pub(super) async fn start_wgvpn_active_with_notify(
         state.status.current_device.clone()
     };
 
+    let _waiter = AttemptWaiterRegistration {
+        shared: shared.clone(),
+        attempt_id: attempt_id.clone(),
+    };
+    let signal_offer = crate::punch_signal::local_offer();
     let start_message = P2PAttemptMessage::AttemptStart {
         protocol_version: 1,
         client_job_id: client_job_id.to_string(),
@@ -685,6 +704,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
                 prefer_tcp: config.prefer_tcp,
             },
         }),
+        signal_transport: Some(signal_offer.clone()),
     };
     if let Err(err) = send_p2p_attempt_message(
         ws_client,
@@ -695,30 +715,32 @@ pub(super) async fn start_wgvpn_active_with_notify(
     )
     .await
     {
-        shared.lock().p2p_attempt_waiters.remove(&attempt_id);
         return Err(anyhow!("notify_failed: {}", err));
     }
 
     let ready = tokio::time::timeout(Duration::from_secs(30), event_rx.recv()).await;
-    let (rdp_port, approval_required, traversal_negotiation) = match ready {
+    let (rdp_port, approval_required, traversal_negotiation, signal_transport) = match ready {
         Ok(Some(P2PAttemptEvent::Ready {
             rdp_port,
             approval_required,
             traversal_negotiation,
-        })) => (rdp_port, approval_required, traversal_negotiation),
+            signal_transport,
+        })) => (
+            rdp_port,
+            approval_required,
+            traversal_negotiation,
+            signal_transport,
+        ),
         Ok(Some(P2PAttemptEvent::Failed {
             error_code,
             message,
         })) => {
-            shared.lock().p2p_attempt_waiters.remove(&attempt_id);
             return Err(anyhow!("{}: {}", error_code, message));
         }
         Ok(Some(P2PAttemptEvent::Cancelled)) => {
-            shared.lock().p2p_attempt_waiters.remove(&attempt_id);
             return Err(anyhow!("peer_cancelled"));
         }
         _ => {
-            shared.lock().p2p_attempt_waiters.remove(&attempt_id);
             let _ = send_p2p_attempt_message(
                 ws_client,
                 opened.connection_id.clone(),
@@ -735,6 +757,9 @@ pub(super) async fn start_wgvpn_active_with_notify(
         }
     };
 
+    let use_ws_signal = signal_offer
+        .validate_selection(signal_transport.as_ref(), traversal_negotiation.is_some())
+        .map_err(|e| anyhow!(e.to_string()))?;
     if let Some(negotiation) = traversal_negotiation {
         negotiation.validate()?;
         if negotiation.preferences
@@ -745,7 +770,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
         {
             return Err(anyhow!("traversal_preference_mismatch"));
         }
-        crate::traversal::register(
+        crate::traversal::register_with_signal(
             punch_token.clone(),
             attempt_id.clone(),
             opened.connection_id.clone(),
@@ -754,6 +779,15 @@ pub(super) async fn start_wgvpn_active_with_notify(
             ws_client.clone(),
             true,
             negotiation,
+            if use_ws_signal {
+                Some(
+                    config
+                        .device_id
+                        .ok_or_else(|| anyhow!("missing_signal_device_id"))?,
+                )
+            } else {
+                None
+            },
         )?;
     }
     let blocking_config = config.clone();
@@ -829,7 +863,6 @@ pub(super) async fn start_wgvpn_active_with_notify(
             await_active_inbound_approval(&mut event_rx, approval_signal_received).await?;
         }
     }
-    shared.lock().p2p_attempt_waiters.remove(&attempt_id);
     let target_remote_port = if rdp_port == 0 {
         opened.target_remote_access.port.max(opened.target_rdp_port)
     } else {

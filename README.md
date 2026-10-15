@@ -63,9 +63,17 @@ The GUI communicates with the background service through Windows named pipes or 
 | --- | --- | --- |
 | `cli.p2premote.top` | 443/TCP | Server APIs for account authentication, device management, and connection signaling |
 | `www.p2premote.top` | 443/TCP | Update checks and website navigation |
-| Public MQTT brokers (HiveMQ, EMQX, Mosquitto, and `mqtt.gonc.cc`) | 1883/TCP | Exchange WireGuard public keys and tunnel parameters with the peer over an encrypted channel during connection setup. Override the server list with `P2PREMOTE_MQTT_BROKERS` |
+| Public MQTT brokers (HiveMQ, EMQX, Mosquitto, and `mqtt.gonc.cc`) | 1883/TCP | Legacy peer compatibility in the 1.14 transition build. Capable peers exchange encrypted configuration and punch signals over the existing server WebSocket. Override the legacy broker list with `P2PREMOTE_MQTT_BROKERS` |
 | STUN servers (`stun.gonc.cc`, `stun.hitv.com`, Cloudflare, Google, and Twilio) | UDP 3478 / 19302, TCP 80, UDP 53 | Detect the NAT type and discover the public address. Override the server list with `P2PREMOTE_STUN_SERVERS` |
 | Peer public address | Dynamic UDP (TCP fallback) | Transfer data through the AES-encrypted outer tunnel after successful hole punching |
+
+The transition client negotiates `ws-v1` or `mqtt-legacy` for each attempt before
+configuration exchange. Missing fields from older clients retain MQTT behavior.
+There is no automatic MQTT fallback after WebSocket selection. To diagnose a
+regression, start the service with `P2PREMOTE_SIGNAL_TRANSPORT=mqtt`; this affects
+new attempts only. WebSocket delivery uses the existing server queue ACK and the
+original exchange responses, without a separate peer ACK. MQTT remains required
+when connecting to legacy peers; minimum-version policy is unchanged.
 
 Once the tunnel is established, the local client can initiate connections to services on the peer's virtual IP address (in the `100.99.71.0/24` subnet):
 

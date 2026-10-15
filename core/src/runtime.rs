@@ -224,6 +224,7 @@ enum P2PAttemptEvent {
         rdp_port: u16,
         approval_required: bool,
         traversal_negotiation: Option<crate::traversal_policy::Negotiation>,
+        signal_transport: Option<p2premote_punch::easyp2p::signal::TransportSelection>,
     },
     ApprovalRequired,
     ApprovalGranted,
@@ -258,6 +259,12 @@ enum P2PAttemptMessage {
         source_device_alias: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         traversal_negotiation: Option<crate::traversal_policy::Negotiation>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "p2premote_punch::easyp2p::signal::deserialize_offer"
+        )]
+        signal_transport: Option<p2premote_punch::easyp2p::signal::TransportOffer>,
     },
     AttemptReady {
         protocol_version: u8,
@@ -269,6 +276,16 @@ enum P2PAttemptMessage {
         approval_required: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         traversal_negotiation: Option<crate::traversal_policy::Negotiation>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "p2premote_punch::easyp2p::signal::deserialize_selection"
+        )]
+        signal_transport: Option<p2premote_punch::easyp2p::signal::TransportSelection>,
+    },
+    PunchSignal {
+        #[serde(flatten)]
+        frame: p2premote_punch::easyp2p::signal::SignalFrame,
     },
     Traversal {
         attempt_id: String,
@@ -689,6 +706,7 @@ pub async fn run_service_foreground() -> Result<()> {
                         }
                         WsEvent::Disconnected => {
                             info!("[ServiceRuntime] WebSocket disconnected");
+                            if !ws_client.is_connected().await { crate::traversal::cancel_ws_sessions(); }
                             update_status(&shared, |s| {
                                 s.ws_connected = false;
                             });
@@ -1305,6 +1323,7 @@ mod tests {
             source_device_name: "Living Room PC".to_string(),
             source_device_alias: "客厅电脑".to_string(),
             traversal_negotiation: None,
+            signal_transport: None,
         };
 
         let encoded = serde_json::to_string(&message).expect("serialize attempt start");
@@ -1322,6 +1341,28 @@ mod tests {
             }
             _ => panic!("expected attempt_start"),
         }
+    }
+
+    #[test]
+    fn legacy_ready_omits_transport_and_explicit_null_is_rejected() {
+        let legacy = r#"{"type":"attempt_ready","protocol_version":1,"attempt_id":"a","stage":"ready","rdp_enabled":false,"rdp_port":3389}"#;
+        assert!(matches!(
+            serde_json::from_str::<P2PAttemptMessage>(legacy).unwrap(),
+            P2PAttemptMessage::AttemptReady {
+                signal_transport: None,
+                ..
+            }
+        ));
+        let explicit = legacy.trim_end_matches('}').to_owned() + ",\"signal_transport\":null}";
+        assert!(serde_json::from_str::<P2PAttemptMessage>(&explicit).is_err());
+    }
+
+    #[test]
+    fn native_signal_dispatch_uses_flat_wire_frame() {
+        let json = r#"{"type":"punch_signal","version":1,"attempt_id":"a","call_id":"network/1","channel":"addresses","step":0,"message_id":"m","packet":{"nonce":"n","data":"d"}}"#;
+        assert!(
+            matches!(serde_json::from_str::<P2PAttemptMessage>(json).unwrap(), P2PAttemptMessage::PunchSignal { frame } if frame.call_id == "network/1" && frame.channel == "addresses")
+        );
     }
 
     #[test]

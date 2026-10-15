@@ -211,6 +211,8 @@ pub struct Session {
     rx: tokio::sync::Mutex<mpsc::Receiver<Frame>>,
     cancelled: AtomicBool,
     wake: Notify,
+    signal: Option<Arc<p2premote_punch::easyp2p::signal::ExternalSignalSession>>,
+    ws_generation: u64,
 }
 
 pub fn register(
@@ -223,7 +225,53 @@ pub fn register(
     active: bool,
     negotiation: Negotiation,
 ) -> Result<()> {
+    register_with_signal(
+        token,
+        attempt_id,
+        connection_id,
+        peer,
+        grant,
+        ws,
+        active,
+        negotiation,
+        None,
+    )
+}
+
+pub fn register_with_signal(
+    token: String,
+    attempt_id: String,
+    connection_id: String,
+    peer: i64,
+    grant: String,
+    ws: ServiceWsClient,
+    active: bool,
+    negotiation: Negotiation,
+    signal_local_device: Option<i64>,
+) -> Result<()> {
     negotiation.validate()?;
+    let ws_generation = ws.generation();
+    let signal = match signal_local_device {
+        Some(local) => {
+            let session = crate::punch_signal::create_session(
+                ws.clone(),
+                connection_id.clone(),
+                attempt_id.clone(),
+                local,
+                peer,
+                grant.clone(),
+            )?;
+            session
+                .register_call(
+                    "wg-config",
+                    &format!("{token}-kx"),
+                    Duration::from_secs(120),
+                )
+                .map_err(|e| anyhow!(e.to_string()))?;
+            Some(session)
+        }
+        None => None,
+    };
     let (tx, rx) = mpsc::channel(64);
     let mut sessions = SESSIONS.lock();
     if sessions
@@ -246,6 +294,8 @@ pub fn register(
             rx: tokio::sync::Mutex::new(rx),
             cancelled: AtomicBool::new(false),
             wake: Notify::new(),
+            signal,
+            ws_generation,
         }),
     );
     Ok(())
@@ -255,25 +305,64 @@ pub fn lookup(token: &str) -> Option<Arc<Session>> {
     SESSIONS.lock().get(token).cloned()
 }
 pub fn remove(token: &str) {
-    SESSIONS.lock().remove(token);
+    if let Some(session) = SESSIONS.lock().remove(token) {
+        session.cancel_signal();
+    }
 }
 pub fn cancel_token(token: &str) {
     if let Some(session) = lookup(token) {
         session.cancelled.store(true, Ordering::Release);
         session.wake.notify_one();
+        session.cancel_signal();
     }
 }
 pub fn cancel(attempt: &str) {
     for session in SESSIONS.lock().values().filter(|s| s.attempt_id == attempt) {
         session.cancelled.store(true, Ordering::Release);
         session.wake.notify_one();
+        session.cancel_signal();
     }
 }
 pub fn cancel_peer(peer: i64) {
     for session in SESSIONS.lock().values().filter(|s| s.peer == peer) {
         session.cancelled.store(true, Ordering::Release);
         session.wake.notify_one();
+        session.cancel_signal();
     }
+}
+
+pub fn cancel_ws_sessions() {
+    for session in SESSIONS.lock().values().filter(|s| s.signal.is_some()) {
+        session.cancelled.store(true, Ordering::Release);
+        session.wake.notify_one();
+        session.cancel_signal();
+    }
+}
+
+pub fn deliver_signal(
+    connection: &str,
+    peer: i64,
+    generation: u64,
+    frame: p2premote_punch::easyp2p::signal::SignalFrame,
+) -> Result<()> {
+    let session = SESSIONS
+        .lock()
+        .values()
+        .find(|s| {
+            s.connection_id == connection
+                && s.peer == peer
+                && s.attempt_id == frame.attempt_id
+                && s.ws_generation == generation
+        })
+        .cloned()
+        .ok_or_else(|| anyhow!("stale_signal_frame"))?;
+    let signal = session
+        .signal
+        .as_ref()
+        .ok_or_else(|| anyhow!("signal_transport_mismatch"))?;
+    signal
+        .deliver(connection, peer, frame)
+        .map_err(|e| anyhow!(e.to_string()))
 }
 pub fn deliver(connection: &str, peer: i64, attempt: &str, frame: Frame) -> Result<()> {
     let sessions = SESSIONS.lock();
@@ -305,6 +394,23 @@ impl Drop for PendingTunnel {
 }
 
 impl Session {
+    fn cancel_signal(&self) {
+        if let Some(signal) = &self.signal {
+            signal.close();
+        }
+    }
+
+    pub fn config_call(&self) -> Result<Option<Arc<p2premote_punch::easyp2p::signal::SignalCall>>> {
+        self.check()?;
+        self.signal
+            .as_ref()
+            .map(|s| {
+                s.lookup_call("wg-config")
+                    .ok_or_else(|| anyhow!("signal_context_mismatch"))
+            })
+            .transpose()
+    }
+
     fn check(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             Err(anyhow!("traversal_cancelled"))
@@ -345,6 +451,9 @@ impl Session {
 
     pub async fn start(&self, template: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
         self.check()?;
+        if let Some(signal) = &self.signal {
+            signal.close_call("wg-config");
+        }
         let ipv6_available = traversal_policy::ipv6_available();
         let evidence = traversal_policy::collect_evidence(ipv6_available).await;
         self.send(Frame::Capabilities {
@@ -431,6 +540,15 @@ impl Session {
             req.timeout_secs = timeout_secs;
             if self.active {
                 req.token = uuid::Uuid::new_v4().to_string();
+                if let Some(signal) = &self.signal {
+                    signal
+                        .register_call(
+                            &format!("network/{round}"),
+                            &req.token,
+                            Duration::from_secs(timeout_secs + 12),
+                        )
+                        .map_err(|e| anyhow!(e.to_string()))?;
+                }
                 self.send(Frame::Prepare {
                     round,
                     network,
@@ -456,7 +574,16 @@ impl Session {
                         && token.len() >= 16
                         && token.len() <= 128 =>
                     {
-                        req.token = token
+                        req.token = token;
+                        if let Some(signal) = &self.signal {
+                            signal
+                                .register_call(
+                                    &format!("network/{round}"),
+                                    &req.token,
+                                    Duration::from_secs(timeout_secs + 12),
+                                )
+                                .map_err(|e| anyhow!(e.to_string()))?;
+                        }
                     }
                     _ => return Err(anyhow!("invalid_traversal_round")),
                 }
@@ -468,14 +595,34 @@ impl Session {
             let skip_ipv6 = req.network.ends_with('6') && ipv6_available == Some(false);
             tracing::info!(peer = self.peer, round, network = %req.network, mode = %req.traversal_mode,
                 timeout_secs, skipped = skip_ipv6, "application traversal round start");
-            let result = if skip_ipv6 {
-                Err(anyhow!("ipv6_unavailable"))
+            let (result, signal_failure) = if skip_ipv6 {
+                (Err(anyhow!("ipv6_unavailable")), None)
             } else {
                 if mode == "internet" {
                     attempted_networks.push(req.network.clone());
                 }
-                gonc_ffi::start_udp_tunnel_native(&req).await
+                let call = self
+                    .signal
+                    .as_ref()
+                    .map(|s| {
+                        s.lookup_call(&format!("network/{round}"))
+                            .ok_or_else(|| anyhow!("signal_context_mismatch"))
+                    })
+                    .transpose()?;
+                let result =
+                    gonc_ffi::start_udp_tunnel_native_with_signal(&req, call.clone()).await;
+                let signal_failure = result
+                    .as_ref()
+                    .err()
+                    .and_then(|_| call.as_ref().and_then(|call| call.failure()));
+                (result, signal_failure)
             };
+            if let Some(signal) = &self.signal {
+                signal.close_call(&format!("network/{round}"));
+            }
+            if let Some(error) = signal_failure {
+                return Err(anyhow!(error));
+            }
             tracing::info!(peer = self.peer, round, network = %req.network, mode = %req.traversal_mode,
                 success = result.is_ok(), "application traversal round completed");
             let mut owned = PendingTunnel(result.ok());
@@ -569,6 +716,8 @@ mod tests {
             rx: tokio::sync::Mutex::new(rx),
             cancelled: AtomicBool::new(false),
             wake: Notify::new(),
+            signal: None,
+            ws_generation: 0,
         }
     }
     #[tokio::test]

@@ -115,11 +115,38 @@ pub(super) async fn handle_p2p_notify(
             source_device_name,
             source_device_alias,
             traversal_negotiation,
+            signal_transport,
             ..
         } => {
             if let Some(negotiation) = &traversal_negotiation {
                 negotiation.validate()?;
             }
+            let signal_selection = match crate::punch_signal::local_offer()
+                .select(signal_transport.as_ref(), traversal_negotiation.is_some())
+            {
+                Ok(selection) => selection,
+                Err(error) => {
+                    send_p2p_attempt_message(
+                        ws_client,
+                        connection_id,
+                        source_device_id,
+                        access_grant,
+                        P2PAttemptMessage::AttemptFailed {
+                            protocol_version: 1,
+                            attempt_id,
+                            stage: "signal_negotiation".into(),
+                            error: P2PAttemptErrorPayload::new(
+                                error.to_string(),
+                                error.to_string(),
+                            ),
+                        },
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            let use_ws_signal = signal_selection.as_ref().map(|s| s.selected.as_str())
+                == Some(p2premote_punch::easyp2p::signal::WS_TRANSPORT);
             info!(
                 "[ServiceRuntime] passive attempt start: source_device_id={}, attempt={}/{}, attempt_id={}, source_user_id={}, source_username_present={}, source_email_present={}",
                 source_device_id,
@@ -313,7 +340,7 @@ pub(super) async fn handle_p2p_notify(
                 drop(state);
             }
             if let Some(negotiation) = &traversal_negotiation {
-                crate::traversal::register(
+                crate::traversal::register_with_signal(
                     punch_token.clone(),
                     attempt_id.clone(),
                     connection_id.clone(),
@@ -322,6 +349,15 @@ pub(super) async fn handle_p2p_notify(
                     ws_client.clone(),
                     false,
                     negotiation.clone(),
+                    if use_ws_signal {
+                        Some(
+                            config
+                                .device_id
+                                .ok_or_else(|| anyhow!("missing_signal_device_id"))?,
+                        )
+                    } else {
+                        None
+                    },
                 )?;
             }
             let start_result = start_wgvpn_job(
@@ -379,6 +415,7 @@ pub(super) async fn handle_p2p_notify(
                     rdp_port: get_rdp_port_from_registry(),
                     approval_required,
                     traversal_negotiation,
+                    signal_transport: signal_selection,
                 },
             )
             .await
@@ -414,6 +451,7 @@ pub(super) async fn handle_p2p_notify(
             rdp_port,
             approval_required,
             traversal_negotiation,
+            signal_transport,
             ..
         } => {
             if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
@@ -421,6 +459,7 @@ pub(super) async fn handle_p2p_notify(
                     rdp_port,
                     approval_required,
                     traversal_negotiation,
+                    signal_transport,
                 });
             }
         }
@@ -461,6 +500,7 @@ pub(super) async fn handle_p2p_notify(
             let locale = current_locale(shared);
             let message = error.localized_message(locale.as_deref());
             if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
+                crate::traversal::cancel(&attempt_id);
                 let _ = waiter.send(P2PAttemptEvent::Failed {
                     error_code: error.code,
                     message,
@@ -505,6 +545,14 @@ pub(super) async fn handle_p2p_notify(
         }
         P2PAttemptMessage::Traversal { attempt_id, frame } => {
             crate::traversal::deliver(&connection_id, source_device_id, &attempt_id, frame)?;
+        }
+        P2PAttemptMessage::PunchSignal { frame } => {
+            crate::traversal::deliver_signal(
+                &connection_id,
+                source_device_id,
+                ws_client.generation(),
+                frame,
+            )?;
         }
     }
     Ok(())

@@ -495,6 +495,10 @@ impl ServiceWsClient {
         *self.connected.lock().await
     }
 
+    pub fn generation(&self) -> u64 {
+        self.connection_generation.load(Ordering::Acquire)
+    }
+
     pub async fn send_p2p_ready(
         &self,
         punch_token: String,
@@ -545,18 +549,56 @@ impl ServiceWsClient {
         access_grant: String,
         data: String,
     ) -> Result<(), String> {
+        self.send_p2p_notify_for_generation(
+            connection_id,
+            target_device_id,
+            message_id,
+            access_grant,
+            data,
+            self.generation(),
+            std::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await
+    }
+
+    pub async fn send_p2p_notify_for_generation(
+        &self,
+        connection_id: String,
+        target_device_id: i64,
+        message_id: String,
+        access_grant: String,
+        data: String,
+        expected_generation: u64,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
+        let budget = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .min(Duration::from_secs(5));
+        if budget.is_zero() {
+            return Err("signal_delivery_timeout".into());
+        }
         let (ack_tx, ack_rx) = oneshot::channel();
         let generation = self.connection_generation.load(Ordering::Acquire);
-        if generation == 0 || !*self.connected.lock().await {
+        if generation == 0 || generation != expected_generation || !*self.connected.lock().await {
             return Err("websocket not connected".to_string());
         }
-        self.p2p_notify_acks.lock().await.insert(
+        let mut waiters = self.p2p_notify_acks.lock().await;
+        if waiters.contains_key(&message_id) {
+            return Err("duplicate_notify_message_id".into());
+        }
+        waiters.insert(
             message_id.clone(),
             PendingNotifyAck {
                 generation,
                 sender: ack_tx,
             },
         );
+        drop(waiters);
+        let _registration = NotifyAckRegistration {
+            waiters: self.p2p_notify_acks.clone(),
+            message_id: message_id.clone(),
+            generation,
+        };
         let channel = self.send_channel.lock().await;
         let send_result = match channel.as_ref() {
             Some((active_generation, tx)) if *active_generation == generation => tx
@@ -575,13 +617,35 @@ impl ServiceWsClient {
             remove_pending_notify_ack(&self.p2p_notify_acks, &message_id, generation).await;
             return Err(err);
         }
-        match tokio::time::timeout(Duration::from_secs(5), ack_rx).await {
+        match tokio::time::timeout(budget, ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("p2p_notify_ack_cancelled".to_string()),
             Err(_) => {
                 remove_pending_notify_ack(&self.p2p_notify_acks, &message_id, generation).await;
                 Err("p2p_notify_ack_timeout".to_string())
             }
+        }
+    }
+}
+
+struct NotifyAckRegistration {
+    waiters: Arc<TokioMutex<HashMap<String, PendingNotifyAck>>>,
+    message_id: String,
+    generation: u64,
+}
+impl Drop for NotifyAckRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut waiters) = self.waiters.try_lock() {
+            if waiters.get(&self.message_id).map(|w| w.generation) == Some(self.generation) {
+                waiters.remove(&self.message_id);
+            }
+        } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let waiters = self.waiters.clone();
+            let message_id = self.message_id.clone();
+            let generation = self.generation;
+            runtime.spawn(async move {
+                remove_pending_notify_ack(&waiters, &message_id, generation).await;
+            });
         }
     }
 }
@@ -680,6 +744,59 @@ mod tests {
     fn pending_ack(generation: u64) -> (PendingNotifyAck, oneshot::Receiver<Result<(), String>>) {
         let (sender, receiver) = oneshot::channel();
         (PendingNotifyAck { generation, sender }, receiver)
+    }
+
+    #[tokio::test]
+    async fn cancelling_signal_send_removes_ack_waiter() {
+        let client = ServiceWsClient::new();
+        client.connection_generation.store(1, Ordering::Release);
+        *client.connected.lock().await = true;
+        let (sender, mut outgoing) = mpsc::unbounded_channel();
+        *client.send_channel.lock().await = Some((1, sender));
+        let task = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .send_p2p_notify_for_generation(
+                        "test".into(),
+                        2,
+                        "message".into(),
+                        "synthetic".into(),
+                        "{}".into(),
+                        1,
+                        std::time::Instant::now() + Duration::from_secs(30),
+                    )
+                    .await
+            }
+        });
+        outgoing.recv().await.unwrap();
+        assert_eq!(client.p2p_notify_acks.lock().await.len(), 1);
+        task.abort();
+        let _ = task.await;
+        assert!(client.p2p_notify_acks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn signal_from_old_socket_generation_never_enters_new_sender() {
+        let client = ServiceWsClient::new();
+        client.connection_generation.store(2, Ordering::Release);
+        *client.connected.lock().await = true;
+        let (sender, mut outgoing) = mpsc::unbounded_channel();
+        *client.send_channel.lock().await = Some((2, sender));
+        let result = client
+            .send_p2p_notify_for_generation(
+                "test".into(),
+                2,
+                "message".into(),
+                "synthetic".into(),
+                "{}".into(),
+                1,
+                std::time::Instant::now() + Duration::from_secs(5),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(outgoing.try_recv().is_err());
+        assert!(client.p2p_notify_acks.lock().await.is_empty());
     }
 
     #[test]

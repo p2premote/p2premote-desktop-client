@@ -599,11 +599,21 @@ where
 /// linked in-process on all three platforms.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub async fn start_udp_tunnel_native(request: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
-    let result = p2premote_punch::api::start_udp_tunnel(
-        request.into(),
-        Duration::from_secs(request.timeout_secs.saturating_add(10)),
-    )
-    .await
+    start_udp_tunnel_native_with_signal(request, None).await
+}
+
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+pub async fn start_udp_tunnel_native_with_signal(
+    request: &UdpTunnelRequest,
+    call: Option<std::sync::Arc<p2premote_punch::easyp2p::signal::SignalCall>>,
+) -> Result<UdpTunnelResult> {
+    let budget = Duration::from_secs(request.timeout_secs.saturating_add(10));
+    let result = match call {
+        Some(call) => {
+            p2premote_punch::api::start_udp_tunnel_with_signal(request.into(), budget, call).await
+        }
+        None => p2premote_punch::api::start_udp_tunnel(request.into(), budget).await,
+    }
     .map_err(|error| anyhow!(error))?;
     native_udp_tunnel_result(result)
 }
@@ -779,6 +789,17 @@ pub async fn exchange_payload_native(
     send_data: &str,
     timeout: Duration,
 ) -> Result<String> {
+    exchange_payload_native_with_signal(token, mode, send_data, timeout, None).await
+}
+
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+pub async fn exchange_payload_native_with_signal(
+    token: &str,
+    mode: ExchangeMode,
+    send_data: &str,
+    timeout: Duration,
+    call: Option<std::sync::Arc<p2premote_punch::easyp2p::signal::SignalCall>>,
+) -> Result<String> {
     if timeout.is_zero() {
         return Err(anyhow!("exchange timeout must be greater than zero"));
     }
@@ -789,9 +810,11 @@ pub async fn exchange_payload_native(
         role_hint: String::new(),
         timeout_secs: timeout.as_secs().min(i32::MAX as u64) as i32,
     };
-    let result = p2premote_punch::api::exchange(request, timeout)
-        .await
-        .map_err(|error| anyhow!(error))?;
+    let result = match call {
+        Some(call) => p2premote_punch::api::exchange_with_signal(request, timeout, call).await,
+        None => p2premote_punch::api::exchange(request, timeout).await,
+    }
+    .map_err(|error| anyhow!(error))?;
     if !result.ok {
         let error = if result.error.is_empty() {
             "exchange failed".to_string()

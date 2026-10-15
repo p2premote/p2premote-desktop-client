@@ -14,6 +14,7 @@ pub mod logging;
 #[cfg(target_os = "macos")]
 pub mod macos_service_management;
 pub mod p2p;
+pub mod punch_signal;
 pub mod runtime;
 pub mod service_control;
 pub mod speed_test; // 基于 riperf3 的双向隧道测速（发起端 client / 对端 server）

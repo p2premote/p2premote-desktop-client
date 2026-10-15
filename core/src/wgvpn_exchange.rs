@@ -347,11 +347,16 @@ pub async fn exchange_as_active(
 ) -> Result<ExchangePayload> {
     let kx_token = derive_kx_token(base_token);
     let send_data = local_payload.render()?;
-    let recv = crate::gonc_ffi::exchange_payload_native(
+    let call = crate::traversal::lookup(base_token)
+        .map(|s| s.config_call())
+        .transpose()?
+        .flatten();
+    let recv = crate::gonc_ffi::exchange_payload_native_with_signal(
         &kx_token,
         crate::gonc_ffi::ExchangeMode::Mutual,
         &send_data,
         timeout,
+        call,
     )
     .await?;
     ExchangePayload::parse(&recv)
@@ -372,11 +377,16 @@ where
     F: FnOnce(i64, u32, u32, u32) -> Result<(u32, u32)>,
 {
     let kx_token = derive_kx_token(base_token);
-    let recv = crate::gonc_ffi::exchange_payload_native(
+    let call = crate::traversal::lookup(base_token)
+        .map(|s| s.config_call())
+        .transpose()?
+        .flatten();
+    let recv = crate::gonc_ffi::exchange_payload_native_with_signal(
         &kx_token,
         crate::gonc_ffi::ExchangeMode::WaitOnly,
         "",
         timeout,
+        call.clone(),
     )
     .await?;
     let active_payload = ExchangePayload::parse(&recv)?;
@@ -399,11 +409,13 @@ where
         warning: local_payload_template.warning.clone(),
     };
     let send_data = passive_payload.render()?;
-    let _ = crate::gonc_ffi::exchange_payload_native(
-        &kx_token,
-        crate::gonc_ffi::ExchangeMode::Mutual,
-        &send_data,
-        timeout,
+    let mode = if call.is_some() {
+        crate::gonc_ffi::ExchangeMode::Reply
+    } else {
+        crate::gonc_ffi::ExchangeMode::Mutual
+    };
+    let _ = crate::gonc_ffi::exchange_payload_native_with_signal(
+        &kx_token, mode, &send_data, timeout, call,
     )
     .await?;
     Ok(active_payload)
