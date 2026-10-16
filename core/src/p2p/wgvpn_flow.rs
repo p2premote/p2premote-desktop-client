@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::config::install_data_dir;
+use crate::error::{classified, coded, AppError, ErrorCode};
 use crate::gonc_ffi::{self, UdpTunnelRequest};
 use crate::logging::{record_tunnel_audit, TunnelAuditAction, TunnelAuditEvent, TunnelAuditRole};
 use crate::subnet_router::{self, LanMode};
@@ -256,10 +257,13 @@ fn allocate_ip_for_active(
             return Ok(ip);
         }
     }
-    Err(anyhow!(
-        "no available virtual IP in range {}..={}",
-        wgvpn_exchange::u32_to_ipv4(ip_start),
-        wgvpn_exchange::u32_to_ipv4(ip_end)
+    Err(coded(
+        ErrorCode::WireguardConfigureFailed,
+        format!(
+            "no available virtual IP in range {}..={}",
+            wgvpn_exchange::u32_to_ipv4(ip_start),
+            wgvpn_exchange::u32_to_ipv4(ip_end)
+        ),
     ))
 }
 
@@ -355,22 +359,48 @@ pub async fn start_active_wgvpn(
     let _registration = crate::traversal::Registration(punch_token.clone());
     crate::service_access::ensure_ready()?;
     if !lan_cidrs.is_empty() {
-        return Err(anyhow!("only passive wgvpn may expose LAN CIDRs"));
+        return Err(coded(
+            ErrorCode::WireguardConfigureFailed,
+            format!("only passive wgvpn may expose LAN CIDRs"),
+        ));
     }
     let wg_dir = wgvpn_dir();
-    std::fs::create_dir_all(&wg_dir).context("failed to create wgvpn dir")?;
+    std::fs::create_dir_all(&wg_dir).map_err(|error| {
+        AppError::with_source(
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ErrorCode::WireguardConfigurePermissionDenied
+            } else {
+                ErrorCode::WireguardConfigureFailed
+            },
+            "failed to create wgvpn dir",
+            error,
+        )
+    })?;
 
     let punch_lib = resolve_p2p_punch_lib(config);
     gonc_ffi::validate_punch_library_available(Path::new(&punch_lib))?;
 
-    let my_device_id = config
-        .device_id
-        .ok_or_else(|| anyhow!("missing local device_id in MachineConfig"))?;
+    let my_device_id = config.device_id.ok_or_else(|| {
+        coded(
+            ErrorCode::WireguardConfigureFailed,
+            format!("missing local device_id in MachineConfig"),
+        )
+    })?;
 
     // 1. 密钥
     let (priv_key, pub_key) = ensure_keypair(config, &wg_dir)?;
     let pubkey_path = wg_dir.join("pubkey.active");
-    std::fs::write(&pubkey_path, &pub_key).context("failed to write pubkey.active")?;
+    std::fs::write(&pubkey_path, &pub_key).map_err(|error| {
+        AppError::with_source(
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ErrorCode::WireguardConfigurePermissionDenied
+            } else {
+                ErrorCode::WireguardConfigureFailed
+            },
+            "failed to write pubkey.active",
+            error,
+        )
+    })?;
 
     // 2. 公钥 + IP 协商（FFI Exchange，主动端 Mutual 模式：发范围，收分配结果）
     let ip_start = wgvpn_exchange::ipv4_to_u32(&format!(
@@ -441,7 +471,11 @@ pub async fn start_active_wgvpn(
                 udp_punch_started_at.elapsed(),
                 &err,
             );
-            return Err(err);
+            return Err(classified(
+                err,
+                ErrorCode::WireguardConfigureFailed,
+                "WireGuard operation failed",
+            ));
         }
     };
 
@@ -451,15 +485,27 @@ pub async fn start_active_wgvpn(
     // Embedded WireGuard permits each public key only once per interface.
     if let Err(err) = stop_conflicting_sessions(config, target_device_id, &peer_pubkey).await {
         let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-        return Err(err);
+        return Err(classified(
+            err,
+            ErrorCode::WireguardConfigureFailed,
+            "WireGuard operation failed",
+        ));
     }
     if let Err(err) = validate_new_lan_routes(&peer_exposed_lan_cidrs) {
         let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-        return Err(err);
+        return Err(classified(
+            err,
+            ErrorCode::WireguardConfigureFailed,
+            "WireGuard operation failed",
+        ));
     }
     if let Err(err) = validate_peer_virtual_ip(target_device_id, &peer_ip) {
         let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-        return Err(err);
+        return Err(classified(
+            err,
+            ErrorCode::WireguardConfigureFailed,
+            "WireGuard operation failed",
+        ));
     }
 
     // 4. 接口管理
@@ -468,7 +514,11 @@ pub async fn start_active_wgvpn(
     if !uses_userspace_wg() && !tunnel_existed {
         if let Err(err) = ensure_wg_listen_port_available(WGVPN_LISTEN_PORT) {
             let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-            return Err(err);
+            return Err(classified(
+                err,
+                ErrorCode::WireguardConfigureFailed,
+                "WireGuard operation failed",
+            ));
         }
     }
     let local_endpoint = format!("127.0.0.1:{}", udp_tunnel.local_forward_port);
@@ -560,7 +610,11 @@ pub async fn start_active_wgvpn(
                 err
             );
             let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-            return Err(err);
+            return Err(classified(
+                err,
+                ErrorCode::WireguardConfigureFailed,
+                "WireGuard operation failed",
+            ));
         }
     };
 
@@ -624,14 +678,34 @@ pub async fn start_passive_wgvpn(
     let passive_exposed_lan_cidrs = requested_lan_cidrs;
     let warning = None;
     let wg_dir = wgvpn_dir();
-    std::fs::create_dir_all(&wg_dir).context("failed to create wgvpn dir")?;
+    std::fs::create_dir_all(&wg_dir).map_err(|error| {
+        AppError::with_source(
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ErrorCode::WireguardConfigurePermissionDenied
+            } else {
+                ErrorCode::WireguardConfigureFailed
+            },
+            "failed to create wgvpn dir",
+            error,
+        )
+    })?;
 
     let punch_lib = resolve_p2p_punch_lib(config);
     gonc_ffi::validate_punch_library_available(Path::new(&punch_lib))?;
 
     let (priv_key, pub_key) = ensure_keypair(config, &wg_dir)?;
     let pubkey_path = wg_dir.join("pubkey.passive");
-    std::fs::write(&pubkey_path, &pub_key).context("failed to write pubkey.passive")?;
+    std::fs::write(&pubkey_path, &pub_key).map_err(|error| {
+        AppError::with_source(
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ErrorCode::WireguardConfigurePermissionDenied
+            } else {
+                ErrorCode::WireguardConfigureFailed
+            },
+            "failed to write pubkey.passive",
+            error,
+        )
+    })?;
 
     let wg_cli = resolve_wg_cli();
     let mut reserved_peer_ip: Option<u32> = None;
@@ -683,8 +757,12 @@ pub async fn start_passive_wgvpn(
             .my_ip
             .max(wgvpn_exchange::ipv4_to_u32(PASSIVE_IP).unwrap_or(0)),
     );
-    let reserved_peer_ip = reserved_peer_ip
-        .ok_or_else(|| anyhow!("passive ip allocation did not reserve a peer ip"))?;
+    let reserved_peer_ip = reserved_peer_ip.ok_or_else(|| {
+        coded(
+            ErrorCode::WireguardConfigureFailed,
+            format!("passive ip allocation did not reserve a peer ip"),
+        )
+    })?;
     let peer_ip = wgvpn_exchange::u32_to_ipv4(reserved_peer_ip);
 
     // 2. gonc 加密 UDP 数据面。Do not log the punch token.
@@ -721,7 +799,11 @@ pub async fn start_passive_wgvpn(
                 &err,
             );
             release_reserved_ip(reserved_peer_ip);
-            return Err(err);
+            return Err(classified(
+                err,
+                ErrorCode::WireguardConfigureFailed,
+                "WireGuard operation failed",
+            ));
         }
     };
 
@@ -734,7 +816,11 @@ pub async fn start_passive_wgvpn(
         if let Err(err) = ensure_wg_listen_port_available(WGVPN_LISTEN_PORT) {
             release_reserved_ip(reserved_peer_ip);
             let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-            return Err(err);
+            return Err(classified(
+                err,
+                ErrorCode::WireguardConfigureFailed,
+                "WireGuard operation failed",
+            ));
         }
     }
     let local_endpoint = format!("127.0.0.1:{}", udp_tunnel.local_forward_port);
@@ -825,7 +911,11 @@ pub async fn start_passive_wgvpn(
             );
             release_reserved_ip(reserved_peer_ip);
             let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-            return Err(err);
+            return Err(classified(
+                err,
+                ErrorCode::WireguardConfigureFailed,
+                "WireGuard operation failed",
+            ));
         }
     };
 
@@ -858,7 +948,11 @@ pub async fn start_passive_wgvpn(
                 }
                 release_reserved_ip(reserved_peer_ip);
                 let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-                return Err(err);
+                return Err(classified(
+                    err,
+                    ErrorCode::WireguardConfigureFailed,
+                    "WireGuard operation failed",
+                ));
             }
         };
         router = Some(started);
@@ -1076,10 +1170,16 @@ pub async fn set_wgvpn_allowed(
         .lock()
         .get(&target_device_id)
         .cloned()
-        .ok_or_else(|| anyhow!("wgvpn session not found"))?;
+        .ok_or_else(|| {
+            coded(
+                ErrorCode::WireguardConfigureFailed,
+                format!("wgvpn session not found"),
+            )
+        })?;
     if session.is_active {
-        return Err(anyhow!(
-            "AllowedIPs approval gate is only valid for passive sessions"
+        return Err(coded(
+            ErrorCode::WireguardConfigureFailed,
+            format!("AllowedIPs approval gate is only valid for passive sessions"),
         ));
     }
     let mut allowed_ips = if allowed {
@@ -1119,9 +1219,9 @@ fn ensure_wgvpn_cleanup_complete(cleanup_errors: &[String]) -> Result<()> {
     if cleanup_errors.is_empty() {
         return Ok(());
     }
-    Err(anyhow!(
-        "wgvpn cleanup incomplete: {}",
-        cleanup_errors.join("; ")
+    Err(coded(
+        ErrorCode::WireguardConfigureFailed,
+        format!("wgvpn cleanup incomplete: {}", cleanup_errors.join("; ")),
     ))
 }
 
@@ -1174,8 +1274,9 @@ pub fn cleanup_stale_sessions(config: &MachineConfig) -> Result<()> {
     let wireguard_exe = resolve_wireguard_exe();
     if !uses_userspace_wg() {
         if !Path::new(&wg_cli).exists() || !Path::new(&wireguard_exe).exists() {
-            return Err(anyhow!(
-                "cannot verify stale wgvpn cleanup: required tools are missing"
+            return Err(coded(
+                ErrorCode::WireguardConfigureFailed,
+                format!("cannot verify stale wgvpn cleanup: required tools are missing"),
             ));
         }
         // wg0 is owned by this service. A new service lifecycle never adopts
@@ -1242,10 +1343,9 @@ fn validate_new_lan_routes(routes: &[String]) -> Result<()> {
         for active in &existing {
             let current = ipv4_cidr_range(active)?;
             if candidate.0 <= current.1 && current.0 <= candidate.1 {
-                return Err(anyhow!(
-                    "LAN route {} overlaps active route {}",
-                    route,
-                    active
+                return Err(coded(
+                    ErrorCode::WireguardConfigureFailed,
+                    format!("LAN route {} overlaps active route {}", route, active),
                 ));
             }
         }
@@ -1257,11 +1357,17 @@ fn validate_lan_routes_basic(routes: &[String]) -> Result<()> {
     for route in routes {
         let candidate = ipv4_cidr_range(route)?;
         if candidate.0 <= 0x7fff_ffff && candidate.1 >= 0x7f00_0000 {
-            return Err(anyhow!("LAN route overlaps loopback: {}", route));
+            return Err(coded(
+                ErrorCode::WireguardConfigureFailed,
+                format!("LAN route overlaps loopback: {}", route),
+            ));
         }
         let wgvpn = ipv4_cidr_range(WGVPN_CIDR)?;
         if candidate.0 <= wgvpn.1 && wgvpn.0 <= candidate.1 {
-            return Err(anyhow!("LAN route overlaps wgvpn network: {}", route));
+            return Err(coded(
+                ErrorCode::WireguardConfigureFailed,
+                format!("LAN route overlaps wgvpn network: {}", route),
+            ));
         }
     }
     Ok(())
@@ -1273,9 +1379,12 @@ fn validate_peer_virtual_ip(target_device_id: i64, peer_ip: &str) -> Result<()> 
         .iter()
         .any(|(id, session)| *id != target_device_id && session.peer_virtual_ip == peer_ip)
     {
-        return Err(anyhow!(
-            "peer virtual IP {} is already used by another session",
-            peer_ip
+        return Err(coded(
+            ErrorCode::WireguardConfigureFailed,
+            format!(
+                "peer virtual IP {} is already used by another session",
+                peer_ip
+            ),
         ));
     }
     Ok(())
@@ -1289,12 +1398,18 @@ fn ipv4_cidr_range(cidr: &str) -> Result<(u32, u32)> {
 
 fn passive_ip_for_device(device_id: i64, ip_start: u32, ip_end: u32) -> Result<u32> {
     if ip_start > ip_end {
-        return Err(anyhow!("invalid wgvpn ip range"));
+        return Err(coded(
+            ErrorCode::WireguardConfigureFailed,
+            format!("invalid wgvpn ip range"),
+        ));
     }
     let first = ip_start.saturating_sub(1);
     let count = u64::from(ip_end - first);
     if count == 0 {
-        return Err(anyhow!("empty wgvpn passive ip range"));
+        return Err(coded(
+            ErrorCode::WireguardConfigureFailed,
+            format!("empty wgvpn passive ip range"),
+        ));
     }
     Ok(first + 1 + (device_id.unsigned_abs() % count) as u32)
 }
@@ -1327,10 +1442,13 @@ fn choose_passive_ip_for_peer(
             return Ok(ip);
         }
     }
-    Err(anyhow!(
-        "no available passive virtual IP in range {}..={}",
-        wgvpn_exchange::u32_to_ipv4(ip_start),
-        wgvpn_exchange::u32_to_ipv4(ip_end)
+    Err(coded(
+        ErrorCode::WireguardConfigureFailed,
+        format!(
+            "no available passive virtual IP in range {}..={}",
+            wgvpn_exchange::u32_to_ipv4(ip_start),
+            wgvpn_exchange::u32_to_ipv4(ip_end)
+        ),
     ))
 }
 
@@ -1371,7 +1489,11 @@ fn wait_for_windows_wg_peer(library: &Path, handle_id: &str, timeout: Duration) 
                     handle_id,
                     err
                 );
-                return Err(err);
+                return Err(classified(
+                    err,
+                    ErrorCode::WireguardConfigureFailed,
+                    "WireGuard operation failed",
+                ));
             }
         };
         if !status.error.is_empty() || !status.last_error.is_empty() {
@@ -1392,10 +1514,12 @@ fn wait_for_windows_wg_peer(library: &Path, handle_id: &str, timeout: Duration) 
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    Err(anyhow!(
-        "userspace WireGuard handshake timeout after {:?} for {}",
-        timeout,
-        handle_id
+    Err(coded(
+        ErrorCode::WireguardHandshakeTimeout,
+        format!(
+            "userspace WireGuard handshake timeout after {:?} for {}",
+            timeout, handle_id
+        ),
     ))
 }
 
@@ -1424,7 +1548,17 @@ fn ensure_keypair(config: &MachineConfig, wg_dir: &Path) -> Result<(String, Stri
         wgvpn::generate_keypair(&wg_cli)?
     };
     wgvpn::write_private_key(&priv_path, &priv_key)?;
-    std::fs::write(&pub_path, &pub_key).context("failed to write public.key")?;
+    std::fs::write(&pub_path, &pub_key).map_err(|error| {
+        AppError::with_source(
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ErrorCode::WireguardConfigurePermissionDenied
+            } else {
+                ErrorCode::WireguardConfigureFailed
+            },
+            "failed to write public.key",
+            error,
+        )
+    })?;
     Ok((priv_key, pub_key))
 }
 
@@ -1445,7 +1579,11 @@ fn start_tunnel_and_wait(conf_path: &Path) -> Result<wgvpn::TunnelHandle> {
                 stop_err
             );
         }
-        return Err(err);
+        return Err(classified(
+            err,
+            ErrorCode::WireguardConfigureFailed,
+            "WireGuard operation failed",
+        ));
     }
     Ok(handle)
 }
@@ -1479,10 +1617,12 @@ fn wait_for_handshake(
             }
         }
         if start.elapsed() > timeout {
-            return Err(anyhow!(
-                "wireguard handshake timeout after {:?} on {}",
-                timeout,
-                tunnel_name
+            return Err(coded(
+                ErrorCode::WireguardHandshakeTimeout,
+                format!(
+                    "wireguard handshake timeout after {:?} on {}",
+                    timeout, tunnel_name
+                ),
             ));
         }
         std::thread::sleep(poll_interval);
@@ -1521,11 +1661,14 @@ fn wait_for_handshake_with_peer(
             }
         }
         if start.elapsed() > timeout {
-            return Err(anyhow!(
-                "wireguard handshake timeout after {:?} on {} for peer {}..",
-                timeout,
-                tunnel_name,
-                peer_pubkey.get(..8).unwrap_or(peer_pubkey)
+            return Err(coded(
+                ErrorCode::WireguardHandshakeTimeout,
+                format!(
+                    "wireguard handshake timeout after {:?} on {} for peer {}..",
+                    timeout,
+                    tunnel_name,
+                    peer_pubkey.get(..8).unwrap_or(peer_pubkey)
+                ),
             ));
         }
         std::thread::sleep(poll_interval);

@@ -1,6 +1,7 @@
 //! Bridge the shared punch signal engine to the existing authorized WS client.
+use crate::error::{coded, ErrorCode};
 use crate::ws::ServiceWsClient;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use p2premote_punch::easyp2p::signal::{
     ExternalSignalSession, SendFuture, SessionIdentity, TransportOffer, WireSender,
 };
@@ -33,13 +34,6 @@ impl WireSender for WsSender {
                     deadline,
                 )
                 .await
-                .map_err(|error| {
-                    if error == "p2p_notify_ack_timeout" {
-                        "signal_server_ack_timeout".into()
-                    } else {
-                        error
-                    }
-                })
         })
     }
 }
@@ -54,7 +48,10 @@ pub fn create_session(
 ) -> Result<Arc<ExternalSignalSession>> {
     let generation = ws.generation();
     if generation == 0 {
-        return Err(anyhow!("signal_connection_lost"));
+        return Err(coded(
+            ErrorCode::SignalSendDisconnected,
+            "signal connection lost",
+        ));
     }
     let sender = Arc::new(WsSender {
         ws,
@@ -72,7 +69,7 @@ pub fn create_session(
         },
         sender,
     )
-    .map_err(|e| anyhow!(e.to_string()))
+    .map_err(anyhow::Error::new)
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ pub mod config;
 pub mod control;
 pub mod device;
 pub mod device_identity;
+pub mod error;
 pub mod health;
 pub mod http;
 pub mod i18n;

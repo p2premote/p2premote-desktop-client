@@ -6,8 +6,9 @@
 //!
 //! 载荷为 JSON 序列化的 ExchangePayload，gonc 侧用 AES-GCM 加密传输。
 
+use crate::error::{coded, ErrorCode};
 use crate::wgvpn::validate_public_key;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
@@ -21,13 +22,19 @@ use std::time::Duration;
 pub fn ipv4_to_u32(ip: &str) -> Result<u32> {
     let parts: Vec<&str> = ip.split('.').collect();
     if parts.len() != 4 {
-        return Err(anyhow!("invalid ipv4: {}", ip));
+        return Err(coded(
+            ErrorCode::TraversalKeyExchangeInvalidPayload,
+            format!("invalid ipv4: {}", ip),
+        ));
     }
     let mut bytes = [0u8; 4];
     for (i, p) in parts.iter().enumerate() {
-        bytes[i] = p
-            .parse::<u8>()
-            .map_err(|_| anyhow!("invalid ipv4 octet: {}", p))?;
+        bytes[i] = p.parse::<u8>().map_err(|_| {
+            coded(
+                ErrorCode::TraversalKeyExchangeInvalidPayload,
+                format!("invalid ipv4 octet: {}", p),
+            )
+        })?;
     }
     Ok(u32::from_be_bytes(bytes))
 }
@@ -43,17 +50,23 @@ pub fn u32_to_ipv4(v: u32) -> String {
 /// 复用 [`ipv4_to_u32`]，避免各调用点手写 split('.') + parse::<u8>。
 /// 掩码长度合法范围 0-32。
 pub fn parse_ipv4_cidr(cidr: &str) -> Result<(u32, u8)> {
-    let (ip, bits) = cidr
-        .split_once('/')
-        .ok_or_else(|| anyhow!("invalid ipv4 cidr (缺少 /): {}", cidr))?;
+    let (ip, bits) = cidr.split_once('/').ok_or_else(|| {
+        coded(
+            ErrorCode::TraversalKeyExchangeInvalidPayload,
+            format!("invalid ipv4 cidr (缺少 /): {}", cidr),
+        )
+    })?;
     let ip = ipv4_to_u32(ip)?;
-    let bits: u8 = bits
-        .parse()
-        .map_err(|_| anyhow!("invalid ipv4 cidr (掩码非数字): {}", cidr))?;
+    let bits: u8 = bits.parse().map_err(|_| {
+        coded(
+            ErrorCode::TraversalKeyExchangeInvalidPayload,
+            format!("invalid ipv4 cidr (掩码非数字): {}", cidr),
+        )
+    })?;
     if bits > 32 {
-        return Err(anyhow!(
-            "invalid ipv4 cidr (掩码必须在 0-32 之间): {}",
-            cidr
+        return Err(coded(
+            ErrorCode::TraversalKeyExchangeInvalidPayload,
+            format!("invalid ipv4 cidr (掩码必须在 0-32 之间): {}", cidr),
         ));
     }
     Ok((ip, bits))
@@ -204,15 +217,18 @@ impl ExchangePayload {
                 text.len(),
                 preview
             );
-            anyhow!(
+            coded(ErrorCode::TraversalKeyExchangeInvalidPayload, format!(
                 "parse ExchangePayload JSON: {}; bytes={}, preview={:?}",
                 err,
                 text.len(),
                 preview
-            )
+            ))
         })?;
         if payload.pubkey.is_empty() {
-            return Err(anyhow!("payload missing pubkey"));
+            return Err(coded(
+                ErrorCode::TraversalKeyExchangeInvalidPayload,
+                format!("payload missing pubkey"),
+            ));
         }
         validate_public_key(&payload.pubkey)?;
         payload.exposed_lan_cidrs = normalize_exposed_lan_cidrs(&payload.exposed_lan_cidrs)?;
@@ -228,17 +244,29 @@ pub fn normalize_exposed_lan_cidrs(cidrs: &[String]) -> Result<Vec<String>> {
         if cidr.is_empty() {
             continue;
         }
-        let (ip_raw, prefix_raw) = cidr
-            .split_once('/')
-            .ok_or_else(|| anyhow!("invalid ipv4 cidr: {}", cidr))?;
-        let ip = ip_raw
-            .parse::<Ipv4Addr>()
-            .map_err(|_| anyhow!("invalid ipv4 cidr ip: {}", cidr))?;
-        let prefix = prefix_raw
-            .parse::<u8>()
-            .map_err(|_| anyhow!("invalid ipv4 cidr prefix: {}", cidr))?;
+        let (ip_raw, prefix_raw) = cidr.split_once('/').ok_or_else(|| {
+            coded(
+                ErrorCode::TraversalKeyExchangeInvalidPayload,
+                format!("invalid ipv4 cidr: {}", cidr),
+            )
+        })?;
+        let ip = ip_raw.parse::<Ipv4Addr>().map_err(|_| {
+            coded(
+                ErrorCode::TraversalKeyExchangeInvalidPayload,
+                format!("invalid ipv4 cidr ip: {}", cidr),
+            )
+        })?;
+        let prefix = prefix_raw.parse::<u8>().map_err(|_| {
+            coded(
+                ErrorCode::TraversalKeyExchangeInvalidPayload,
+                format!("invalid ipv4 cidr prefix: {}", cidr),
+            )
+        })?;
         if prefix > 32 {
-            return Err(anyhow!("invalid ipv4 cidr prefix: {}", cidr));
+            return Err(coded(
+                ErrorCode::TraversalKeyExchangeInvalidPayload,
+                format!("invalid ipv4 cidr prefix: {}", cidr),
+            ));
         }
         let ip = u32::from(ip);
         let mask = if prefix == 0 {

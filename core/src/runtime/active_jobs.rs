@@ -231,6 +231,7 @@ pub(super) fn spawn_active_tunnel_job_task(
             peer_device_id,
         };
         let mut last_message = String::new();
+        let mut last_code = ErrorCode::RuntimeExecutionUnclassified;
         let mut last_attempt = 0;
         let mut last_attempt_id = String::new();
         // Punch diagnostics for the /api/v1/p2p/end report: last failure's
@@ -239,6 +240,7 @@ pub(super) fn spawn_active_tunnel_job_task(
         let mut last_source_nat = String::new();
         let mut last_target_nat = String::new();
         let mut last_network = String::new();
+        let mut attempted_networks = Vec::new();
         let mut config = match load_machine_config() {
             Ok(config) => config,
             Err(err) => {
@@ -247,7 +249,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     peer_device_id,
                     target_uuid_for_task.clone(),
                     0,
-                    err.to_string(),
+                    err.into(),
                 );
                 return;
             }
@@ -278,7 +280,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     peer_device_id,
                     target_uuid_for_task.clone(),
                     0,
-                    err.to_string(),
+                    err.into(),
                 );
                 return;
             }
@@ -298,16 +300,18 @@ pub(super) fn spawn_active_tunnel_job_task(
                     peer_device_id,
                     target_uuid_for_task.clone(),
                 );
-                let _ = close_active_p2p_job(
+                let _ = crate::p2p::close_active_p2p_job_with_nat(
                     &config,
                     &opened,
                     peer_device_id,
                     &last_attempt_id,
+                    false,
+                    last_source_nat.clone(),
+                    last_target_nat.clone(),
                     last_network.clone(),
                     started_at.elapsed().as_secs(),
-                    false,
-                    "user_cancelled".to_string(),
-                    "user_cancelled".to_string(),
+                    "connection.execution.user_cancelled".to_string(),
+                    "connection.execution.user_cancelled".to_string(),
                 )
                 .await;
                 return;
@@ -316,6 +320,7 @@ pub(super) fn spawn_active_tunnel_job_task(
             update_active_tunnel_job_status(
                 &shared_for_task,
                 TunnelJobStatus {
+                    error_code: String::new(),
                     is_active: true,
                     tcp_retry_recommended: false,
                     symmetric_nat_help_recommended: false,
@@ -388,6 +393,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     ).await;
                     let _ = attempt_handle.await;
                     let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
+                    last_code = ErrorCode::ConnectionExecutionDeadlineExceeded;
                     last_message = localized_message(
                         current_locale(&shared_for_task).as_deref(),
                         "tunnel.job.attempt_progress_secs",
@@ -409,7 +415,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                             P2PAttemptMessage::AttemptCancel {
                                 protocol_version: 1,
                                 attempt_id: attempt_id.clone(),
-                                reason: "user_cancelled".to_string(),
+                                reason: "connection.execution.user_cancelled".to_string(),
                             },
                         ).await;
                         let _ = attempt_handle.await;
@@ -422,7 +428,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                         let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, peer_device_id, &attempt_id,
                             false, last_source_nat.clone(), last_target_nat.clone(),
                             last_network.clone(), started_at.elapsed().as_secs(),
-                            "user_cancelled".to_string(), "user_cancelled".to_string()).await;
+                            "connection.execution.user_cancelled".to_string(), "connection.execution.user_cancelled".to_string()).await;
                         return;
                     }
                     None
@@ -447,16 +453,18 @@ pub(super) fn spawn_active_tunnel_job_task(
                             peer_device_id,
                             target_uuid_for_task.clone(),
                         );
-                        let _ = close_active_p2p_job(
+                        let _ = crate::p2p::close_active_p2p_job_with_nat(
                             &config,
                             &opened,
                             peer_device_id,
                             &attempt_id,
+                            false,
+                            source_nat_type,
+                            target_nat_type,
                             success_network.clone(),
                             started_at.elapsed().as_secs(),
-                            false,
-                            "user_cancelled".to_string(),
-                            "user_cancelled".to_string(),
+                            "connection.execution.user_cancelled".to_string(),
+                            "connection.execution.user_cancelled".to_string(),
                         )
                         .await;
                         return;
@@ -464,6 +472,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     update_active_tunnel_job_status(
                         &shared_for_task,
                         TunnelJobStatus {
+                            error_code: String::new(),
                             is_active: true,
                             tcp_retry_recommended: false,
                             symmetric_nat_help_recommended: false,
@@ -525,6 +534,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                     return;
                 }
                 Some(Ok(result)) => {
+                    last_code = ErrorCode::TraversalPunchFailed;
                     last_message = result.message;
                 }
                 Some(Err(err)) => {
@@ -536,16 +546,38 @@ pub(super) fn spawn_active_tunnel_job_task(
                         err
                     );
                     if let Some(failure) = err.downcast_ref::<crate::gonc_ffi::UdpTunnelFailure>() {
-                        last_source_nat = failure.result.local_nat_type.clone();
-                        last_target_nat = failure.result.remote_nat_type.clone();
-                        last_network = failure.result.network.clone();
+                        if !failure.result.local_nat_type.is_empty() {
+                            last_source_nat = failure.result.local_nat_type.clone();
+                        }
+                        if !failure.result.remote_nat_type.is_empty() {
+                            last_target_nat = failure.result.remote_nat_type.clone();
+                        }
+                        if !failure.result.network.is_empty() {
+                            last_network = failure.result.network.clone();
+                        }
                     }
-                    last_message = err.to_string();
+                    last_code = code_of(&err);
+                    last_message = format!("{:#}", err);
                 }
                 None => {}
             }
 
-            if !is_retryable_tunnel_error(&last_message) {
+            let report = crate::traversal::peek_plan(&attempt_id);
+            for network in report.attempted_networks {
+                if !attempted_networks.contains(&network) {
+                    attempted_networks.push(network);
+                }
+            }
+            if !report.local_nat.is_empty() {
+                last_source_nat = report.local_nat;
+            }
+            if !report.remote_nat.is_empty() {
+                last_target_nat = report.remote_nat;
+            }
+            if !report.network.is_empty() {
+                last_network = report.network;
+            }
+            if !retry_attempt(&last_code) {
                 break;
             }
 
@@ -553,14 +585,16 @@ pub(super) fn spawn_active_tunnel_job_task(
                 update_active_tunnel_job_status(
                     &shared_for_task,
                     TunnelJobStatus {
+                        error_code: last_code.as_str().to_owned(),
                         is_active: true,
                         tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(
                             config.prefer_tcp,
-                            &last_message,
+                            &last_code,
+                            &attempted_networks,
                         ),
                         symmetric_nat_help_recommended:
                             crate::traversal_policy::symmetric_nat_help_recommended(
-                                &classify_tunnel_error_code(&last_message),
+                                last_code.as_str(),
                                 &last_source_nat,
                                 &last_target_nat,
                             ),
@@ -592,7 +626,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                             let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, peer_device_id, &attempt_id,
                                 false, last_source_nat.clone(), last_target_nat.clone(),
                                 last_network.clone(), started_at.elapsed().as_secs(),
-                                "user_cancelled".to_string(), "user_cancelled".to_string()).await;
+                                "connection.execution.user_cancelled".to_string(), "connection.execution.user_cancelled".to_string()).await;
                             return;
                         }
                     }
@@ -604,14 +638,16 @@ pub(super) fn spawn_active_tunnel_job_task(
         update_active_tunnel_job_status(
             &shared_for_task,
             TunnelJobStatus {
+                error_code: last_code.as_str().to_owned(),
                 is_active: true,
                 tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(
                     config.prefer_tcp,
-                    &last_message,
+                    &last_code,
+                    &attempted_networks,
                 ),
                 symmetric_nat_help_recommended:
                     crate::traversal_policy::symmetric_nat_help_recommended(
-                        &classify_tunnel_error_code(&last_message),
+                        last_code.as_str(),
                         &last_source_nat,
                         &last_target_nat,
                     ),
@@ -637,7 +673,7 @@ pub(super) fn spawn_active_tunnel_job_task(
                 updated_at: now_ts(),
             },
         );
-        let error_code = classify_tunnel_error_code(&last_message).to_string();
+        let error_code = last_code.as_str().to_string();
         let _ = crate::p2p::close_active_p2p_job_with_nat(
             &config,
             &opened,
@@ -682,6 +718,7 @@ pub(super) async fn start_wgvpn_active_with_notify(
     let signal_offer = crate::punch_signal::local_offer();
     let start_message = P2PAttemptMessage::AttemptStart {
         protocol_version: 1,
+        error_contract_version: crate::error::CONTRACT_VERSION,
         client_job_id: client_job_id.to_string(),
         attempt_id: attempt_id.clone(),
         attempt,
@@ -715,7 +752,11 @@ pub(super) async fn start_wgvpn_active_with_notify(
     )
     .await
     {
-        return Err(anyhow!("notify_failed: {}", err));
+        return Err(crate::error::classified(
+            err,
+            ErrorCode::SignalSendRejected,
+            "attempt notification failed",
+        ));
     }
 
     let ready = tokio::time::timeout(Duration::from_secs(30), event_rx.recv()).await;
@@ -735,10 +776,13 @@ pub(super) async fn start_wgvpn_active_with_notify(
             error_code,
             message,
         })) => {
-            return Err(anyhow!("{}: {}", error_code, message));
+            return Err(AppError::from_wire(&error_code, message).into());
         }
         Ok(Some(P2PAttemptEvent::Cancelled)) => {
-            return Err(anyhow!("peer_cancelled"));
+            return Err(coded(
+                ErrorCode::ConnectionExecutionPeerCancelled,
+                "connection.execution.peer_cancelled",
+            ));
         }
         _ => {
             let _ = send_p2p_attempt_message(
@@ -749,11 +793,14 @@ pub(super) async fn start_wgvpn_active_with_notify(
                 P2PAttemptMessage::AttemptCancel {
                     protocol_version: 1,
                     attempt_id,
-                    reason: "peer_prepare_timeout".to_string(),
+                    reason: "connection.peer_prepare.timeout".to_string(),
                 },
             )
             .await;
-            return Err(anyhow!("peer_prepare_timeout"));
+            return Err(coded(
+                ErrorCode::ConnectionPeerPrepareTimeout,
+                "connection.peer_prepare.timeout",
+            ));
         }
     };
 
@@ -768,7 +815,10 @@ pub(super) async fn start_wgvpn_active_with_notify(
                 prefer_tcp: config.prefer_tcp,
             })
         {
-            return Err(anyhow!("traversal_preference_mismatch"));
+            return Err(coded(
+                ErrorCode::TraversalPlanNegotiationMismatch,
+                "traversal_preference_mismatch",
+            ));
         }
         crate::traversal::register_with_signal(
             punch_token.clone(),
@@ -780,11 +830,12 @@ pub(super) async fn start_wgvpn_active_with_notify(
             true,
             negotiation,
             if use_ws_signal {
-                Some(
-                    config
-                        .device_id
-                        .ok_or_else(|| anyhow!("missing_signal_device_id"))?,
-                )
+                Some(config.device_id.ok_or_else(|| {
+                    coded(
+                        ErrorCode::RuntimeDeviceNotRegistered,
+                        "missing_signal_device_id",
+                    )
+                })?)
             } else {
                 None
             },
@@ -805,53 +856,53 @@ pub(super) async fn start_wgvpn_active_with_notify(
     let result = tokio::select! {
         result = &mut start_handle => match result {
             Ok(result) => result,
-            Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+            Err(err) => Err(AppError::with_source(if err.is_cancelled() { ErrorCode::TraversalExecutionCancelled } else { ErrorCode::RuntimeExecutionPanicked }, "active wgvpn task failed", err).into()),
         },
         event = event_rx.recv() => match event {
             Some(P2PAttemptEvent::Failed { error_code, message }) => {
                 let local_result = start_handle.await;
                 let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
                 match local_result {
-                    Ok(Err(error)) if error.to_string().starts_with("punch_exhausted:") => Err(error),
-                    _ => Err(anyhow!("{}: {}", error_code, message)),
+                    Ok(Err(error)) if code_of(&error) == ErrorCode::TraversalExecutionExhausted => Err(error),
+                    _ => Err(AppError::from_wire(&error_code, message).into()),
                 }
             },
             Some(P2PAttemptEvent::Cancelled) => {
                 let _ = start_handle.await;
                 let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
-                Err(anyhow!("peer_cancelled"))
+                Err(coded(ErrorCode::ConnectionExecutionPeerCancelled, "connection.execution.peer_cancelled"))
             },
             Some(P2PAttemptEvent::ApprovalRequired) => {
                 approval_signal_received = true;
                 match start_handle.await {
                     Ok(result) => result,
-                    Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                    Err(err) => Err(AppError::with_source(if err.is_cancelled() { ErrorCode::TraversalExecutionCancelled } else { ErrorCode::RuntimeExecutionPanicked }, "active wgvpn task failed", err).into()),
                 }
             },
             Some(P2PAttemptEvent::ApprovalGranted) => {
                 early_approval_result = Some(Ok(()));
                 match start_handle.await {
                     Ok(result) => result,
-                    Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                    Err(err) => Err(AppError::with_source(if err.is_cancelled() { ErrorCode::TraversalExecutionCancelled } else { ErrorCode::RuntimeExecutionPanicked }, "active wgvpn task failed", err).into()),
                 }
             },
             Some(P2PAttemptEvent::ApprovalDenied) => {
-                early_approval_result = Some(Err(anyhow!("approval_denied")));
+                early_approval_result = Some(Err(coded(ErrorCode::ConnectionApprovalDenied, "connection.approval.denied")));
                 match start_handle.await {
                     Ok(result) => result,
-                    Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                    Err(err) => Err(AppError::with_source(if err.is_cancelled() { ErrorCode::TraversalExecutionCancelled } else { ErrorCode::RuntimeExecutionPanicked }, "active wgvpn task failed", err).into()),
                 }
             },
             Some(P2PAttemptEvent::ApprovalTimeout) => {
-                early_approval_result = Some(Err(anyhow!("approval_timeout")));
+                early_approval_result = Some(Err(coded(ErrorCode::ConnectionApprovalTimeout, "connection.approval.timeout")));
                 match start_handle.await {
                     Ok(result) => result,
-                    Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                    Err(err) => Err(AppError::with_source(if err.is_cancelled() { ErrorCode::TraversalExecutionCancelled } else { ErrorCode::RuntimeExecutionPanicked }, "active wgvpn task failed", err).into()),
                 }
             },
             _ => match start_handle.await {
                 Ok(result) => result,
-                Err(err) => Err(anyhow!("active wgvpn task failed: {}", err)),
+                Err(err) => Err(AppError::with_source(if err.is_cancelled() { ErrorCode::TraversalExecutionCancelled } else { ErrorCode::RuntimeExecutionPanicked }, "active wgvpn task failed", err).into()),
             },
         }
     };
@@ -901,20 +952,45 @@ async fn await_active_inbound_approval(
             match event_rx.recv().await {
                 Some(P2PAttemptEvent::ApprovalRequired) => required = true,
                 Some(P2PAttemptEvent::ApprovalGranted) if required => return Ok(()),
-                Some(P2PAttemptEvent::ApprovalDenied) => return Err(anyhow!("approval_denied")),
-                Some(P2PAttemptEvent::ApprovalTimeout) => return Err(anyhow!("approval_timeout")),
+                Some(P2PAttemptEvent::ApprovalDenied) => {
+                    return Err(coded(
+                        ErrorCode::ConnectionApprovalDenied,
+                        "connection.approval.denied",
+                    ))
+                }
+                Some(P2PAttemptEvent::ApprovalTimeout) => {
+                    return Err(coded(
+                        ErrorCode::ConnectionApprovalTimeout,
+                        "connection.approval.timeout",
+                    ))
+                }
                 Some(P2PAttemptEvent::Failed {
                     error_code,
                     message,
-                }) => return Err(anyhow!("{}: {}", error_code, message)),
-                Some(P2PAttemptEvent::Cancelled) => return Err(anyhow!("peer_cancelled")),
+                }) => return Err(AppError::from_wire(&error_code, message).into()),
+                Some(P2PAttemptEvent::Cancelled) => {
+                    return Err(coded(
+                        ErrorCode::ConnectionExecutionPeerCancelled,
+                        "connection.execution.peer_cancelled",
+                    ))
+                }
                 Some(_) => {}
-                None => return Err(anyhow!("approval_channel_closed")),
+                None => {
+                    return Err(coded(
+                        ErrorCode::SignalReceiveClosed,
+                        "approval channel closed",
+                    ))
+                }
             }
         }
     })
     .await;
-    result.map_err(|_| anyhow!("approval_timeout"))?
+    result.map_err(|_| {
+        coded(
+            ErrorCode::ConnectionApprovalTimeout,
+            "connection.approval.timeout",
+        )
+    })?
 }
 
 pub(super) fn publish_active_tunnel_job_failed(
@@ -922,11 +998,14 @@ pub(super) fn publish_active_tunnel_job_failed(
     peer_device_id: i64,
     peer_device_uuid: String,
     attempt: u8,
-    message: String,
+    error: anyhow::Error,
 ) {
+    let error_code = code_of(&error).as_str().to_owned();
+    let message = error.to_string();
     update_active_tunnel_job_status(
         shared,
         TunnelJobStatus {
+            error_code: error_code.clone(),
             is_active: true,
             tcp_retry_recommended: false,
             symmetric_nat_help_recommended: false,
@@ -965,6 +1044,9 @@ pub(super) fn publish_active_tunnel_job_cancelled(
     update_active_tunnel_job_status(
         shared,
         TunnelJobStatus {
+            error_code: crate::error::ErrorCode::ConnectionExecutionUserCancelled
+                .as_str()
+                .to_owned(),
             is_active: true,
             tcp_retry_recommended: false,
             symmetric_nat_help_recommended: false,

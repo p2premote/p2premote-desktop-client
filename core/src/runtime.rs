@@ -24,6 +24,7 @@ use crate::device::{
     set_connect_password, set_device_password, update_device_alias, DeviceStatusReport,
 };
 use crate::device_identity::{detect_clone, ensure_device_uuid, CloneDetectionResult};
+use crate::error::{code_of, coded, retry_attempt, AppError, ErrorCode};
 use crate::gonc_ffi;
 use crate::health::{
     spawn_health_server, HealthDisconnectHandler, HealthServerHandle, PassiveHealthEvent,
@@ -31,8 +32,8 @@ use crate::health::{
 use crate::i18n::localized_message;
 use crate::p2p::wgvpn_flow;
 use crate::p2p::{
-    build_punch_token, close_active_p2p_job, open_active_p2p_job, wgvpn_health_monitor_loop,
-    ActiveP2POpenResult, ActiveStartResult, PassivePeerInfo, TunnelHealthEvent,
+    build_punch_token, open_active_p2p_job, wgvpn_health_monitor_loop, ActiveP2POpenResult,
+    ActiveStartResult, PassivePeerInfo, TunnelHealthEvent,
 };
 use crate::speed_test::TunnelSpeedTestCommand;
 use crate::subnet_router;
@@ -41,7 +42,7 @@ use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -242,6 +243,8 @@ enum P2PAttemptEvent {
 enum P2PAttemptMessage {
     AttemptStart {
         protocol_version: u8,
+        #[serde(default)]
+        error_contract_version: u8,
         client_job_id: String,
         attempt_id: String,
         attempt: u8,
@@ -268,6 +271,8 @@ enum P2PAttemptMessage {
     },
     AttemptReady {
         protocol_version: u8,
+        #[serde(default)]
+        error_contract_version: u8,
         attempt_id: String,
         stage: String,
         rdp_enabled: bool,
@@ -323,58 +328,32 @@ enum P2PAttemptMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct P2PAttemptErrorPayload {
+    #[serde(
+        rename = "error_code",
+        deserialize_with = "crate::error::deserialize_code"
+    )]
     code: String,
     message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    message_key: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    message_params: BTreeMap<String, serde_json::Value>,
 }
 
 impl P2PAttemptErrorPayload {
     fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         let code = code.into();
+        let error = AppError::from_wire(&code, message);
         Self {
-            message_key: Some(format!("p2p.attempt.{code}")),
-            code,
-            message: message.into(),
-            message_params: BTreeMap::new(),
+            code: error.code().as_str().to_owned(),
+            message: error.to_string(),
         }
     }
-
     fn localized_message(&self, locale: Option<&str>) -> String {
-        let Some(key) = self.message_key.as_deref() else {
-            return self.message.clone();
-        };
-        let owned_params: Vec<(String, String)> = self
-            .message_params
-            .iter()
-            .map(|(name, value)| {
-                let value = value
-                    .as_str()
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| value.to_string());
-                (name.clone(), value)
-            })
-            .collect();
-        let params: Vec<(&str, &str)> = owned_params
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-            .collect();
-        let localized = localized_message(locale, key, &params);
+        let key = format!("p2p.attempt.{}", self.code);
+        let localized = localized_message(locale, &key, &[]);
         if localized == key {
             self.message.clone()
-        } else if self.message.trim().is_empty()
-            || self.message == self.code
-            || self.message == localized
+        } else if self.message.is_empty() || self.message == self.code || self.message == localized
         {
             localized
         } else {
-            // Keep the diagnostic supplied by the peer. Replacing it with the
-            // localized category used to turn errors such as access denied or
-            // an invalid WireGuard key into only "WireGuard configuration
-            // failed", leaving neither the UI nor the active-side log with an
-            // actionable cause.
             format!("{}: {}", localized, self.message)
         }
     }
@@ -1196,94 +1175,6 @@ pub(super) fn refresh_pending_inbound_approvals(shared: &Arc<Mutex<SharedRuntime
 
 // ---- IPC 控制服务器 ----
 
-fn classify_tunnel_error_code(message: &str) -> &'static str {
-    let message = message.to_lowercase();
-    let structured_code = message
-        .split_once(':')
-        .map(|(code, _)| code.trim())
-        .unwrap_or(message.trim());
-    if let Some(code) = [
-        "hole_punch_wait_timeout",
-        "peer_prepare_timeout",
-        "peer_offline",
-        "peer_cancelled",
-        "user_cancelled",
-        "invalid_lan_cidr",
-        "config_load_failed",
-        "passive_start_failed",
-        "wireguard_config_failed",
-        "wireguard_handshake_failed",
-        "approval_denied",
-        "approval_timeout",
-        "approval_request_missing",
-        "approval_busy",
-        "internal_error",
-    ]
-    .into_iter()
-    .find(|code| *code == structured_code)
-    {
-        return code;
-    }
-    if matches!(
-        structured_code,
-        "punch_exhausted" | "traversal_signal_timeout"
-    ) || message.starts_with("hole_punch_wait_timeout:")
-        || (message.contains("exchange failed:") && message.contains("timeout"))
-        || (message.contains("udp tunnel failed:")
-            && (message.contains("timeout")
-                || message.contains("direct p2p connection failed")
-                || message.contains("failed to establish gonc p2p tunnel")))
-    {
-        "hole_punch_wait_timeout"
-    } else if message.contains("invalid") && message.contains("cidr") {
-        "invalid_lan_cidr"
-    } else if message.contains("offline") {
-        "peer_offline"
-    } else if message.contains("cancel") {
-        "user_cancelled"
-    } else if message.contains("wireguard") && message.contains("handshake") {
-        "wireguard_handshake_failed"
-    } else if message.contains("wireguard") {
-        "wireguard_config_failed"
-    } else {
-        "internal_error"
-    }
-}
-
-fn is_retryable_tunnel_error(message: &str) -> bool {
-    const RETRYABLE_ERROR_CODES: &[&str] = &["hole_punch_wait_timeout"];
-    let code = classify_tunnel_error_code(message);
-    RETRYABLE_ERROR_CODES.contains(&code)
-}
-
-fn is_non_retryable_wgvpn_error(message: &str) -> bool {
-    let message = message.to_lowercase();
-    [
-        "not logged in",
-        "device not registered",
-        "unauthorized",
-        "forbidden",
-        "401",
-        "403",
-        "invalid token",
-        "expired token",
-        "无效或已过期的令牌",
-        "未登录",
-        "设备未注册",
-        "only passive wgvpn may expose lan cidrs",
-        "invalid ipv4 cidr",
-        "invalid exposed lan cidr",
-        "exposed lan cidr overlaps",
-        "subnet router backend is not implemented",
-        "approval_denied",
-        "approval_timeout",
-        "approval_request_missing",
-        "approval_busy",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1312,6 +1203,7 @@ mod tests {
     fn attempt_start_carries_source_device_identity_to_passive_peer() {
         let message = P2PAttemptMessage::AttemptStart {
             protocol_version: 1,
+            error_contract_version: crate::error::CONTRACT_VERSION,
             client_job_id: "job-1".to_string(),
             attempt_id: "attempt-1".to_string(),
             attempt: 1,
@@ -1329,6 +1221,7 @@ mod tests {
         let encoded = serde_json::to_string(&message).expect("serialize attempt start");
         let decoded: P2PAttemptMessage =
             serde_json::from_str(&encoded).expect("deserialize attempt start");
+        assert!(encoded.contains("\"error_contract_version\":1"));
 
         match decoded {
             P2PAttemptMessage::AttemptStart {
@@ -1344,15 +1237,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_ready_omits_transport_and_explicit_null_is_rejected() {
+    fn missing_contract_is_rejected_and_explicit_null_transport_is_invalid() {
         let legacy = r#"{"type":"attempt_ready","protocol_version":1,"attempt_id":"a","stage":"ready","rdp_enabled":false,"rdp_port":3389}"#;
-        assert!(matches!(
-            serde_json::from_str::<P2PAttemptMessage>(legacy).unwrap(),
-            P2PAttemptMessage::AttemptReady {
-                signal_transport: None,
-                ..
-            }
-        ));
+        let P2PAttemptMessage::AttemptReady {
+            error_contract_version,
+            ..
+        } = serde_json::from_str::<P2PAttemptMessage>(legacy).unwrap()
+        else {
+            panic!("expected ready")
+        };
+        let error = crate::error::require_contract(error_contract_version).unwrap_err();
+        assert_eq!(
+            code_of(&error),
+            ErrorCode::ConnectionCompatibilityClientUpgradeRequired
+        );
+        assert!(crate::error::require_contract(1).is_ok());
+        assert!(crate::error::require_contract(2).is_err());
         let explicit = legacy.trim_end_matches('}').to_owned() + ",\"signal_transport\":null}";
         assert!(serde_json::from_str::<P2PAttemptMessage>(&explicit).is_err());
     }
@@ -1366,64 +1266,31 @@ mod tests {
     }
 
     #[test]
-    fn p2p_attempt_error_is_structured_and_localized() {
+    fn p2p_attempt_error_is_a_two_field_contract() {
         let error = P2PAttemptErrorPayload::new(
-            "wireguard_handshake_failed",
+            "wireguard.handshake.failed",
             "wireguard handshake timeout",
         );
         let json = serde_json::to_value(&error).unwrap();
-        assert_eq!(
-            json["message_key"],
-            "p2p.attempt.wireguard_handshake_failed"
-        );
+        assert_eq!(json.as_object().unwrap().len(), 2);
+        assert_eq!(json["error_code"], "wireguard.handshake.failed");
         assert_eq!(
             error.localized_message(Some("en")),
             "WireGuard handshake failed: wireguard handshake timeout"
         );
     }
-
     #[test]
-    fn p2p_attempt_error_keeps_old_payload_compatibility() {
-        let error: P2PAttemptErrorPayload =
-            serde_json::from_str(r#"{"code":"legacy_error","message":"legacy message"}"#).unwrap();
-        assert_eq!(error.localized_message(Some("en")), "legacy message");
-    }
-
-    #[test]
-    fn only_hole_punch_wait_timeout_is_retryable() {
-        assert!(is_retryable_tunnel_error(
-            "hole_punch_wait_timeout: rendezvous timed out"
-        ));
-        assert!(is_retryable_tunnel_error(
-            "exchange failed: wait response timeout"
-        ));
-        assert!(is_retryable_tunnel_error(
-            "udp tunnel failed: failed to establish gonc p2p tunnel: direct P2P connection failed"
-        ));
-        assert!(is_retryable_tunnel_error(
-            "udp tunnel failed: gonc hole punch timeout"
-        ));
-        for fatal in [
-            "peer_prepare_timeout",
-            "peer_offline",
-            "invalid_lan_cidr: invalid IPv4 CIDR",
-            "wireguard_config_failed: access denied",
-            "internal_error: unexpected response",
-        ] {
-            assert!(!is_retryable_tunnel_error(fatal), "{fatal}");
-        }
-    }
-
-    #[test]
-    fn structured_attempt_error_code_is_preserved_for_server_reporting() {
-        assert_eq!(
-            classify_tunnel_error_code("peer_prepare_timeout: peer did not become ready"),
-            "peer_prepare_timeout"
-        );
-        assert_eq!(
-            classify_tunnel_error_code("config_load_failed: access denied"),
-            "config_load_failed"
-        );
+    fn p2p_attempt_error_preserves_unknown_new_codes_and_rejects_legacy_shape() {
+        let error: P2PAttemptErrorPayload = serde_json::from_str(
+            r#"{"error_code":"future.exchange.failed","message":"future message"}"#,
+        )
+        .unwrap();
+        assert_eq!(error.code, "future.exchange.failed");
+        assert_eq!(error.localized_message(Some("en")), "future message");
+        assert!(serde_json::from_str::<P2PAttemptErrorPayload>(
+            r#"{"code":"old_error","message":"old"}"#
+        )
+        .is_err());
     }
 
     #[test]
@@ -1431,6 +1298,9 @@ mod tests {
         let mut status = RuntimeStatus {
             locale: Some("zh-CN".to_string()),
             active_tunnel_jobs: vec![TunnelJobStatus {
+                error_code: crate::error::ErrorCode::RuntimeExecutionUnclassified
+                    .as_str()
+                    .to_owned(),
                 is_active: true,
                 tcp_retry_recommended: false,
                 symmetric_nat_help_recommended: false,
@@ -1459,7 +1329,7 @@ mod tests {
                 virtual_ip: None,
                 peer_virtual_ip: None,
                 last_result: TunnelLastResult::None,
-                error_code: Some("hole_punch_wait_timeout".to_string()),
+                error_code: Some("traversal.punch.timeout".to_string()),
                 message: Some("本次建立失败：等待打洞响应超时；60 秒后自动重试".to_string()),
                 health_failures: 0,
                 health_grace_deadline: None,
@@ -1509,6 +1379,7 @@ mod tests {
         );
 
         let stale_status = TunnelJobStatus {
+            error_code: String::new(),
             peer_device_id: 29,
             peer_device_uuid: String::new(),
             is_active: false,
@@ -1679,28 +1550,6 @@ mod tests {
 
         config.auto_login = false;
         assert!(!persistent_login_enabled(&config));
-    }
-
-    #[test]
-    fn negotiated_punch_failures_retry_but_invalid_plans_and_cancellation_do_not() {
-        for error in [
-            "punch_exhausted",
-            "punch_exhausted:udp4,udp6",
-            "punch_exhausted:tcp4,udp4,udp6",
-            "traversal_signal_timeout",
-        ] {
-            assert_eq!(classify_tunnel_error_code(error), "hole_punch_wait_timeout");
-            assert!(is_retryable_tunnel_error(error));
-        }
-        for error in [
-            "invalid_traversal_sequence",
-            "traversal_plan_mismatch",
-            "traversal_cancelled",
-            "approval_denied",
-            "peer_offline",
-        ] {
-            assert!(!is_retryable_tunnel_error(error));
-        }
     }
 
     fn passive_lifecycle(peer_device_id: i64) -> TunnelLifecycleStatus {

@@ -117,6 +117,10 @@ impl CommandError {
     }
 
     pub fn from_error(error: &anyhow::Error) -> Option<Self> {
+        let code = crate::error::code_of(error);
+        if code != crate::error::ErrorCode::RuntimeExecutionUnclassified {
+            return Some(Self::new(code.as_str(), crate::error::retry_attempt(&code)));
+        }
         if crate::auth::is_invalid_saved_session(error) {
             return Some(Self::new("AUTH_SAVED_SESSION_EXPIRED", false));
         }
@@ -535,6 +539,8 @@ pub struct TunnelLifecycleStatus {
 /// （其余为默认值）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelJobStatus {
+    #[serde(default)]
+    pub error_code: String,
     #[serde(default)]
     pub peer_device_id: i64,
     #[serde(default)]

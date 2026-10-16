@@ -7,6 +7,7 @@
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 use p2premote_punch as _;
 
+use crate::error::AppError;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_os = "linux"))]
@@ -91,12 +92,15 @@ pub struct UdpTunnelResult {
     #[serde(default)]
     pub attempts: u32,
     #[serde(default)]
+    pub error_code: String,
+    #[serde(rename = "message")]
     pub error: String,
 }
 
 #[derive(Debug)]
 pub struct UdpTunnelFailure {
     pub result: UdpTunnelResult,
+    pub error: AppError,
 }
 
 impl std::fmt::Display for UdpTunnelFailure {
@@ -113,7 +117,11 @@ impl std::fmt::Display for UdpTunnelFailure {
     }
 }
 
-impl std::error::Error for UdpTunnelFailure {}
+impl std::error::Error for UdpTunnelFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StartSubnetRouterRequest {
@@ -614,7 +622,38 @@ pub async fn start_udp_tunnel_native_with_signal(
         }
         None => p2premote_punch::api::start_udp_tunnel(request.into(), budget).await,
     }
-    .map_err(|error| anyhow!(error))?;
+    .map_err(|failure| {
+        let mut result = failure.tunnel_result.unwrap_or_default();
+        result.error_code = failure.error.code().as_str().to_owned();
+        result.error = failure.error.to_string();
+        if result.network.is_empty() {
+            result.network = request.network.clone();
+        }
+        let converted = native_udp_tunnel_result(result).unwrap_or_else(|_| UdpTunnelResult {
+            ok: false,
+            handle_id: String::new(),
+            local_forward_addr: String::new(),
+            local_forward_port: 0,
+            peer_endpoint: String::new(),
+            local_nat_type: String::new(),
+            remote_nat_type: String::new(),
+            network: request.network.clone(),
+            selected_traversal: String::new(),
+            transport_mode: String::new(),
+            local_lan_addr: String::new(),
+            local_nat_addr: String::new(),
+            remote_lan_addr: String::new(),
+            remote_nat_addr: String::new(),
+            is_client: false,
+            attempts: 0,
+            error_code: failure.error.code().as_str().to_owned(),
+            error: failure.error.to_string(),
+        });
+        anyhow::Error::new(UdpTunnelFailure {
+            result: converted,
+            error: failure.error,
+        })
+    })?;
     native_udp_tunnel_result(result)
 }
 
@@ -661,6 +700,7 @@ fn native_udp_tunnel_result(result: p2premote_punch::UdpTunnelResult) -> Result<
         remote_nat_addr: result.remote_nat_addr,
         is_client: result.is_client,
         attempts: u32::try_from(result.attempts).context("udp tunnel attempts out of range")?,
+        error_code: result.error_code,
         error: result.error,
     })
 }

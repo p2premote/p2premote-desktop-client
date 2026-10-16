@@ -1,3 +1,4 @@
+use crate::error::{AppError, ErrorCode};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -195,7 +196,7 @@ pub struct ServiceWsClient {
 
 struct PendingNotifyAck {
     generation: u64,
-    sender: oneshot::Sender<Result<(), String>>,
+    sender: oneshot::Sender<Result<(), AppError>>,
 }
 
 impl ServiceWsClient {
@@ -404,7 +405,7 @@ impl ServiceWsClient {
                                                     .and_then(|value| value.get("code"))
                                                     .and_then(|value| value.as_str())
                                                     .unwrap_or("notify_rejected");
-                                                Err(code.to_string())
+                                                Err(AppError::new(ErrorCode::SignalSendRejected, code))
                                             };
                                             let _ = waiter.sender.send(result);
                                         }
@@ -548,7 +549,7 @@ impl ServiceWsClient {
         message_id: String,
         access_grant: String,
         data: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         self.send_p2p_notify_for_generation(
             connection_id,
             target_device_id,
@@ -570,21 +571,30 @@ impl ServiceWsClient {
         data: String,
         expected_generation: u64,
         deadline: std::time::Instant,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         let budget = deadline
             .saturating_duration_since(std::time::Instant::now())
             .min(Duration::from_secs(5));
         if budget.is_zero() {
-            return Err("signal_delivery_timeout".into());
+            return Err(AppError::new(
+                ErrorCode::SignalSendTimeout,
+                "signal deadline exceeded",
+            ));
         }
         let (ack_tx, ack_rx) = oneshot::channel();
         let generation = self.connection_generation.load(Ordering::Acquire);
         if generation == 0 || generation != expected_generation || !*self.connected.lock().await {
-            return Err("websocket not connected".to_string());
+            return Err(AppError::new(
+                ErrorCode::SignalSendDisconnected,
+                "websocket not connected",
+            ));
         }
         let mut waiters = self.p2p_notify_acks.lock().await;
         if waiters.contains_key(&message_id) {
-            return Err("duplicate_notify_message_id".into());
+            return Err(AppError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "duplicate notify message ID",
+            ));
         }
         waiters.insert(
             message_id.clone(),
@@ -609,8 +619,17 @@ impl ServiceWsClient {
                     access_grant,
                     data,
                 })
-                .map_err(|err| format!("failed to queue p2p_notify: {}", err)),
-            _ => Err("websocket not connected".to_string()),
+                .map_err(|err| {
+                    AppError::with_source(
+                        ErrorCode::SignalSendDisconnected,
+                        "failed to queue signal",
+                        err,
+                    )
+                }),
+            _ => Err(AppError::new(
+                ErrorCode::SignalSendDisconnected,
+                "websocket not connected",
+            )),
         };
         drop(channel);
         if let Err(err) = send_result {
@@ -619,10 +638,16 @@ impl ServiceWsClient {
         }
         match tokio::time::timeout(budget, ack_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err("p2p_notify_ack_cancelled".to_string()),
+            Ok(Err(_)) => Err(AppError::new(
+                ErrorCode::SignalReceiveCancelled,
+                "signal acknowledgement cancelled",
+            )),
             Err(_) => {
                 remove_pending_notify_ack(&self.p2p_notify_acks, &message_id, generation).await;
-                Err("p2p_notify_ack_timeout".to_string())
+                Err(AppError::new(
+                    ErrorCode::SignalSendTimeout,
+                    "signal acknowledgement timed out",
+                ))
             }
         }
     }
@@ -673,7 +698,10 @@ async fn fail_pending_notify_ack(
     reason: String,
 ) {
     if let Some(waiter) = remove_pending_notify_ack(waiters, message_id, generation).await {
-        let _ = waiter.sender.send(Err(reason));
+        let _ = waiter.sender.send(Err(AppError::new(
+            ErrorCode::SignalSendDisconnected,
+            reason,
+        )));
     }
 }
 
@@ -696,7 +724,10 @@ async fn fail_pending_notify_acks_for_generation(
             .collect::<Vec<_>>()
     };
     for waiter in pending {
-        let _ = waiter.sender.send(Err(reason.to_string()));
+        let _ = waiter.sender.send(Err(AppError::new(
+            ErrorCode::SignalSendDisconnected,
+            reason,
+        )));
     }
 }
 
@@ -741,7 +772,7 @@ impl Default for ServiceWsClient {
 mod tests {
     use super::*;
 
-    fn pending_ack(generation: u64) -> (PendingNotifyAck, oneshot::Receiver<Result<(), String>>) {
+    fn pending_ack(generation: u64) -> (PendingNotifyAck, oneshot::Receiver<Result<(), AppError>>) {
         let (sender, receiver) = oneshot::channel();
         (PendingNotifyAck { generation, sender }, receiver)
     }
@@ -850,8 +881,8 @@ mod tests {
         fail_pending_notify_acks_for_generation(&waiters, 4, "websocket_disconnected").await;
 
         assert_eq!(
-            old_rx.await.unwrap(),
-            Err("websocket_disconnected".to_string())
+            old_rx.await.unwrap().unwrap_err().code(),
+            ErrorCode::SignalSendDisconnected
         );
         assert!(matches!(
             current_rx.try_recv(),
@@ -944,8 +975,8 @@ mod tests {
         assert!(send_channel.lock().await.is_none());
         assert!(waiters.lock().await.is_empty());
         assert_eq!(
-            receiver.await.unwrap(),
-            Err("websocket_disconnected".to_string())
+            receiver.await.unwrap().unwrap_err().code(),
+            ErrorCode::SignalSendDisconnected
         );
     }
 }

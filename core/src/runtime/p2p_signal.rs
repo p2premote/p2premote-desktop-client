@@ -104,6 +104,7 @@ pub(super) async fn handle_p2p_notify(
         serde_json::from_str(&data).context("invalid p2p_notify business json")?;
     match message {
         P2PAttemptMessage::AttemptStart {
+            error_contract_version,
             client_job_id,
             attempt_id,
             attempt,
@@ -118,6 +119,25 @@ pub(super) async fn handle_p2p_notify(
             signal_transport,
             ..
         } => {
+            if let Err(error) = crate::error::require_contract(error_contract_version) {
+                send_p2p_attempt_message(
+                    ws_client,
+                    connection_id,
+                    source_device_id,
+                    access_grant,
+                    P2PAttemptMessage::AttemptFailed {
+                        protocol_version: 1,
+                        attempt_id,
+                        stage: "compatibility".into(),
+                        error: P2PAttemptErrorPayload::new(
+                            code_of(&error).as_str(),
+                            error.to_string(),
+                        ),
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
             if let Some(negotiation) = &traversal_negotiation {
                 negotiation.validate()?;
             }
@@ -136,7 +156,7 @@ pub(super) async fn handle_p2p_notify(
                             attempt_id,
                             stage: "signal_negotiation".into(),
                             error: P2PAttemptErrorPayload::new(
-                                error.to_string(),
+                                error.code().as_str(),
                                 error.to_string(),
                             ),
                         },
@@ -175,7 +195,7 @@ pub(super) async fn handle_p2p_notify(
                         attempt_id,
                         stage: "passive_preflight".to_string(),
                         error: P2PAttemptErrorPayload::new(
-                            "approval_busy",
+                            "connection.approval.busy",
                             "another inbound approval is already pending",
                         ),
                     },
@@ -314,7 +334,7 @@ pub(super) async fn handle_p2p_notify(
                             attempt_id: attempt_id.clone(),
                             stage: "passive_preflight".to_string(),
                             error: P2PAttemptErrorPayload::new(
-                                "config_load_failed",
+                                "runtime.config.load_failed",
                                 err.to_string(),
                             ),
                         },
@@ -395,7 +415,10 @@ pub(super) async fn handle_p2p_notify(
                         protocol_version: 1,
                         attempt_id,
                         stage: "passive_preflight".to_string(),
-                        error: P2PAttemptErrorPayload::new("passive_start_failed", message),
+                        error: P2PAttemptErrorPayload::new(
+                            "connection.peer_prepare.rejected",
+                            message,
+                        ),
                     },
                 )
                 .await?;
@@ -409,6 +432,7 @@ pub(super) async fn handle_p2p_notify(
                 access_grant.clone(),
                 P2PAttemptMessage::AttemptReady {
                     protocol_version: 1,
+                    error_contract_version: crate::error::CONTRACT_VERSION,
                     attempt_id,
                     stage: "hole_punch_wait".to_string(),
                     rdp_enabled: is_rdp_enabled(),
@@ -447,6 +471,7 @@ pub(super) async fn handle_p2p_notify(
             );
         }
         P2PAttemptMessage::AttemptReady {
+            error_contract_version,
             attempt_id,
             rdp_port,
             approval_required,
@@ -455,6 +480,13 @@ pub(super) async fn handle_p2p_notify(
             ..
         } => {
             if let Some(waiter) = shared.lock().p2p_attempt_waiters.get(&attempt_id).cloned() {
+                if let Err(error) = crate::error::require_contract(error_contract_version) {
+                    let _ = waiter.send(P2PAttemptEvent::Failed {
+                        error_code: code_of(&error).as_str().to_owned(),
+                        message: error.to_string(),
+                    });
+                    return Ok(());
+                }
                 let _ = waiter.send(P2PAttemptEvent::Ready {
                     rdp_port,
                     approval_required,
@@ -621,10 +653,7 @@ pub(super) fn spawn_passive_attempt_failure_reporter(
                             protocol_version: 1,
                             attempt_id: attempt_id.clone(),
                             stage: "passive_attempt".to_string(),
-                            error: P2PAttemptErrorPayload::new(
-                                classify_tunnel_error_code(&job.message),
-                                job.message,
-                            ),
+                            error: P2PAttemptErrorPayload::new(&job.error_code, job.message),
                         },
                     )
                     .await;

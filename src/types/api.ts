@@ -55,6 +55,7 @@ export interface ActiveTunnelJobResult {
  * active_tunnel_jobs 填 peer_device_uuid/result/tcp_retry_recommended；
  * wgvpn_jobs 填 is_active。） */
 export interface TunnelJobStatus {
+  error_code?: string
   peer_device_id: number
   peer_device_uuid?: string
   is_active?: boolean

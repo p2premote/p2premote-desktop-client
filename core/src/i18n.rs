@@ -315,16 +315,16 @@ fn zh_message(key: &str) -> &str {
         "payment.plan.invalid" => "无效的会员类型",
 
         // ---- P2P WebSocket structured errors ----
-        "p2p.attempt.config_load_failed" => "对端加载配置失败",
-        "p2p.attempt.passive_start_failed" => "对端启动隧道失败",
-        "p2p.attempt.hole_punch_wait_timeout" => "等待打洞响应超时",
-        "p2p.attempt.invalid_lan_cidr" => "对端 LAN 网段配置无效",
-        "p2p.attempt.peer_offline" => "对端设备离线",
-        "p2p.attempt.user_cancelled" => "对端已取消建立隧道",
-        "p2p.attempt.wireguard_handshake_failed" => "WireGuard 握手失败",
-        "p2p.attempt.wireguard_config_failed" => "WireGuard 配置失败",
-        "p2p.attempt.approval_busy" => "本机已有待处理的入站审批请求",
-        "p2p.attempt.internal_error" => "对端建立隧道失败",
+        "p2p.attempt.runtime.config.load_failed" => "对端加载配置失败",
+        "p2p.attempt.connection.peer_prepare.rejected" => "对端启动隧道失败",
+        "p2p.attempt.traversal.punch.timeout" => "等待打洞响应超时",
+        "p2p.attempt.connection.route_validation.invalid_cidr" => "对端 LAN 网段配置无效",
+        "p2p.attempt.connection.peer_prepare.offline" => "对端设备离线",
+        "p2p.attempt.connection.execution.user_cancelled" => "对端已取消建立隧道",
+        "p2p.attempt.wireguard.handshake.failed" => "WireGuard 握手失败",
+        "p2p.attempt.wireguard.configure.failed" => "WireGuard 配置失败",
+        "p2p.attempt.connection.approval.busy" => "本机已有待处理的入站审批请求",
+        "p2p.attempt.runtime.execution.unclassified" => "对端建立隧道失败",
 
         // ---- start_service_active_tunnel 的进度 message（service.rs）----
         "service.start.confirming" => "正在确认后台服务状态",
@@ -464,16 +464,16 @@ fn en_message(key: &str) -> &str {
         "payment.plan.invalid" => "Invalid subscription plan",
 
         // ---- P2P WebSocket structured errors ----
-        "p2p.attempt.config_load_failed" => "The peer failed to load its configuration",
-        "p2p.attempt.passive_start_failed" => "The peer failed to start the tunnel",
-        "p2p.attempt.hole_punch_wait_timeout" => "Timed out waiting for hole-punch response",
-        "p2p.attempt.invalid_lan_cidr" => "The peer has an invalid LAN subnet configuration",
-        "p2p.attempt.peer_offline" => "The peer device is offline",
-        "p2p.attempt.user_cancelled" => "The peer cancelled tunnel establishment",
-        "p2p.attempt.wireguard_handshake_failed" => "WireGuard handshake failed",
-        "p2p.attempt.wireguard_config_failed" => "WireGuard configuration failed",
-        "p2p.attempt.approval_busy" => "This device already has a pending inbound approval",
-        "p2p.attempt.internal_error" => "The peer failed to establish the tunnel",
+        "p2p.attempt.runtime.config.load_failed" => "The peer failed to load its configuration",
+        "p2p.attempt.connection.peer_prepare.rejected" => "The peer failed to start the tunnel",
+        "p2p.attempt.traversal.punch.timeout" => "Timed out waiting for hole-punch response",
+        "p2p.attempt.connection.route_validation.invalid_cidr" => "The peer has an invalid LAN subnet configuration",
+        "p2p.attempt.connection.peer_prepare.offline" => "The peer device is offline",
+        "p2p.attempt.connection.execution.user_cancelled" => "The peer cancelled tunnel establishment",
+        "p2p.attempt.wireguard.handshake.failed" => "WireGuard handshake failed",
+        "p2p.attempt.wireguard.configure.failed" => "WireGuard configuration failed",
+        "p2p.attempt.connection.approval.busy" => "This device already has a pending inbound approval",
+        "p2p.attempt.runtime.execution.unclassified" => "The peer failed to establish the tunnel",
 
         // ---- start_service_active_tunnel 进度 ----
         "service.start.confirming" => "Confirming background service status",

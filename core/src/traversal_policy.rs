@@ -1,5 +1,6 @@
 //! Application policy; the gonc-compatible punch library owns actual probing.
-use anyhow::{anyhow, Result};
+use crate::error::{coded, ErrorCode};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 pub const VERSION: u8 = 2;
@@ -29,20 +30,27 @@ pub fn ipv6_available() -> Option<bool> {
     }))
 }
 
-pub fn tcp_retry_recommended(prefer_tcp: bool, error: &str) -> bool {
+pub fn tcp_retry_recommended(
+    prefer_tcp: bool,
+    code: &crate::error::ErrorCode,
+    attempted_networks: &[String],
+) -> bool {
     prefer_tcp
-        && error
-            .strip_prefix("punch_exhausted:")
-            .is_some_and(|networks| {
-                networks
-                    .split(',')
-                    .any(|network| matches!(network, "tcp4" | "tcp6"))
-            })
+        && (matches!(code, crate::error::ErrorCode::TraversalExecutionExhausted)
+            || code.retry_class() == "next_network_or_attempt")
+        && attempted_networks
+            .iter()
+            .any(|network| matches!(network.as_str(), "tcp4" | "tcp6"))
 }
 
 pub fn symmetric_nat_help_recommended(error_code: &str, local_nat: &str, remote_nat: &str) -> bool {
-    error_code == "hole_punch_wait_timeout"
-        && (local_nat.eq_ignore_ascii_case("symm") || remote_nat.eq_ignore_ascii_case("symm"))
+    matches!(
+        crate::error::ErrorCode::parse(error_code),
+        crate::error::ErrorCode::TraversalExecutionExhausted
+            | crate::error::ErrorCode::TraversalPunchTimeout
+            | crate::error::ErrorCode::TraversalPunchFailed
+            | crate::error::ErrorCode::TraversalCandidateSelectionNoUsableCandidate
+    ) && (local_nat.eq_ignore_ascii_case("symm") || remote_nat.eq_ignore_ascii_case("symm"))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,7 +69,10 @@ pub struct Negotiation {
 impl Negotiation {
     pub fn validate(&self) -> Result<()> {
         if self.version != VERSION {
-            return Err(anyhow!("unsupported_traversal_negotiation"));
+            return Err(coded(
+                ErrorCode::TraversalCapabilityExchangeInvalidPayload,
+                format!("unsupported_traversal_negotiation"),
+            ));
         }
         Ok(())
     }
@@ -302,45 +313,59 @@ mod tests {
         assert!(usable_ipv6("2001:4860:4860::8888".parse().unwrap()));
     }
     #[test]
-    fn tcp_hint_requires_a_public_tcp_attempt_and_enabled_preference() {
-        for error in [
-            "punch_exhausted",
-            "punch_exhausted:",
-            "punch_exhausted:udp4,udp6",
-            "traversal_signal_timeout",
-            "peer_cancelled",
-        ] {
-            assert!(!tcp_retry_recommended(true, error));
-        }
+    fn tcp_hint_uses_code_and_attempted_networks() {
+        use crate::error::ErrorCode;
+        let networks = vec!["tcp4".to_owned(), "udp4".to_owned()];
         assert!(tcp_retry_recommended(
             true,
-            "punch_exhausted:tcp4,udp4,udp6"
+            &ErrorCode::TraversalPunchTimeout,
+            &networks
+        ));
+        assert!(!tcp_retry_recommended(
+            true,
+            &ErrorCode::TraversalLocalForwardIoFailed,
+            &networks
         ));
         assert!(tcp_retry_recommended(
             true,
-            "punch_exhausted:tcp6,udp6,udp4"
+            &ErrorCode::TraversalExecutionExhausted,
+            &networks
         ));
-        assert!(!tcp_retry_recommended(false, "punch_exhausted:tcp4,udp4"));
+        assert!(!tcp_retry_recommended(
+            false,
+            &ErrorCode::TraversalExecutionExhausted,
+            &networks
+        ));
+        assert!(!tcp_retry_recommended(
+            true,
+            &ErrorCode::ConnectionExecutionUserCancelled,
+            &networks
+        ));
+        assert!(!tcp_retry_recommended(
+            true,
+            &ErrorCode::TraversalExecutionExhausted,
+            &["udp4".into()]
+        ));
     }
     #[test]
     fn symmetric_nat_help_requires_network_punch_failure() {
         assert!(symmetric_nat_help_recommended(
-            "hole_punch_wait_timeout",
+            "traversal.punch.timeout",
             "symm",
             "easy"
         ));
         assert!(symmetric_nat_help_recommended(
-            "hole_punch_wait_timeout",
+            "traversal.punch.timeout",
             "hard",
             "SYMM"
         ));
         assert!(!symmetric_nat_help_recommended(
-            "internal_error",
+            "runtime.execution.unclassified",
             "symm",
             "symm"
         ));
         assert!(!symmetric_nat_help_recommended(
-            "hole_punch_wait_timeout",
+            "traversal.punch.timeout",
             "hard",
             "easy"
         ));

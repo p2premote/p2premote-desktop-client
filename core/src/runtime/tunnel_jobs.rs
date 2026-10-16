@@ -100,6 +100,7 @@ pub(super) fn spawn_wgvpn_job_task(
             update_wgvpn_job_status(
                 &shared,
                 TunnelJobStatus {
+                    error_code: String::new(),
                     peer_device_uuid: String::new(),
                     result: None,
                     tcp_retry_recommended: false,
@@ -128,6 +129,9 @@ pub(super) fn spawn_wgvpn_job_task(
                     update_wgvpn_job_status(
                         &shared,
                         TunnelJobStatus {
+                            error_code: crate::error::ErrorCode::RuntimeExecutionUnclassified
+                                .as_str()
+                                .to_owned(),
                             peer_device_uuid: String::new(),
                             result: None,
                             tcp_retry_recommended: false,
@@ -185,7 +189,7 @@ pub(super) fn spawn_wgvpn_job_task(
             let mut attempt_result = tokio::select! {
                 result = &mut attempt_handle => Some(match result {
                     Ok(result) => result,
-                    Err(err) => Err(anyhow::anyhow!("wgvpn attempt task failed: {}", err)),
+                    Err(err) => Err(AppError::with_source(if err.is_cancelled() { ErrorCode::TraversalExecutionCancelled } else { ErrorCode::RuntimeExecutionPanicked }, "wgvpn attempt task failed", err).into()),
                 }),
                 _ = tokio::time::sleep(Duration::from_secs(WGVPN_JOB_ATTEMPT_SECS)) => {
                     timed_out = true;
@@ -258,6 +262,7 @@ pub(super) fn spawn_wgvpn_job_task(
                             update_wgvpn_job_status(
                                 &shared,
                                 TunnelJobStatus {
+                                    error_code: code_of(&err).as_str().to_owned(),
                                     peer_device_uuid: String::new(),
                                     result: None,
                                     tcp_retry_recommended: false,
@@ -285,6 +290,7 @@ pub(super) fn spawn_wgvpn_job_task(
                     update_wgvpn_job_status(
                         &shared,
                         TunnelJobStatus {
+                            error_code: String::new(),
                             peer_device_uuid: String::new(),
                             result: None,
                             tcp_retry_recommended: false,
@@ -323,10 +329,11 @@ pub(super) fn spawn_wgvpn_job_task(
                         max_attempts,
                         err
                     );
-                    if is_non_retryable_wgvpn_error(&err_text) {
+                    if !retry_attempt(&code_of(&err)) {
                         update_wgvpn_job_status(
                             &shared,
                             TunnelJobStatus {
+                                error_code: code_of(&err).as_str().to_owned(),
                                 peer_device_uuid: String::new(),
                                 result: None,
                                 tcp_retry_recommended: false,
@@ -348,6 +355,7 @@ pub(super) fn spawn_wgvpn_job_task(
                         update_wgvpn_job_status(
                             &shared,
                             TunnelJobStatus {
+                                error_code: code_of(&err).as_str().to_owned(),
                                 peer_device_uuid: String::new(),
                                 result: None,
                                 tcp_retry_recommended: false,
@@ -368,6 +376,7 @@ pub(super) fn spawn_wgvpn_job_task(
                     update_wgvpn_job_status(
                         &shared,
                         TunnelJobStatus {
+                            error_code: code_of(&err).as_str().to_owned(),
                             peer_device_uuid: String::new(),
                             result: None,
                             tcp_retry_recommended: false,
@@ -414,6 +423,7 @@ pub(super) fn spawn_wgvpn_job_task(
         update_wgvpn_job_status(
             &shared,
             TunnelJobStatus {
+                error_code: ErrorCode::TraversalExecutionExhausted.as_str().to_owned(),
                 peer_device_uuid: String::new(),
                 result: None,
                 tcp_retry_recommended: false,
@@ -436,6 +446,39 @@ pub(super) fn spawn_wgvpn_job_task(
     });
 }
 
+#[cfg(test)]
+mod approval_error_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn missing_approval_request_retains_code_through_context_and_peer_payload() {
+        let shared = Arc::new(Mutex::new(SharedRuntimeState::default()));
+        for attempt in [None, Some("no-longer-pending")] {
+            let error = await_passive_inbound_approval(
+                &shared,
+                &crate::config::MachineConfig::default(),
+                29,
+                attempt,
+                1,
+                1,
+                1,
+            )
+            .await
+            .unwrap_err()
+            .context("passive setup failed");
+            let code = code_of(&error);
+            assert_eq!(code, ErrorCode::ConnectionApprovalRequestMissing);
+            let payload = P2PAttemptErrorPayload::new(code.as_str(), error.to_string());
+            let encoded = serde_json::to_string(&payload).unwrap();
+            let decoded: P2PAttemptErrorPayload = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(
+                decoded.code,
+                ErrorCode::ConnectionApprovalRequestMissing.as_str()
+            );
+        }
+    }
+}
+
 async fn await_passive_inbound_approval(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     config: &crate::config::MachineConfig,
@@ -445,7 +488,12 @@ async fn await_passive_inbound_approval(
     attempt: u8,
     max_attempts: u8,
 ) -> Result<()> {
-    let attempt_id = attempt_id.ok_or_else(|| anyhow!("approval_request_missing"))?;
+    let attempt_id = attempt_id.ok_or_else(|| {
+        coded(
+            ErrorCode::ConnectionApprovalRequestMissing,
+            "approval request missing",
+        )
+    })?;
     let requested_at = now_ts();
     let expires_at = requested_at + 60;
     {
@@ -454,7 +502,12 @@ async fn await_passive_inbound_approval(
             .pending_inbound_approval
             .as_mut()
             .filter(|pending| pending.status.attempt_id == attempt_id)
-            .ok_or_else(|| anyhow!("approval_request_missing"))?;
+            .ok_or_else(|| {
+                coded(
+                    ErrorCode::ConnectionApprovalRequestMissing,
+                    "approval request missing",
+                )
+            })?;
         pending.status.requested_at = requested_at;
         pending.status.expires_at = expires_at;
     }
@@ -474,13 +527,19 @@ async fn await_passive_inbound_approval(
                 )
             })
     }
-    .ok_or_else(|| anyhow!("approval_request_missing"))?;
+    .ok_or_else(|| {
+        coded(
+            ErrorCode::ConnectionApprovalRequestMissing,
+            "approval request missing",
+        )
+    })?;
 
     wgvpn_flow::set_wgvpn_allowed(config, peer_device_id, false).await?;
     refresh_pending_inbound_approvals(shared);
     update_wgvpn_job_status(
         shared,
         TunnelJobStatus {
+            error_code: String::new(),
             peer_device_uuid: String::new(),
             result: None,
             tcp_retry_recommended: false,
@@ -556,7 +615,10 @@ async fn await_passive_inbound_approval(
             )
             .await;
             let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
-            Err(anyhow!("approval_denied"))
+            Err(coded(
+                ErrorCode::ConnectionApprovalDenied,
+                "approval denied",
+            ))
         }
         PassiveApprovalDecision::Pending => {
             let _ = send_p2p_attempt_message(
@@ -571,7 +633,10 @@ async fn await_passive_inbound_approval(
             )
             .await;
             let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
-            Err(anyhow!("approval_timeout"))
+            Err(coded(
+                ErrorCode::ConnectionApprovalTimeout,
+                "approval timed out",
+            ))
         }
     };
     {
@@ -844,6 +909,9 @@ pub(super) fn publish_wgvpn_job_cancelled(
     update_wgvpn_job_status(
         shared,
         TunnelJobStatus {
+            error_code: crate::error::ErrorCode::ConnectionExecutionUserCancelled
+                .as_str()
+                .to_owned(),
             peer_device_uuid: String::new(),
             result: None,
             tcp_retry_recommended: false,
@@ -916,7 +984,7 @@ pub(super) fn update_wgvpn_job_status(
     }
     if !status.is_active {
         let (lifecycle_state, last_result, error_code) =
-            tunnel_job_lifecycle_projection(status.state, &status.message);
+            tunnel_job_lifecycle_projection(status.state, &status.error_code);
         let existing_lifecycle = state
             .status
             .tunnel_lifecycles

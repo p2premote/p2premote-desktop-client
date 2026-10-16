@@ -57,6 +57,8 @@ pub fn build_client() -> Client {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(bound(deserialize = "T: serde::de::DeserializeOwned"))]
 pub struct ApiResponse<T> {
+    #[serde(default)]
+    pub error_code: Option<String>,
     pub code: i32,
     #[serde(default)]
     pub msg: String,

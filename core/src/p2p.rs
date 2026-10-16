@@ -1,6 +1,7 @@
 use crate::auth::refresh_with_config;
 use crate::config::MachineConfig;
 use crate::device::RemoteAccessInfo;
+use crate::error::{coded, AppError, ErrorCode};
 use crate::health::{HEALTH_PORT, LEGACY_HEALTH_PORT};
 use crate::http::{shared_client, ApiResponse};
 use crate::speed_test::{
@@ -163,15 +164,6 @@ fn merge_nat(primary: &str, fallback: &str) -> String {
     }
 }
 
-/// Prefer the network of the last actual punch call; when absent (failure
-/// before any native call) fall back to the first planned network.
-fn fallback_network(primary: &str, plan: &str) -> String {
-    if !primary.is_empty() {
-        primary.to_string()
-    } else {
-        plan.split(',').next().unwrap_or_default().to_string()
-    }
-}
 /// token 过期前的刷新阈值（秒）
 const TOKEN_REFRESH_THRESHOLD_SECS: i64 = 300;
 
@@ -208,17 +200,24 @@ pub async fn open_active_p2p_job(
 ) -> Result<ActiveP2POpenResult> {
     let mut config = config.clone();
     ensure_fresh_token(&mut config).await;
-    let token = config
-        .auth_token
-        .clone()
-        .ok_or_else(|| anyhow!("not logged in"))?;
-    let source_device_id = config
-        .device_id
-        .ok_or_else(|| anyhow!("device not registered"))?;
-    let source_device_uuid = config
-        .device_uuid
-        .clone()
-        .ok_or_else(|| anyhow!("device not registered"))?;
+    let token = config.auth_token.clone().ok_or_else(|| {
+        coded(
+            ErrorCode::ConnectionAuthorizeUnauthenticated,
+            "not logged in",
+        )
+    })?;
+    let source_device_id = config.device_id.ok_or_else(|| {
+        coded(
+            ErrorCode::RuntimeDeviceNotRegistered,
+            "device not registered",
+        )
+    })?;
+    let source_device_uuid = config.device_uuid.clone().ok_or_else(|| {
+        coded(
+            ErrorCode::RuntimeDeviceNotRegistered,
+            "device not registered",
+        )
+    })?;
     let url = format!(
         "{}/api/v1/p2p/open",
         config.server_url.trim_end_matches('/')
@@ -237,16 +236,37 @@ pub async fn open_active_p2p_job(
         })
         .send()
         .await
-        .context("p2p open request failed")?;
-    let response: P2POpenResponse = response.json().await.context("invalid p2p open response")?;
+        .map_err(|error| {
+            AppError::with_source(
+                if error.is_timeout() {
+                    ErrorCode::ConnectionAuthorizeTimeout
+                } else {
+                    ErrorCode::ConnectionAuthorizeUnavailable
+                },
+                "p2p open request failed",
+                error,
+            )
+        })?;
+    let response: P2POpenResponse = response.json().await.map_err(|error| {
+        AppError::with_source(
+            ErrorCode::ConnectionAuthorizeInvalidResponse,
+            "invalid p2p open response",
+            error,
+        )
+    })?;
     if response.code != 0 {
-        return Err(anyhow!(
-            response.localized_error_message(config.locale.as_deref())
-        ));
+        return Err(AppError::from_wire(
+            response.error_code.as_deref().unwrap_or(""),
+            response.localized_error_message(config.locale.as_deref()),
+        )
+        .into());
     }
-    let data = response
-        .data
-        .ok_or_else(|| anyhow!("p2p open response missing data"))?;
+    let data = response.data.ok_or_else(|| {
+        coded(
+            ErrorCode::ConnectionAuthorizeInvalidResponse,
+            "p2p open response missing data",
+        )
+    })?;
     info!(
         "[p2p] p2p/open source identity: user_id={}, username_present={}, email_present={}",
         data.source_user_id,
@@ -697,10 +717,12 @@ async fn notify_remote_tunnel_stop(source_device_id: i64, health_addr: &str) -> 
 }
 
 async fn notify_p2p_end(config: &MachineConfig, request: NotifyP2PEndRequest) -> Result<()> {
-    let token = config
-        .auth_token
-        .clone()
-        .ok_or_else(|| anyhow!("not logged in"))?;
+    let token = config.auth_token.clone().ok_or_else(|| {
+        coded(
+            ErrorCode::ConnectionAuthorizeUnauthenticated,
+            "not logged in",
+        )
+    })?;
     let url = format!("{}/api/v1/p2p/end", config.server_url.trim_end_matches('/'));
     let client = shared_client();
     let response = client
@@ -709,10 +731,40 @@ async fn notify_p2p_end(config: &MachineConfig, request: NotifyP2PEndRequest) ->
         .json(&request)
         .send()
         .await
-        .context("p2p end request failed")?;
+        .map_err(|error| {
+            AppError::with_source(
+                if error.is_timeout() {
+                    ErrorCode::ReportSubmitTimeout
+                } else {
+                    ErrorCode::ReportSubmitUnavailable
+                },
+                "p2p end request failed",
+                error,
+            )
+        })?;
 
-    if !response.status().is_success() {
-        return Err(anyhow!("p2p end returned status {}", response.status()));
+    let status = response.status();
+    let envelope: crate::http::ApiResponse<Option<serde_json::Value>> =
+        response.json().await.map_err(|error| {
+            AppError::with_source(
+                ErrorCode::ReportSubmitInvalidPayload,
+                "invalid result submission response",
+                error,
+            )
+        })?;
+    if !status.is_success() || envelope.code != 0 {
+        let code = envelope
+            .error_code
+            .as_deref()
+            .filter(|code| p2premote_punch::error::valid_code(code))
+            .map(ErrorCode::parse)
+            .unwrap_or_else(|| match status.as_u16() {
+                401 | 403 => ErrorCode::ReportSubmitUnauthorized,
+                400 => ErrorCode::ReportSubmitInvalidPayload,
+                409 => ErrorCode::ReportSubmitConflict,
+                _ => ErrorCode::ReportSubmitUnavailable,
+            });
+        return Err(coded(code, envelope.msg));
     }
     Ok(())
 }
@@ -759,11 +811,18 @@ pub async fn close_active_p2p_job_with_nat(
     error_code: String,
     error_message: String,
 ) -> Result<()> {
-    let source_device_id = config
-        .device_id
-        .ok_or_else(|| anyhow!("device not registered"))?;
+    let source_device_id = config.device_id.ok_or_else(|| {
+        coded(
+            ErrorCode::RuntimeDeviceNotRegistered,
+            "device not registered",
+        )
+    })?;
     let record = crate::traversal::take_plan(attempt_id);
-    let selected = fallback_network(&selected_network, &record.plan);
+    let selected = if selected_network.is_empty() {
+        record.network.clone()
+    } else {
+        selected_network
+    };
     let request = NotifyP2PEndRequest {
         connection_id: opened.connection_id.clone(),
         log_id: opened.log_id,
@@ -792,14 +851,6 @@ mod tests {
         assert_eq!(merge_nat("easy", "hard"), "easy");
         assert_eq!(merge_nat("", "hard"), "hard");
         assert_eq!(merge_nat("", ""), "");
-    }
-
-    #[test]
-    fn network_falls_back_to_first_planned_network() {
-        assert_eq!(fallback_network("tcp4", "tcp4,udp4"), "tcp4");
-        assert_eq!(fallback_network("", "tcp4,udp4"), "tcp4");
-        assert_eq!(fallback_network("", "udp4"), "udp4");
-        assert_eq!(fallback_network("", ""), "");
     }
 
     #[test]

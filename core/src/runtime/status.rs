@@ -1,7 +1,7 @@
 //! Runtime status mutations shared by service tasks.
 
 use super::{
-    classify_tunnel_error_code, note_auto_keep_job_failed, now_ts, SharedRuntimeState,
+    note_auto_keep_job_failed, now_ts, ErrorCode, SharedRuntimeState,
     ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS, ACTIVE_TUNNEL_JOB_BACKOFF_SECS, WGVPN_JOB_BACKOFF_SECS,
 };
 use crate::control::{
@@ -237,11 +237,10 @@ pub(super) fn upsert_tunnel_lifecycle(
 }
 
 /// 统一的 job 状态 → lifecycle 投影（审计 O-1：合并主动/被动两轨的重复映射）。
-/// Waiting 统一携带 hole_punch_wait_timeout：两轨的重试原因本就是同一个
-/// 打洞等待超时（i18n 共用 errors.hole_punch_wait_timeout）。
+/// Waiting 和 Failed 保留实际的 canonical code，展示文案不参与分类。
 pub(super) fn tunnel_job_lifecycle_projection(
     state: TunnelJobState,
-    message: &str,
+    error_code: &str,
 ) -> (TunnelLifecycleState, TunnelLastResult, Option<String>) {
     match state {
         TunnelJobState::Running => (
@@ -252,7 +251,11 @@ pub(super) fn tunnel_job_lifecycle_projection(
         TunnelJobState::Waiting => (
             TunnelLifecycleState::Connecting,
             TunnelLastResult::None,
-            Some("hole_punch_wait_timeout".to_string()),
+            Some(if error_code.is_empty() {
+                ErrorCode::RuntimeExecutionUnclassified.as_str().to_owned()
+            } else {
+                error_code.to_owned()
+            }),
         ),
         TunnelJobState::Succeeded => (
             TunnelLifecycleState::Connected,
@@ -262,12 +265,16 @@ pub(super) fn tunnel_job_lifecycle_projection(
         TunnelJobState::Failed => (
             TunnelLifecycleState::NotEstablished,
             TunnelLastResult::AttemptFailed,
-            Some(classify_tunnel_error_code(message).to_string()),
+            Some(if error_code.is_empty() {
+                ErrorCode::RuntimeExecutionUnclassified.as_str().to_owned()
+            } else {
+                error_code.to_owned()
+            }),
         ),
         TunnelJobState::Cancelled => (
             TunnelLifecycleState::NotEstablished,
             TunnelLastResult::Cancelled,
-            Some("user_cancelled".to_string()),
+            Some("connection.execution.user_cancelled".to_string()),
         ),
     }
 }
@@ -288,7 +295,7 @@ pub(super) fn update_active_tunnel_job_status(
         state.status.active_tunnel_jobs.push(status.clone());
     }
     let (lifecycle_state, last_result, error_code) =
-        tunnel_job_lifecycle_projection(status.state, &status.message);
+        tunnel_job_lifecycle_projection(status.state, &status.error_code);
     let stage = match status.state {
         TunnelJobState::Running => Some("hole_punch_wait".to_string()),
         TunnelJobState::Waiting => Some("retry_wait".to_string()),
