@@ -3296,6 +3296,7 @@ dependencies = [
  "axum-server",
  "base64 0.22.1",
  "bytes",
+ "cc",
  "encoding_rs",
  "flate2",
  "futures-util",

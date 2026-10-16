@@ -2,7 +2,7 @@
 
 // Punch/Exchange 在 Linux/Windows/macOS 三个平台都通过源码 path 依赖
 // （p2premote-punch-rs，原生 Rust API）集成。Go 侧只保留 userspace
-// WireGuard 数据面 FFI：Windows 为 p2premote-wg.dll（raw-dylib），
+// WireGuard 数据面 FFI：Windows 为 p2premote-wg.dll（实际导出生成的导入库），
 // macOS 为 libp2premote-wg.dylib，均出自 p2premote-wg-ffi（wgonly）。
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 use p2premote_punch as _;
@@ -279,10 +279,11 @@ pub struct SubnetRouterResult {
 }
 
 // Go owns the userspace-WireGuard ABI. Windows links the deliberately thin
-// p2premote-wg.dll via raw-dylib; macOS links the equivalent wgonly
+// p2premote-wg.dll via an import library derived from its actual exports;
+// macOS links the equivalent wgonly
 // libp2premote-wg.dylib built from the same p2premote-wg-ffi source.
 #[cfg(not(target_os = "linux"))]
-#[cfg_attr(windows, link(name = "p2premote-wg", kind = "raw-dylib"))]
+#[cfg_attr(windows, link(name = "p2premote-wg", kind = "dylib"))]
 #[cfg_attr(target_os = "macos", link(name = "p2premote-wg"))]
 extern "C" {
     fn GetWgCapabilities(input: *const c_char) -> *mut c_char;

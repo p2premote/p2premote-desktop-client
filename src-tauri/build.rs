@@ -132,6 +132,17 @@ fn build_punch_library_into_resources() {
     if target_os == "linux" {
         return;
     }
+    if target_os == "windows" {
+        // core has already linked against an import library generated from this
+        // exact DLL. Do not rebuild/replace it after core's build script ran.
+        let dll = manifest_dir.join("resources").join("p2premote-wg.dll");
+        assert!(
+            dll.is_file(),
+            "WG DLL is missing; run scripts/build-windows.ps1 first"
+        );
+        println!("cargo:rerun-if-changed={}", dll.display());
+        return;
+    }
     let source_env = "P2PREMOTE_WG_FFI_DIR";
     let source_dir = PathBuf::from(
         env::var_os(source_env).unwrap_or_else(|| panic!("{} is not set", source_env)),
