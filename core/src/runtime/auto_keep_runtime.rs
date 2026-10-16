@@ -540,6 +540,31 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn remote_manual_stop_prevents_recovery_even_when_retry_is_due() {
+        let mut config = config();
+        save_local_setting(&mut config, 42, true).unwrap();
+        config.auto_keep_settings[0].paused_remote_stop = true;
+        let mut state = SharedRuntimeState::default();
+        apply_local_settings(&mut state, &config);
+        state.status.logged_in = true;
+        state.status.ws_connected = true;
+        state
+            .auto_keep_retries
+            .insert(42, AutoKeepRetryRuntime::default());
+        let shared = Arc::new(Mutex::new(state));
+
+        // A paused target must return before loading credentials or probing the network.
+        evaluate_auto_keep(&shared).await.unwrap();
+        let state = shared.lock();
+        assert!(state.active_tunnel_job_cancels.is_empty());
+        assert_eq!(state.status.auto_keep_statuses[0].state, "paused_remote_stop");
+        assert_eq!(
+            state.status.auto_keep_statuses[0].stop_reason.as_deref(),
+            Some("remote_manual_disconnect")
+        );
+    }
+
     #[test]
     fn loading_local_preferences_preserves_waiting_and_failure_state() {
         let mut config = config();

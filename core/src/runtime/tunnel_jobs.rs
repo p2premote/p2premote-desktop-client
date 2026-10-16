@@ -704,17 +704,15 @@ pub(super) async fn stop_wgvpn_job(
             .passive_health_watchdog_generations
             .remove(&peer_device_id);
     }
-    // 被动端断开时，主动关闭 health server 上该 peer 的 TCP 连接，
-    // 触发 TCP FIN 立即送达主动端（conn.next() → None → ConnectionClosed → 立即清理），
-    // 避免主动端长时间无感知（只能等心跳超时 + 宽限期）。
+    // 被动端手动断开时，先经健康连接发送 Stop，让主动端暂停自动恢复，
+    // 再关闭连接，避免仅发送 FIN 被误判成可恢复的网络中断。
     // 仅对被动隧道生效；主动隧道已由 stop_wgvpn 内的 notify_remote_tunnel_stop 处理。
     if stopped_role == TunnelLifecycleRole::Passive {
         let health_server = shared.lock().health_server_handle.clone();
         if let Some(handle) = health_server {
-            if handle.close_peer_connection(peer_device_id).await {
-                // FIN 此刻只写入了本机内核，还要穿过 userspace WG/gonc UDP 数据面
-                // 才能到达主动端；立即拆除数据面会把 FIN 一起丢掉，主动端只能
-                // 等 60s Degraded + 300s 宽限超时清理。等待让 FIN 先行通过。
+            if handle.stop_peer_tunnel(peer_device_id).await {
+                // Stop 和 FIN 还要穿过 userspace WG/gonc UDP 数据面；
+                // 等待它们送达后再拆除数据面。
                 tokio::time::sleep(std::time::Duration::from_secs(FIN_DRAIN_WAIT_SECS)).await;
             }
         }

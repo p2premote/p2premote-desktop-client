@@ -38,17 +38,19 @@ pub enum PassiveHealthEvent {
 pub type HealthDisconnectHandler = Arc<dyn Fn(i64, u64, PassiveHealthEvent) + Send + Sync>;
 pub type PeerIdentityValidator = Arc<dyn Fn(i64, IpAddr) -> Result<(), String> + Send + Sync>;
 
-/// peer_device_id → 该连接的停止信号发送器。
-///
-/// 被动端主动断开隧道时，通过此表通知对应的连接 task 退出，
-/// 从而 drop `TcpStream` 触发 TCP FIN 立即送达主动端。
 struct PassiveSpeedTestCommand {
     response: oneshot::Sender<Result<TunnelSpeedTestResult, String>>,
 }
 
+#[derive(Clone, Copy)]
+enum PeerHealthCloseReason {
+    ConnectionClosed,
+    ManualDisconnect,
+}
+
 struct PeerHealthControl {
     generation: u64,
-    stop_tx: watch::Sender<bool>,
+    stop_tx: watch::Sender<Option<PeerHealthCloseReason>>,
     closed_rx: watch::Receiver<bool>,
     speed_tx: mpsc::UnboundedSender<PassiveSpeedTestCommand>,
 }
@@ -78,6 +80,27 @@ impl HealthServerHandle {
     /// 返回是否真的关闭了一条活跃连接；peer 不存在时静默返回 false
     /// （幂等，重复调用无害）。
     pub async fn close_peer_connection(&self, peer_device_id: i64) -> bool {
+        self.close_peer_connection_with_reason(
+            peer_device_id,
+            PeerHealthCloseReason::ConnectionClosed,
+        )
+        .await
+    }
+
+    /// 手动断开先发送 Stop，让主动端暂停自动恢复，再关闭健康连接。
+    pub async fn stop_peer_tunnel(&self, peer_device_id: i64) -> bool {
+        self.close_peer_connection_with_reason(
+            peer_device_id,
+            PeerHealthCloseReason::ManualDisconnect,
+        )
+        .await
+    }
+
+    async fn close_peer_connection_with_reason(
+        &self,
+        peer_device_id: i64,
+        reason: PeerHealthCloseReason,
+    ) -> bool {
         let Some(mut control) = self
             .peer_controls
             .lock()
@@ -86,7 +109,7 @@ impl HealthServerHandle {
         else {
             return false;
         };
-        let _ = control.stop_tx.send(true);
+        let _ = control.stop_tx.send(Some(reason));
         match tokio::time::timeout(
             std::time::Duration::from_secs(3),
             control.closed_rx.changed(),
@@ -347,17 +370,8 @@ async fn health_server_connection_loop(
         return;
     }
 
-    // 健康连接恢复时通知上层取消被动会话的断线宽限清理。
-    on_disconnect(
-        source_device_id,
-        connection_generation,
-        PassiveHealthEvent::Connected,
-    );
-
-    // 注册 per-peer 停止信号：被动端主动断开隧道时，stop_wgvpn_job 通过
-    // HealthServerHandle.close_peer_connection 发送 true，本 loop 收到后 break，
-    // drop `TcpStream` 触发 TCP FIN 立即送达主动端（conn.next() → None）。
-    let (peer_stop_tx, mut peer_stop_rx) = watch::channel(false);
+    // 区分手动断开与连接替换/服务退出，只有手动断开才暂停对端的自动恢复。
+    let (peer_stop_tx, mut peer_stop_rx) = watch::channel(None);
     let (closed_tx, closed_rx) = watch::channel(false);
     let (speed_request_tx, mut speed_request_rx) = mpsc::unbounded_channel();
     let replaced_peer_control = peer_controls.lock().ok().and_then(|mut registry| {
@@ -374,8 +388,17 @@ async fn health_server_connection_loop(
     if let Some(previous) = replaced_peer_control {
         // 同一设备建立了新一代连接。显式关闭旧连接，避免旧 sender 被覆盖后
         // receiver 永久以 Err 立即返回并形成 busy loop。
-        let _ = previous.stop_tx.send(true);
+        let _ = previous
+            .stop_tx
+            .send(Some(PeerHealthCloseReason::ConnectionClosed));
     }
+
+    // 先注册停止通道，再发布 Connected，确保收到连接事件后即可手动断开。
+    on_disconnect(
+        source_device_id,
+        connection_generation,
+        PassiveHealthEvent::Connected,
+    );
 
     // 清理守卫：无论从哪个分支退出，都从 registry 移除自己的 sender，避免泄漏。
     // 用闭包封装保证所有 return/break 路径都执行清理。
@@ -396,15 +419,24 @@ async fn health_server_connection_loop(
     let mut pending_speed_test = None;
     loop {
         tokio::select! {
-            // 被动端主动断开：直接 break，drop TcpStream 触发 TCP FIN。
-            // 不发任何消息——主动端 conn.next() 返回 None 即触发 ConnectionClosed。
             changed = peer_stop_rx.changed() => {
+                let close_reason = *peer_stop_rx.borrow_and_update();
                 match changed {
-                    Ok(()) if *peer_stop_rx.borrow() => {
+                    Ok(()) if close_reason.is_some() => {
                         info!(
                             "[Health] passive initiated close, source_device_id={}",
                             source_device_id
                         );
+                        if matches!(close_reason, Some(PeerHealthCloseReason::ManualDisconnect)) {
+                            if let Err(err) = conn.send(&TunnelControlMessage::Stop {
+                                reason: "remote_manual_disconnect".to_string(),
+                            }).await {
+                                warn!(
+                                    "[Health] send manual stop failed, source_device_id={}, error={:#}",
+                                    source_device_id, err
+                                );
+                            }
+                        }
                         if let Err(err) = conn.close().await {
                             warn!(
                                 "[Health] graceful peer connection shutdown failed, source_device_id={}, error={:#}",
@@ -1072,13 +1104,17 @@ mod tests {
         ));
     }
 
-    /// 验证方案 A 核心：外部通过 PeerHealthRegistry 发送 stop 信号后，
-    /// 连接 task 退出并 drop TcpStream，主动端 conn.next() 返回 None。
-    ///
-    /// 这模拟了被动端点击"断开"时 stop_wgvpn_job 调用 close_peer_connection 的场景：
-    /// 被动端 health server 主动关闭 TCP 连接 → TCP FIN → 主动端立即感知。
     #[tokio::test]
     async fn health_connection_closes_on_passive_stop_signal() {
+        assert_passive_close(false).await;
+    }
+
+    #[tokio::test]
+    async fn passive_manual_disconnect_sends_stop_before_closing_connection() {
+        assert_passive_close(true).await;
+    }
+
+    async fn assert_passive_close(manual_disconnect: bool) {
         // 这个测试需要从外部触发 per-peer stop，所以直接用 PeerHealthRegistry。
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -1120,27 +1156,33 @@ mod tests {
         // 等待 connected 回调（确认 per-peer sender 已注册）
         assert_eq!(rx.recv().await, Some((222, PassiveHealthEvent::Connected)));
 
-        // 模拟 stop_wgvpn_job：close_peer_connection 只有在连接 task 已完成
-        // graceful shutdown 后才返回，随后调用方才可以拆除 WG/UDP 数据面。
+        // 关闭方法返回后，调用方才可以拆除 WG/UDP 数据面。
         let (server_stop_tx, _server_stop_rx) = watch::channel(false);
         let handle = HealthServerHandle {
             stop_tx: server_stop_tx,
             peer_controls: peer_stops,
             tasks: Vec::new(),
         };
-        handle.close_peer_connection(222).await;
+        if manual_disconnect {
+            assert!(handle.stop_peer_tunnel(222).await);
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), conn.next())
+                    .await
+                    .expect("manual stop should arrive promptly")
+                    .expect("read stop"),
+                Some(TunnelControlMessage::Stop {
+                    reason: "remote_manual_disconnect".to_string(),
+                })
+            );
+            assert!(!handle.stop_peer_tunnel(222).await);
+        } else {
+            assert!(handle.close_peer_connection(222).await);
+        }
 
-        // 被动端连接 task 收到信号后 break，drop TcpStream 发送 TCP FIN。
-        // 主动端 conn.next() 应返回 None（不返回任何消息、不报错）。
         let result = tokio::time::timeout(std::time::Duration::from_secs(2), conn.next())
             .await
             .expect("conn.next should return promptly after peer stop");
         assert_eq!(result.expect("read should succeed"), None);
-
-        // 方案 A 核心验证：被动端主动关闭后，主动端 conn.next() 返回 None
-        // （TCP FIN 生效）。被动端 connection_loop 收到 stop 信号直接 break，
-        // 不会触发 on_disconnect 回调——但即使触发了也无害（cleanup 幂等），
-        // 这里只验证 TCP FIN 的确定性传递，不约束 rx 行为。
     }
 
     #[tokio::test]
