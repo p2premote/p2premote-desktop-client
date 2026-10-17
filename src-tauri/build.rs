@@ -23,8 +23,18 @@ fn main() {
     if env::var_os("P2PREMOTE_PREBUILT_RESOURCES").is_some() {
         validate_prebuilt_resources();
     } else {
-        build_punch_library_into_resources();
-        copy_service_into_resources();
+        let (target_os, _) = parse_target();
+        if target_os == "windows" {
+            // Cargo may run this build script before the GUI's core dependency.
+            // The service build waits for core/build.rs to generate the WG DLL,
+            // so a clean checkout must build it before checking the resource.
+            copy_service_into_resources();
+            build_punch_library_into_resources();
+        } else {
+            // macOS needs the library before service/core can link against it.
+            build_punch_library_into_resources();
+            copy_service_into_resources();
+        }
         copy_cli_into_resources();
         copy_notifier_into_resources();
         copy_desktop_engine_into_resources();
@@ -133,12 +143,12 @@ fn build_punch_library_into_resources() {
         return;
     }
     if target_os == "windows" {
-        // core has already linked against an import library generated from this
+        // The service's core has linked against an import library generated from this
         // exact DLL. Do not rebuild/replace it after core's build script ran.
         let dll = manifest_dir.join("resources").join("p2premote-wg.dll");
         assert!(
             dll.is_file(),
-            "WG DLL is missing; run scripts/build-windows.ps1 first"
+            "WG DLL is missing after the service build; check P2PREMOTE_WG_FFI_DIR and P2PREMOTE_PUNCH_LIB_DIR"
         );
         println!("cargo:rerun-if-changed={}", dll.display());
         return;
