@@ -119,6 +119,53 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
 
+    #[test]
+    fn header_boundaries_match_golden_bytes() {
+        for (length, expected) in [
+            (0, vec![0]), (63, vec![252]), (64, vec![1, 1]),
+            (16383, vec![253, 255]), (16384, vec![2, 0, 1]),
+            (MAX_FRAME_LEN, vec![3, 0, 0, 1]),
+        ] {
+            let mut codec = BytesCodec::default();
+            let mut wire = BytesMut::new();
+            codec.encode(Bytes::from(vec![0xAB; length]), &mut wire).unwrap();
+            assert_eq!(&wire[..expected.len()], expected.as_slice());
+            assert_eq!(wire.len(), expected.len() + length);
+            let decoded = codec.decode(&mut wire).unwrap().unwrap();
+            assert_eq!(decoded.len(), length);
+            assert!(decoded.iter().all(|byte| *byte == 0xAB));
+            assert!(wire.is_empty());
+        }
+    }
+
+    #[test]
+    fn incomplete_multibyte_header_does_not_consume_input() {
+        let mut codec = BytesCodec::new();
+        let mut wire = BytesMut::new();
+        assert!(codec.decode(&mut wire).unwrap().is_none());
+        wire.extend_from_slice(&[1]);
+        assert!(codec.decode(&mut wire).unwrap().is_none());
+        assert_eq!(&wire[..], &[1]);
+        wire.extend_from_slice(&[1]); // 64-byte payload, still absent.
+        assert!(codec.decode(&mut wire).unwrap().is_none());
+        wire.extend_from_slice(&[0xAB; 64]);
+        assert_eq!(&codec.decode(&mut wire).unwrap().unwrap()[..], &[0xAB; 64]);
+        wire.extend_from_slice(&[4, b'x']);
+        assert_eq!(&codec.decode(&mut wire).unwrap().unwrap()[..], b"x");
+    }
+
+    #[test]
+    fn oversized_declared_payload_is_rejected_before_reservation() {
+        let mut codec = BytesCodec::new();
+        let mut wire = BytesMut::from(&[7, 0, 0, 1][..]);
+        let capacity = wire.capacity();
+        let error = codec.decode(&mut wire).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "frame exceeds max size");
+        assert_eq!(&wire[..], &[7, 0, 0, 1]);
+        assert_eq!(wire.capacity(), capacity);
+    }
+
     fn roundtrip(data: &[u8]) {
         let mut codec = BytesCodec::new();
         let mut buf = BytesMut::new();

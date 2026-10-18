@@ -964,13 +964,42 @@ mod tests {
             Frame::Prepare { round: 2, .. }
         ));
         s.tx.try_send(Frame::Ready { round: 4 }).unwrap();
-        assert!(s.wait(3, 4).await.is_err());
+        assert_eq!(code_of(&s.wait(3, 4).await.unwrap_err()), ErrorCode::TraversalRoundSyncInvalidSequence);
     }
     #[tokio::test]
     async fn cancelled_session_cannot_advance() {
         let s = session();
         s.cancelled.store(true, Ordering::Release);
-        assert!(s.wait(1, 4).await.is_err());
+        assert_eq!(code_of(&s.wait(1, 4).await.unwrap_err()), ErrorCode::TraversalExecutionCancelled);
+    }
+    #[tokio::test]
+    async fn empty_wait_uses_stage_specific_timeout_codes() {
+        for (stage, expected) in [
+            (0, ErrorCode::TraversalCapabilityExchangeTimeout),
+            (1, ErrorCode::TraversalPlanNegotiationTimeout),
+            (2, ErrorCode::TraversalPlanNegotiationTimeout),
+            (3, ErrorCode::TraversalRoundSyncTimeout),
+            (4, ErrorCode::TraversalRoundSyncTimeout),
+            (5, ErrorCode::TraversalRoundSyncTimeout),
+        ] {
+            let s = session();
+            assert_eq!(code_of(&s.wait_for(1, stage, 0).await.unwrap_err()), expected);
+        }
+    }
+    #[tokio::test]
+    async fn closed_signal_is_distinct_from_timeout_and_cancel() {
+        let s = session();
+        s.rx.lock().await.close();
+        assert_eq!(code_of(&s.wait_for(1, 4, 1).await.unwrap_err()), ErrorCode::SignalReceiveClosed);
+    }
+    #[tokio::test]
+    async fn same_round_old_stage_is_discarded_and_future_stage_is_rejected() {
+        let s = session();
+        s.tx.try_send(Frame::Ready { round: 1 }).unwrap();
+        s.tx.try_send(Frame::Result { round: 1, ok: false, error: None }).unwrap();
+        assert!(matches!(s.wait_for(1, 5, 1).await.unwrap(), Frame::Result { round: 1, .. }));
+        s.tx.try_send(Frame::Result { round: 1, ok: true, error: None }).unwrap();
+        assert_eq!(code_of(&s.wait_for(1, 4, 1).await.unwrap_err()), ErrorCode::TraversalRoundSyncInvalidSequence);
     }
     #[test]
     fn udp4_evidence_extraction_skips_invalid_types() {

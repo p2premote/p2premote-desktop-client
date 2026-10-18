@@ -326,14 +326,63 @@ enum P2PAttemptMessage {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct P2PAttemptErrorPayload {
-    #[serde(
-        rename = "error_code",
-        deserialize_with = "crate::error::deserialize_code"
-    )]
     code: String,
     message: String,
+}
+
+impl<'de> Deserialize<'de> for P2PAttemptErrorPayload {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(default)]
+            error_code: Option<String>,
+            #[serde(default)]
+            code: Option<String>,
+            message: String,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let code = if let Some(code) = wire.error_code {
+            if !p2premote_punch::error::valid_code(&code) {
+                return Err(serde::de::Error::custom("invalid structured error code"));
+            }
+            code
+        } else if let Some(code) = wire.code {
+            crate::error::legacy_code(&code).to_owned()
+        } else {
+            return Err(serde::de::Error::missing_field("error_code"));
+        };
+        Ok(Self { code, message: wire.message })
+    }
+}
+
+// Send both fields during 1.14 so legacy clients can still decode failures.
+impl Serialize for P2PAttemptErrorPayload {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("P2PAttemptErrorPayload", 3)?;
+        state.serialize_field("error_code", &self.code)?;
+        let legacy = match self.code.as_str() {
+            "traversal.execution.exhausted" => "hole_punch_wait_timeout",
+            "connection.peer_prepare.timeout" => "peer_prepare_timeout",
+            "connection.peer_prepare.offline" => "peer_offline",
+            "connection.execution.peer_cancelled" => "peer_cancelled",
+            "connection.execution.user_cancelled" => "user_cancelled",
+            "connection.approval.denied" => "approval_denied",
+            "connection.approval.timeout" => "approval_timeout",
+            "connection.approval.busy" => "approval_busy",
+            "connection.approval.request_missing" => "approval_request_missing",
+            "connection.route_validation.invalid_cidr" => "invalid_lan_cidr",
+            "runtime.config.load_failed" => "config_load_failed",
+            "wireguard.configure.failed" => "wireguard_config_failed",
+            "wireguard.handshake.failed" | "wireguard.handshake.timeout" => "wireguard_handshake_failed",
+            _ => "internal_error",
+        };
+        state.serialize_field("code", legacy)?;
+        state.serialize_field("message", &self.message)?;
+        state.end()
+    }
 }
 
 impl P2PAttemptErrorPayload {
@@ -1236,8 +1285,143 @@ mod tests {
         }
     }
 
+
     #[test]
-    fn missing_contract_is_rejected_and_explicit_null_transport_is_invalid() {
+    fn compatibility_legacy_failure_matrix_preserves_identity_message_and_retry_policy() {
+        let cases = [
+            ("hole_punch_wait_timeout", "traversal.execution.exhausted"),
+            ("punch_exhausted", "traversal.execution.exhausted"),
+            ("traversal_signal_timeout", "traversal.execution.exhausted"),
+            ("peer_prepare_timeout", "connection.peer_prepare.timeout"),
+            ("peer_offline", "connection.peer_prepare.offline"),
+            ("peer_cancelled", "connection.execution.peer_cancelled"),
+            ("user_cancelled", "connection.execution.user_cancelled"),
+            ("invalid_lan_cidr", "connection.route_validation.invalid_cidr"),
+            ("config_load_failed", "runtime.config.load_failed"),
+            ("wireguard_config_failed", "wireguard.configure.failed"),
+            ("wireguard_handshake_failed", "wireguard.handshake.failed"),
+            ("approval_denied", "connection.approval.denied"),
+            ("approval_timeout", "connection.approval.timeout"),
+            ("approval_request_missing", "connection.approval.request_missing"),
+            ("approval_busy", "connection.approval.busy"),
+            ("passive_start_failed", "runtime.execution.unclassified"),
+            ("internal_error", "runtime.execution.unclassified"),
+            ("unknown_old_error", "runtime.execution.unclassified"),
+            ("", "runtime.execution.unclassified"),
+        ];
+        // Decode an actual attempt envelope, not just the standalone error type.
+        for (legacy, expected) in cases {
+            for message in ["old peer failed", "旧端失败", "unrelated timeout cancel text", ""] {
+                let wire = serde_json::json!({
+                    "type": "attempt_failed", "protocol_version": 1,
+                    "attempt_id": "legacy-attempt", "stage": "passive_start",
+                    "error": {"code": legacy, "message": message,
+                              "message_key": "old.key", "message_params": {"n": 1}}
+                });
+                let P2PAttemptMessage::AttemptFailed { error, attempt_id, .. } =
+                    serde_json::from_value(wire).unwrap() else { panic!("expected failure") };
+                assert_eq!(attempt_id, "legacy-attempt");
+                assert_eq!(error.code, expected, "legacy={legacy}");
+                assert_eq!(error.message, message);
+                let business = AppError::from_wire(&error.code, error.message.clone());
+                assert_eq!(business.code().as_str(), expected);
+                assert_eq!(retry_attempt(&business.code()), matches!(expected,
+                    "traversal.execution.exhausted" | "connection.peer_prepare.timeout" | "wireguard.handshake.failed"));
+                let encoded = serde_json::to_value(&error).unwrap();
+                #[derive(Deserialize)]
+                struct OldError { code: String, message: String }
+                let old: OldError = serde_json::from_value(encoded.clone()).unwrap();
+                let expected_legacy = match legacy {
+                    "punch_exhausted" | "traversal_signal_timeout" => "hole_punch_wait_timeout",
+                    "passive_start_failed" | "unknown_old_error" | "" => "internal_error",
+                    other => other,
+                };
+                assert_eq!(old.code, expected_legacy, "legacy={legacy}");
+                assert_eq!(old.message, message);
+                let decoded: P2PAttemptErrorPayload = serde_json::from_value(encoded).unwrap();
+                assert_eq!(decoded.code, expected);
+            }
+        }
+        // Additional serializer arms and fallback for future codes.
+        for (canonical, legacy) in [
+            ("wireguard.handshake.timeout", "wireguard_handshake_failed"),
+            ("future.stage.failure", "internal_error"),
+        ] {
+            let wire = serde_json::to_value(P2PAttemptErrorPayload::new(canonical, "detail")).unwrap();
+            assert_eq!(wire["code"], legacy);
+            assert_eq!(wire["error_code"], canonical);
+        }
+    }
+
+    #[test]
+    fn compatibility_start_and_ready_version_matrix() {
+        for kind in ["attempt_start", "attempt_ready"] {
+            let base = serde_json::json!({
+                "type": kind, "protocol_version": 1, "attempt_id": "a",
+                "client_job_id": "j", "attempt": 1, "max_attempts": 3,
+                "punch_token": "token", "stage": "ready", "rdp_enabled": false, "rdp_port": 3389
+            });
+            for version in [None, Some(0), Some(1), Some(2), Some(255)] {
+                let mut wire = base.clone();
+                if let Some(version) = version { wire["error_contract_version"] = version.into(); }
+                let decoded: P2PAttemptMessage = serde_json::from_value(wire).unwrap();
+                let version = match decoded {
+                    P2PAttemptMessage::AttemptStart { error_contract_version, .. }
+                    | P2PAttemptMessage::AttemptReady { error_contract_version, .. } => error_contract_version,
+                    _ => panic!("wrong message"),
+                };
+                assert_eq!(crate::error::require_contract(version).is_ok(), version <= 1);
+            }
+            for invalid in [serde_json::json!(null), serde_json::json!("1"), serde_json::json!(true),
+                serde_json::json!(-1), serde_json::json!(256), serde_json::json!(1.5)] {
+                let mut wire = base.clone();
+                wire["error_contract_version"] = invalid;
+                assert!(serde_json::from_value::<P2PAttemptMessage>(wire).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn compatibility_failure_payload_validation_matrix() {
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"message": "missing code"}),
+            serde_json::json!({"code": "peer_offline"}),
+            serde_json::json!({"code": 7, "message": "bad type"}),
+            serde_json::json!({"error_code": 7, "message": "bad type"}),
+            serde_json::json!({"error_code": "", "code": "peer_offline", "message": "no fallback"}),
+            serde_json::json!({"error_code": "INVALID", "code": "peer_offline", "message": "no fallback"}),
+            serde_json::json!({"error_code": "a.b", "message": "invalid format"}),
+        ] {
+            assert!(serde_json::from_value::<P2PAttemptErrorPayload>(invalid.clone()).is_err(), "{invalid}");
+        }
+        let wire = serde_json::json!({"error_code": "future.stage.failure", "code": "peer_offline", "message": "detail"});
+        let decoded: P2PAttemptErrorPayload = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.code, "future.stage.failure");
+    }
+
+    #[test]
+    fn transitional_error_payload_supports_both_peer_generations() {
+        let legacy: P2PAttemptErrorPayload = serde_json::from_str(
+            r#"{"code":"hole_punch_wait_timeout","message":"old peer failed"}"#,
+        ).unwrap();
+        assert_eq!(legacy.code, "traversal.execution.exhausted");
+        let wire = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(wire["code"], "hole_punch_wait_timeout");
+        assert_eq!(wire["error_code"], "traversal.execution.exhausted");
+        let decoded: P2PAttemptErrorPayload = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.code, legacy.code);
+        let future: P2PAttemptErrorPayload = serde_json::from_str(
+            r#"{"error_code":"future.stage.failure","code":"internal_error","message":"future"}"#,
+        ).unwrap();
+        assert_eq!(future.code, "future.stage.failure");
+        assert!(serde_json::from_str::<P2PAttemptErrorPayload>(
+            r#"{"error_code":"invalid","code":"internal_error","message":"bad"}"#,
+        ).is_err());
+    }
+
+    #[test]
+    fn legacy_contract_is_accepted_and_explicit_null_transport_is_invalid() {
         let legacy = r#"{"type":"attempt_ready","protocol_version":1,"attempt_id":"a","stage":"ready","rdp_enabled":false,"rdp_port":3389}"#;
         let P2PAttemptMessage::AttemptReady {
             error_contract_version,
@@ -1246,11 +1430,7 @@ mod tests {
         else {
             panic!("expected ready")
         };
-        let error = crate::error::require_contract(error_contract_version).unwrap_err();
-        assert_eq!(
-            code_of(&error),
-            ErrorCode::ConnectionCompatibilityClientUpgradeRequired
-        );
+        assert!(crate::error::require_contract(error_contract_version).is_ok());
         assert!(crate::error::require_contract(1).is_ok());
         assert!(crate::error::require_contract(2).is_err());
         let explicit = legacy.trim_end_matches('}').to_owned() + ",\"signal_transport\":null}";
@@ -1266,13 +1446,14 @@ mod tests {
     }
 
     #[test]
-    fn p2p_attempt_error_is_a_two_field_contract() {
+    fn p2p_attempt_error_includes_transitional_legacy_code() {
         let error = P2PAttemptErrorPayload::new(
             "wireguard.handshake.failed",
             "wireguard handshake timeout",
         );
         let json = serde_json::to_value(&error).unwrap();
-        assert_eq!(json.as_object().unwrap().len(), 2);
+        assert_eq!(json.as_object().unwrap().len(), 3);
+        assert_eq!(json["code"], "wireguard_handshake_failed");
         assert_eq!(json["error_code"], "wireguard.handshake.failed");
         assert_eq!(
             error.localized_message(Some("en")),
@@ -1280,17 +1461,19 @@ mod tests {
         );
     }
     #[test]
-    fn p2p_attempt_error_preserves_unknown_new_codes_and_rejects_legacy_shape() {
+    fn p2p_attempt_error_preserves_unknown_new_codes_and_classifies_unknown_legacy() {
         let error: P2PAttemptErrorPayload = serde_json::from_str(
             r#"{"error_code":"future.exchange.failed","message":"future message"}"#,
         )
         .unwrap();
         assert_eq!(error.code, "future.exchange.failed");
         assert_eq!(error.localized_message(Some("en")), "future message");
-        assert!(serde_json::from_str::<P2PAttemptErrorPayload>(
+        let legacy = serde_json::from_str::<P2PAttemptErrorPayload>(
             r#"{"code":"old_error","message":"old"}"#
         )
-        .is_err());
+        .unwrap();
+        assert_eq!(legacy.code, "runtime.execution.unclassified");
+        assert_eq!(legacy.message, "old");
     }
 
     #[test]

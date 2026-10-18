@@ -696,3 +696,169 @@ pub(super) fn spawn_passive_attempt_failure_reporter(
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> Arc<Mutex<SharedRuntimeState>> {
+        Arc::new(Mutex::new(SharedRuntimeState::default()))
+    }
+
+    async fn dispatch(shared: &Arc<Mutex<SharedRuntimeState>>, wire: serde_json::Value) -> Result<()> {
+        handle_p2p_notify(shared, &ServiceWsClient::new(), "test-connection".into(),
+            987654321, "synthetic-grant".into(), wire.to_string()).await
+    }
+
+    fn ready() -> serde_json::Value {
+        serde_json::json!({"type":"attempt_ready","protocol_version":1,
+            "attempt_id":"handler-test-ready","stage":"ready","rdp_enabled":false,"rdp_port":3390})
+    }
+
+    #[tokio::test]
+    async fn legacy_and_current_ready_reach_actual_waiter_without_native_or_network() {
+        for version in [None, Some(0), Some(1)] {
+            for approval in [false, true] {
+                let shared = state();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                shared.lock().p2p_attempt_waiters.insert("handler-test-ready".into(), tx);
+                let mut wire = ready();
+                wire["approval_required"] = approval.into();
+                if let Some(version) = version { wire["error_contract_version"] = version.into(); }
+                dispatch(&shared, wire).await.unwrap();
+                match rx.try_recv().unwrap() {
+                    P2PAttemptEvent::Ready { rdp_port, approval_required, traversal_negotiation, signal_transport } => {
+                        assert_eq!(rdp_port, 3390);
+                        assert_eq!(approval_required, approval);
+                        assert!(traversal_negotiation.is_none());
+                        assert!(signal_transport.is_none());
+                    }
+                    event => panic!("unexpected {event:?}"),
+                }
+                assert!(rx.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_ready_fails_waiter_with_upgrade_code() {
+        let shared = state();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        shared.lock().p2p_attempt_waiters.insert("handler-test-ready".into(), tx);
+        let mut wire = ready();
+        wire["error_contract_version"] = 2.into();
+        dispatch(&shared, wire).await.unwrap();
+        match rx.try_recv().unwrap() {
+            P2PAttemptEvent::Failed { error_code, message } => {
+                assert_eq!(error_code, "connection.compatibility.client_upgrade_required");
+                assert!(!message.is_empty());
+            }
+            event => panic!("unexpected {event:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn transitional_start_reaches_traversal_validation_before_any_side_effect() {
+        for version in [None, Some(0), Some(1)] {
+            let shared = state();
+            let mut wire = serde_json::json!({"type":"attempt_start","protocol_version":1,
+                "client_job_id":"j","attempt_id":"invalid-traversal-handler-test",
+                "attempt":1,"max_attempts":3,"punch_token":"synthetic-token",
+                "traversal_negotiation":{"version":1,"preferences":{}}});
+            if let Some(version) = version { wire["error_contract_version"] = version.into(); }
+            let error = dispatch(&shared, wire).await.unwrap_err();
+            assert_eq!(code_of(&error), ErrorCode::TraversalCapabilityExchangeInvalidPayload);
+            let state = shared.lock();
+            assert!(state.passive_p2p_attempts.is_empty());
+            assert!(state.wgvpn_job_cancels.is_empty());
+            assert!(state.pending_inbound_approval.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_events_route_only_to_matching_attempt() {
+        for kind in ["approval_required", "approval_granted", "approval_denied", "approval_timeout"] {
+            let shared = state();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            shared.lock().p2p_attempt_waiters.insert("approval-handler-test".into(), tx);
+            let mut wire = serde_json::json!({"type":kind,"protocol_version":1,
+                "attempt_id":"other-attempt","expires_at":123});
+            dispatch(&shared, wire.clone()).await.unwrap();
+            assert!(rx.try_recv().is_err());
+            wire["attempt_id"] = "approval-handler-test".into();
+            dispatch(&shared, wire).await.unwrap();
+            let event = rx.try_recv().unwrap();
+            assert!(matches!((kind, event),
+                ("approval_required", P2PAttemptEvent::ApprovalRequired)
+                | ("approval_granted", P2PAttemptEvent::ApprovalGranted)
+                | ("approval_denied", P2PAttemptEvent::ApprovalDenied)
+                | ("approval_timeout", P2PAttemptEvent::ApprovalTimeout)));
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_and_canonical_failure_reach_actual_waiter() {
+        for error in [
+            serde_json::json!({"code":"hole_punch_wait_timeout","message":"旧端失败"}),
+            serde_json::json!({"error_code":"traversal.execution.exhausted","message":"new failure"}),
+        ] {
+            let shared = state();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            shared.lock().p2p_attempt_waiters.insert("failure-handler-test".into(), tx);
+            let wire = serde_json::json!({"type":"attempt_failed","protocol_version":1,
+                "attempt_id":"failure-handler-test","stage":"passive_start","error":error});
+            dispatch(&shared, wire.clone()).await.unwrap();
+            match rx.try_recv().unwrap() {
+                P2PAttemptEvent::Failed { error_code, message } => {
+                    assert_eq!(error_code, "traversal.execution.exhausted");
+                    assert!(message.contains(error["message"].as_str().unwrap()));
+                }
+                event => panic!("unexpected {event:?}"),
+            }
+            shared.lock().p2p_attempt_waiters.clear();
+            dispatch(&shared, wire).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_cancel_preserves_new_passive_attempt_and_notifies_matching_active_waiter() {
+        for (connection, attempt) in [("different-connection", "cancel-handler-test"),
+            ("test-connection", "new-attempt")] {
+            let shared = state();
+            shared.lock().passive_p2p_attempts.insert(987654321, PassiveP2PAttempt {
+                connection_id: connection.into(), attempt_id: attempt.into(),
+            });
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            shared.lock().p2p_attempt_waiters.insert("cancel-handler-test".into(), tx);
+            let wire = serde_json::json!({"type":"attempt_cancel","protocol_version":1,
+                "attempt_id":"cancel-handler-test","reason":"user_cancelled"});
+            dispatch(&shared, wire.clone()).await.unwrap();
+            assert!(matches!(rx.try_recv().unwrap(), P2PAttemptEvent::Cancelled));
+            assert_eq!(shared.lock().passive_p2p_attempts[&987654321].attempt_id, attempt);
+            shared.lock().p2p_attempt_waiters.clear();
+            dispatch(&shared, wire).await.unwrap();
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_and_closed_waiters_are_harmless_but_invalid_payloads_are_rejected() {
+        let shared = state();
+        dispatch(&shared, ready()).await.unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(rx);
+        shared.lock().p2p_attempt_waiters.insert("handler-test-ready".into(), tx);
+        dispatch(&shared, ready()).await.unwrap();
+        for invalid in [
+            serde_json::json!({"type":"unknown"}),
+            serde_json::json!({"type":"attempt_ready","protocol_version":1}),
+            serde_json::json!({"type":"attempt_failed","protocol_version":1,
+                "attempt_id":"a","stage":"x","error":{"error_code":"INVALID","message":"bad"}}),
+        ] {
+            let error = dispatch(&shared, invalid).await.unwrap_err();
+            assert!(error.to_string().contains("invalid p2p_notify business json"));
+        }
+    }
+}
