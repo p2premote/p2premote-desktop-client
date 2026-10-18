@@ -556,6 +556,7 @@ pub async fn run_service_foreground() -> Result<()> {
     spawn_control_server(shared.clone(), wake.clone());
     info!("[ServiceRuntime] IPC control server started");
     spawn_auto_keep_coordinator(shared.clone());
+    spawn_forwarder_diagnostics_monitor(shared.clone());
     info!("[ServiceRuntime] automatic tunnel keep coordinator started");
     web_admin::spawn_web_admin_server(shared.clone(), wake.clone(), startup_config.clone());
     info!(
@@ -609,7 +610,7 @@ pub async fn run_service_foreground() -> Result<()> {
                     record_wgvpn_health_success(&health_shared, peer_device_id, None, latency_ms)
                 }
                 PassiveHealthEvent::Disconnected {
-                    reason: reason @ ("remote_stop" | "peer_disconnected"),
+                    reason: reason @ "remote_stop",
                 } => {
                     cancel_passive_health_grace(&health_shared, peer_device_id);
                     cleanup_wgvpn_session_async(
@@ -1611,6 +1612,24 @@ mod tests {
                 .consecutive_failures,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn health_reconnect_cancels_cleanup_grace() {
+        let shared = Arc::new(Mutex::new(SharedRuntimeState::default()));
+        mark_wgvpn_health_degraded(shared.clone(), 29, "peer_disconnected");
+        assert!(shared
+            .lock()
+            .passive_health_grace_controls
+            .contains_key(&29));
+        record_wgvpn_health_success(&shared, 29, None, Some(12));
+        let state = shared.lock();
+        assert!(!state.passive_health_grace_controls.contains_key(&29));
+        let health = &state.wgvpn_health_runtime[&29];
+        assert_eq!(health.state, WgvpnHealthState::Connected);
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.grace_deadline, None);
+        assert_eq!(health.latency_ms, Some(12));
     }
 
     #[tokio::test]

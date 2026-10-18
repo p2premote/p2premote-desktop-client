@@ -304,7 +304,12 @@ pub async fn wgvpn_health_monitor_loop(
     let last_success = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let session_last_success = last_success.clone();
     let session_event_handler = event_handler.clone();
+    let control_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let session_closed = control_closed.clone();
     let session_handler: TunnelHealthEventHandler = Arc::new(move |event| {
+        if matches!(event, TunnelHealthEvent::ConnectionClosed) {
+            session_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if matches!(event, TunnelHealthEvent::HeartbeatSucceeded { .. }) {
             *session_last_success.lock().expect("health timestamp lock") =
                 std::time::Instant::now();
@@ -317,6 +322,7 @@ pub async fn wgvpn_health_monitor_loop(
             if *stop_rx.borrow() {
                 return Ok(());
             }
+            control_closed.store(false, std::sync::atomic::Ordering::SeqCst);
             match active_health_session(
                 source_device_id,
                 &health_addr,
@@ -327,6 +333,9 @@ pub async fn wgvpn_health_monitor_loop(
             )
             .await
             {
+                Ok(()) if control_closed.load(std::sync::atomic::Ordering::SeqCst) => {
+                    warn!("[wgvpn-health] control EOF, preserving tunnel and reconnecting: address={}", health_addr);
+                }
                 Ok(()) => return Ok(()),
                 Err(err) => warn!(
                     "[wgvpn-health] health session failed, retrying: address={}, error={:#}",
@@ -845,6 +854,76 @@ pub async fn close_active_p2p_job_with_nat(
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn health_monitor_reconnects_after_eof_and_honors_explicit_stop() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut conn = TunnelControlConnection::new(stream);
+                assert!(matches!(
+                    conn.next().await.unwrap(),
+                    Some(TunnelControlMessage::Hello { .. })
+                ));
+                conn.send(&TunnelControlMessage::HelloAck {
+                    ok: true,
+                    protocol_version: TUNNEL_CONTROL_PROTOCOL_VERSION,
+                    message: "ok".into(),
+                })
+                .await
+                .unwrap();
+                if attempt == 0 {
+                    conn.close().await.unwrap();
+                } else {
+                    let Some(TunnelControlMessage::Ping { ts, .. }) = conn.next().await.unwrap()
+                    else {
+                        panic!("expected ping after reconnect");
+                    };
+                    conn.send(&TunnelControlMessage::Pong { ts }).await.unwrap();
+                    conn.send(&TunnelControlMessage::Stop {
+                        reason: "remote_manual_disconnect".into(),
+                    })
+                    .await
+                    .unwrap();
+                }
+            }
+        });
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let handler: TunnelHealthEventHandler =
+            Arc::new(move |event| captured.lock().unwrap().push(event));
+        let (_stop_tx, stop_rx) = watch::channel(false);
+        let (_speed_tx, speed_rx) = mpsc::unbounded_channel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            wgvpn_health_monitor_loop(
+                42,
+                address,
+                stop_rx,
+                speed_rx,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                handler,
+            ),
+        )
+        .await
+        .expect("monitor should reconnect and stop")
+        .unwrap();
+        server.await.unwrap();
+        let events = events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, TunnelHealthEvent::ConnectionClosed))
+                .count(),
+            1
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, TunnelHealthEvent::HeartbeatSucceeded { .. })));
+        assert!(events.iter().any(|e| matches!(e, TunnelHealthEvent::RemoteStop { reason } if reason == "remote_manual_disconnect")));
+    }
 
     #[test]
     fn nat_merge_falls_back_only_on_empty_primary() {

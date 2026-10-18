@@ -2,6 +2,41 @@
 
 use super::*;
 
+pub(super) fn spawn_forwarder_diagnostics_monitor(shared: Arc<Mutex<SharedRuntimeState>>) {
+    tokio::spawn(async move {
+        let mut reported = std::collections::HashSet::new();
+        let mut tick = interval(Duration::from_secs(5));
+        loop {
+            tick.tick().await;
+            if shared.lock().shutdown_requested {
+                return;
+            }
+            let sessions = wgvpn_flow::snapshot_sessions();
+            reported.retain(|handle| sessions.iter().any(|s| &s.gonc_handle_id == handle));
+            for session in sessions {
+                let Some(diagnostics) =
+                    p2premote_punch::api::udp_tunnel_diagnostics(&session.gonc_handle_id)
+                else {
+                    continue;
+                };
+                if diagnostics.exit_reason.is_some()
+                    && reported.insert(session.gonc_handle_id.clone())
+                {
+                    warn!(
+                        "[tunnel-diagnostics] forwarder exited: peer_device_id={}, handle_id={}, diagnostics={:?}",
+                        session.peer_device_id, session.gonc_handle_id, diagnostics
+                    );
+                    mark_wgvpn_health_degraded(
+                        shared.clone(),
+                        session.peer_device_id,
+                        "forwarder_exited",
+                    );
+                }
+            }
+        }
+    });
+}
+
 pub(super) fn spawn_passive_health_watchdog(
     shared: Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
@@ -105,8 +140,8 @@ pub(super) fn spawn_wgvpn_health_monitor(
     );
 
     let event_shared = shared.clone();
-    let connection_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let closed_flag_for_handler = connection_closed.clone();
+    let cleanup_delegated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let delegated_for_handler = cleanup_delegated.clone();
     let event_handler = Arc::new(move |event| match event {
         TunnelHealthEvent::HeartbeatSucceeded { latency_ms } => {
             record_wgvpn_health_success(&event_shared, peer_device_id, Some(generation), latency_ms)
@@ -115,16 +150,13 @@ pub(super) fn spawn_wgvpn_health_monitor(
             record_wgvpn_health_failure(event_shared.clone(), peer_device_id, Some(generation))
         }
         TunnelHealthEvent::ConnectionClosed => {
-            closed_flag_for_handler.store(true, Ordering::SeqCst);
-            cleanup_wgvpn_session_async(
-                event_shared.clone(),
-                peer_device_id,
-                "tcp_fin",
-                CleanupGuard::Monitor(generation),
+            warn!(
+                "[wgvpn-health] control connection closed; preserving data plane: peer_device_id={}, generation={}",
+                peer_device_id, generation
             );
         }
         TunnelHealthEvent::RemoteStop { reason } => {
-            closed_flag_for_handler.store(true, Ordering::SeqCst);
+            delegated_for_handler.store(true, Ordering::SeqCst);
             if reason == "remote_manual_disconnect" {
                 mark_auto_keep_remote_stop(&event_shared, peer_device_id);
             }
@@ -147,13 +179,11 @@ pub(super) fn spawn_wgvpn_health_monitor(
             event_handler,
         )
         .await;
-        // 对端关闭连接导致的退出：ConnectionClosed 已 spawn 带 Monitor 守卫的
-        // 清理任务，wgvpn_health_controls 表项必须留给它 claim（claim 成功后由
-        // stop_wgvpn_health_monitor 删除）。这里同步删除会让 claim 必然失败，
-        // 而 monitor 与 watchdog 均已退出，会话将失去全部清理路径而永久残留。
-        if connection_closed.load(Ordering::SeqCst) {
+        // Explicit Stop delegates cleanup to a task guarded by this generation.
+        // Keep the control entry until that task claims it. EOF is retried.
+        if cleanup_delegated.load(Ordering::SeqCst) {
             debug!(
-                "[wgvpn-health] monitor exited on connection close, cleanup delegated: peer_device_id={}",
+                "[wgvpn-health] monitor exited on explicit remote stop, cleanup delegated: peer_device_id={}",
                 peer_device_id
             );
             return;
@@ -345,6 +375,16 @@ pub(super) fn record_wgvpn_health_failure(
         }
     };
     if should_start_grace {
+        for session in wgvpn_flow::snapshot_sessions()
+            .into_iter()
+            .filter(|s| s.peer_device_id == peer_device_id)
+        {
+            warn!(
+                "[tunnel-diagnostics] heartbeat threshold reached: peer_device_id={}, generation={:?}, handle_id={}, diagnostics={:?}",
+                peer_device_id, expected_generation, session.gonc_handle_id,
+                p2premote_punch::api::udp_tunnel_diagnostics(&session.gonc_handle_id)
+            );
+        }
         schedule_passive_health_grace(shared, peer_device_id, "heartbeat_failures");
     }
 }
