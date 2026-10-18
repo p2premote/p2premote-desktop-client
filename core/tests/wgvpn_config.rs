@@ -8,6 +8,13 @@ const PASSIVE_IP_CIDR: &str = "100.99.71.1/24";
 const WGVPN_CIDR: &str = "100.99.71.0/24";
 
 #[test]
+fn default_mtu_reserves_outer_ipv6_udp_and_wireguard_overhead() {
+    // IPv6 minimum path MTU 1280 minus outer IPv6/UDP/WG headers (40 + 8 + 32).
+    assert_eq!(wgvpn::WGVPN_MTU, 1200);
+    assert!(u32::from(wgvpn::WGVPN_MTU) + 40 + 8 + 32 <= 1280);
+}
+
+#[test]
 fn active_config_contains_required_fields() {
     let cfg = wgvpn::WgConfigBuilder::new()
         .private_key("priv-aaa")
@@ -25,7 +32,7 @@ fn active_config_contains_required_fields() {
     assert!(text.contains("[Interface]"));
     assert!(text.contains("PrivateKey = priv-aaa"));
     assert!(text.contains(&format!("Address = {}", PASSIVE_IP_CIDR)));
-    assert!(text.contains("MTU = 1280"));
+    assert!(text.lines().any(|line| line == "MTU = 1200"));
     assert!(text.contains("ListenPort = 51820"));
     assert!(text.contains("[Peer]"));
     assert!(text.contains("Endpoint = 127.0.0.1:51821"));
@@ -51,7 +58,7 @@ fn passive_config_omits_endpoint_and_keepalive() {
 
     let text = cfg.render().unwrap();
     assert!(text.contains(&format!("Address = {}", ACTIVE_IP_CIDR)));
-    assert!(text.contains("MTU = 1280"));
+    assert!(text.lines().any(|line| line == "MTU = 1200"));
     assert!(!text.contains("Endpoint ="), "被动端不应包含 Endpoint");
     assert!(
         !text.contains("PersistentKeepalive"),
