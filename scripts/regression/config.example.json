@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "timeout_seconds": 150,
+  "poll_seconds": 1,
+  "peers": {
+    "a": {
+      "host": "192.0.2.10",
+      "ssh_user": "regression",
+      "ssh_port": 22,
+      "dedicated_test_machine": true,
+      "cli_path": "C:/Program Files/p2pRemote/resources/p2premote-cli.exe",
+      "expected_service_version": "1.14.0-REPLACE_WITH_BUILD_HASH",
+      "identifier_env": "P2PREMOTE_TEST_IDENTIFIER",
+      "password_env": "P2PREMOTE_TEST_PASSWORD",
+      "installer_env": "P2PREMOTE_TEST_INSTALLER",
+      "installer_sha256_env": "P2PREMOTE_TEST_INSTALLER_SHA256"
+    },
+    "b": {
+      "host": "192.0.2.11",
+      "ssh_user": "regression",
+      "ssh_port": 22,
+      "dedicated_test_machine": true,
+      "cli_path": "C:/Program Files/p2pRemote/resources/p2premote-cli.exe",
+      "expected_service_version": "1.14.0-REPLACE_WITH_BUILD_HASH",
+      "identifier_env": "P2PREMOTE_TEST_IDENTIFIER",
+      "password_env": "P2PREMOTE_TEST_PASSWORD",
+      "installer_env": "P2PREMOTE_TEST_INSTALLER",
+      "installer_sha256_env": "P2PREMOTE_TEST_INSTALLER_SHA256"
+    }
+  }
+}

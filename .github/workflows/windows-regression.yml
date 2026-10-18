@@ -1,0 +1,58 @@
+name: Windows VM regression
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version (X.Y.Z)
+        default: '1.14.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# These two VMs are shared mutable resources. Never cancel an installer or run two suites at once.
+concurrency:
+  group: windows-vm-regression
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    if: vars.WINDOWS_REGRESSION_ENABLED == 'true'
+    runs-on: [self-hosted, Windows, X64, p2premote-regression]
+    environment: windows-regression
+    timeout-minutes: 90
+    env:
+      P2PREMOTE_TEST_IDENTIFIER: ${{ secrets.P2PREMOTE_TEST_IDENTIFIER }}
+      P2PREMOTE_TEST_PASSWORD: ${{ secrets.P2PREMOTE_TEST_PASSWORD }}
+      REGRESSION_CONFIG: ${{ vars.WINDOWS_REGRESSION_CONFIG }}
+      REGRESSION_VERSION: ${{ inputs.version || vars.WINDOWS_REGRESSION_VERSION || '1.14.0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: p2premote-desktop-client
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-punch-rs
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          path: p2premote-punch-rs
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-wg-ffi
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+          path: p2premote-wg-ffi
+      - name: Build, deploy and regress the current revision
+        shell: powershell
+        working-directory: p2premote-desktop-client
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:REGRESSION_CONFIG)) { throw 'WINDOWS_REGRESSION_CONFIG is required' }
+          ./scripts/regression/invoke.ps1 -ConfigPath $env:REGRESSION_CONFIG -Version $env:REGRESSION_VERSION
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-regression-${{ github.sha }}
+          path: p2premote-desktop-client/build/windows-regression/
+          if-no-files-found: warn

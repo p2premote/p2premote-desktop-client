@@ -16,6 +16,8 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod automation;
+
 #[derive(Parser)]
 #[command(name = "p2premote-cli")]
 struct Cli {
@@ -25,6 +27,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Send a bounded JSON IPC command from stdin; emit one redacted JSON response.
+    Automation {
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=300))]
+        timeout_secs: u64,
+    },
     Login(LoginArgs),
     Logout,
     Status,
@@ -160,6 +167,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Automation { timeout_secs } => automation::run(timeout_secs).await?,
         Commands::Login(args) => {
             let password = match args.password {
                 Some(password) => password,
