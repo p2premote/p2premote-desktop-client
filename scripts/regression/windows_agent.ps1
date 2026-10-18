@@ -85,6 +85,10 @@ try {
     $process.StandardInput.Close()
     if (-not $process.WaitForExit(($seconds + 10) * 1000)) { $process.Kill(); throw 'CLI timeout' }
     if ($request.operation -eq 'service') {
+        if ($process.ExitCode -eq 0) {
+            $state = if ($request.action -eq 'stop') { 'Stopped' } else { 'Running' }
+            (Get-Service 'p2premote-service').WaitForStatus($state, [TimeSpan]::FromSeconds(30))
+        }
         @{ok=($process.ExitCode -eq 0); exit_code=$process.ExitCode} | ConvertTo-Json -Compress
     } else {
         $response = $stdout.Result | ConvertFrom-Json

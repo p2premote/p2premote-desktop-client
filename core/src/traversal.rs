@@ -1075,6 +1075,19 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn lan_probe_failures_advance_but_signal_failures_end_the_attempt() {
+        for code in [ErrorCode::TraversalLanProbeTimeout, ErrorCode::TraversalLanProbeFailed] {
+            let error = choose_round_error(Some(coded(code.clone(), "LAN round ended")), None).unwrap();
+            assert_eq!(code_of(&error).retry_class(), "next_network_or_attempt");
+            let error = choose_round_error(Some(coded(code, "LAN round ended")), Some(RoundError {
+                error_code: ErrorCode::SignalSendTimeout, message: "delivery failed".into(),
+            })).unwrap();
+            assert_eq!(code_of(&error), ErrorCode::SignalSendTimeout);
+            assert_ne!(code_of(&error).retry_class(), "next_network_or_attempt");
+        }
+    }
+
+    #[test]
     fn lan_probe_budget_is_short_only_when_both_peers_support_it() {
         assert_eq!(negotiate_lan_probe_budget(Some(1), Some(1)).unwrap(), 1);
         assert_eq!(

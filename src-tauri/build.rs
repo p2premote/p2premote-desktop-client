@@ -11,6 +11,9 @@ fn main() {
     println!("cargo:rerun-if-changed=../notifier/Cargo.toml");
     println!("cargo:rerun-if-changed=../core/src");
     println!("cargo:rerun-if-changed=../core/Cargo.toml");
+    // Nested service/CLI builds must refresh packaged binaries when punch changes.
+    println!("cargo:rerun-if-changed=../../p2premote-punch-rs/src");
+    println!("cargo:rerun-if-changed=../../p2premote-punch-rs/Cargo.toml");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_WG_FFI_DIR");
     println!("cargo:rerun-if-env-changed=P2PREMOTE_PREBUILT_RESOURCES");
     println!("cargo:rerun-if-env-changed=RUSTDESK_TINY_ARTIFACT_DIR");

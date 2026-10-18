@@ -20,6 +20,7 @@ using System;
 using System.Text;
 public static class AgentSmokeProgram {
     public static int Main(string[] args) {
+        if (args.Length == 2 && args[0] == "service") return 0;
         Console.InputEncoding = new UTF8Encoding(false);
         Console.OutputEncoding = new UTF8Encoding(false);
         string input = Console.In.ReadToEnd();
@@ -74,5 +75,38 @@ public static class AgentSmokeProgram {
     def test_cli_exit_code_cannot_contradict_success_json(self):
         code, response = self.invoke("simulate-bad-exit")
         self.assertNotEqual(code, 0)
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error_code"], "regression.agent.failed")
+
+    def test_service_operations_wait_for_actual_windows_state(self):
+        for action, expected in (("stop", "Stopped"), ("start", "Running"), ("restart", "Running")):
+            with self.subTest(action=action):
+                prefix = r"""
+function Get-Service {
+    param($Name)
+    if ($Name -ne 'p2premote-service') { throw 'wrong service' }
+    $mock = New-Object PSObject
+    $mock | Add-Member ScriptMethod WaitForStatus {
+        param($state, $timeout)
+        if ($timeout.TotalSeconds -ne 30) { throw 'unbounded wait' }
+        $global:observedState = [string]$state
+    }
+    return $mock
+}
+"""
+                script = prefix + "\n& {\n" + self.agent + "\n}\n" + (
+                    "if ($global:observedState -ne '" + expected + "') { throw 'state was not awaited' }")
+                request = {"operation": "service", "action": action, "cli_path": str(self.executable)}
+                result = self.powershell(script, json.dumps(request))
+                self.assertTrue(json.loads(result.stdout)["ok"])
+
+    def test_service_state_wait_failure_is_not_success(self):
+        prefix = "function Get-Service { $m=New-Object PSObject; $m | Add-Member ScriptMethod WaitForStatus { throw 'still stopping' }; return $m }\n"
+        encoded = base64.b64encode((prefix + self.agent).encode("utf-16-le")).decode("ascii")
+        request = {"operation": "service", "action": "stop", "cli_path": str(self.executable)}
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                                input=json.dumps(request), text=True, encoding="utf-8", capture_output=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        response = json.loads(result.stdout)
         self.assertFalse(response["ok"])
         self.assertEqual(response["error_code"], "regression.agent.failed")
