@@ -543,6 +543,8 @@ pub async fn run_service_foreground() -> Result<()> {
     // 第一批 message（批次4）能按正确语言选词，避免短暂显示默认语言。
     {
         let config = &startup_config;
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        p2premote_punch::easyp2p::portmap::set_enabled(true);
         shared.lock().apply_connection_config(config);
         if let Some(locale) = config.locale.clone() {
             shared.lock().status.locale = Some(locale);
@@ -846,6 +848,7 @@ pub async fn run_service_foreground() -> Result<()> {
     }
 
     cancel_all_wgvpn_jobs(&shared).await;
+    p2premote_punch::easyp2p::portmap::shutdown().await;
     if cfg!(any(windows, target_os = "macos")) {
         let punch_lib = load_machine_config()
             .ok()
