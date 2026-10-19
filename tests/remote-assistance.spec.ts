@@ -860,6 +860,63 @@ test.describe('远程协助', () => {
     expect(calls.find(call => call.cmd === 'save_connection_preferences')?.args?.preferTcp).toBe(false)
   })
 
+  test('设备失败建议仅在主动连接最终失败时出现，且只显示一个操作', async ({ page }) => {
+    await installTauriMock(page, 'zh-CN', true)
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await page.locator('.device-list-item').filter({ hasText: '对方电脑' }).click()
+    const tcpRetry = page.getByRole('button', { name: '关闭 TCP 优先并重试', exact: true })
+    const networkHelp = page.getByRole('button', { name: '查看网络优化帮助', exact: true })
+
+    await page.evaluate(() => (window as any).__emitActiveJob({
+      peer_device_id: 22, state: 'waiting', attempt: 1, max_attempts: 30,
+      message: '本次未能建立直连，等待自动重试',
+      tcp_retry_recommended: true, symmetric_nat_help_recommended: true,
+    }))
+    await expect(page.locator('.tunnel-lifecycle-strip')).toContainText('等待自动重试')
+    await expect(tcpRetry).toHaveCount(0)
+    await expect(networkHelp).toHaveCount(0)
+
+    await page.evaluate(() => (window as any).__emitActiveJob({
+      peer_device_id: 22, state: 'failed', attempt: 1, max_attempts: 30,
+      error_code: 'traversal.punch.timeout',
+      message: '本次未能建立直连。本次已开启 TCP 优先，建议关闭后重试。',
+      tcp_retry_recommended: true, symmetric_nat_help_recommended: true,
+    }))
+    await page.getByRole('dialog', { name: '隧道建立失败', exact: true }).getByRole('button', { name: '知道了', exact: true }).click()
+    await expect(page.locator('.tunnel-lifecycle-strip')).toContainText('建议关闭后重试')
+    await expect(tcpRetry).toBeVisible()
+    await expect(networkHelp).toHaveCount(0)
+
+    await page.evaluate(() => (window as any).__emitActiveJob({
+      peer_device_id: 22, state: 'succeeded', attempt: 2, max_attempts: 30,
+      message: '已连接', result: { success: true },
+      tcp_retry_recommended: true, symmetric_nat_help_recommended: true,
+    }))
+    await expect(tcpRetry).toHaveCount(0)
+    await expect(networkHelp).toHaveCount(0)
+  })
+
+  test('被动连接失败显示服务给出的原因和建议，不显示主动端设置操作', async ({ page }) => {
+    await installTauriMock(page, 'zh-CN', true)
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => {
+      ;(window as any).__p2premoteMockState.tunnelRuntime = {
+        tunnel_lifecycles: [{
+          peer_device_id: 22, role: 'passive', state: 'not_established',
+          attempt: 1, max_attempts: 30, last_result: 'attempt_failed',
+          error_code: 'connection.approval.denied',
+          message: '本次连接请求未获允许。请确认本次访问授权，再由发起方重试。',
+          updated_at: 1,
+        }],
+      }
+    })
+    await page.getByRole('button', { name: '刷新', exact: true }).click()
+    await page.locator('.device-list-item').filter({ hasText: '对方电脑' }).click()
+    await expect(page.locator('.tunnel-lifecycle-strip')).toContainText('本次连接请求未获允许')
+    await expect(page.locator('.tunnel-lifecycle-strip')).toContainText('由发起方重试')
+    await expect(page.getByRole('button', { name: '关闭 TCP 优先并重试', exact: true })).toHaveCount(0)
+  })
+
   test('隧道状态按角色分组并将诊断字段收进网络详情', async ({ page }) => {
     await installTauriMock(page)
     await page.goto('/')

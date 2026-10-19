@@ -6,6 +6,86 @@ fn shared() -> Arc<Mutex<SharedRuntimeState>> {
 fn job(peer: i64, active: bool, state: &str) -> TunnelJobStatus {
     serde_json::from_value(serde_json::json!({"peer_device_id":peer,"is_active":active,"state":state,"attempt":1,"max_attempts":30,"message":"test","updated_at":1})).unwrap()
 }
+
+#[test]
+fn failed_feedback_survives_locale_refresh_for_both_roles_without_raw_errors() {
+    for active in [true, false] {
+        let shared = shared();
+        let mut failed = job(42, active, "failed");
+        failed.error_code = "connection.approval.denied".into();
+        failed.message = "secret dependency error: socket https://private.example".into();
+        if active {
+            update_active_tunnel_job_status(&shared, failed);
+        } else {
+            assert!(update_wgvpn_job_status(&shared, failed, None));
+        }
+        let mut state = shared.lock();
+        let lifecycle = &state.status.tunnel_lifecycles[0];
+        assert_eq!(
+            lifecycle.error_code.as_deref(),
+            Some("connection.approval.denied")
+        );
+        let zh = lifecycle.message.clone().unwrap();
+        assert!(zh.contains("未获允许") && !zh.contains("secret"));
+        if !active {
+            assert!(zh.contains("发起方"));
+        }
+        state.status.locale = Some("en".into());
+        relocalize_runtime_status(&mut state.status);
+        let en = state.status.tunnel_lifecycles[0].message.clone().unwrap();
+        assert!(en.contains("not approved") && !en.contains("secret"));
+        // The lifecycle keeps its explanation even after the job collection is cleared.
+        state.status.active_tunnel_jobs.clear();
+        state.status.wgvpn_jobs.clear();
+        state.status.locale = Some("zh-CN".into());
+        relocalize_runtime_status(&mut state.status);
+        assert_eq!(
+            state.status.tunnel_lifecycles[0].message.as_deref(),
+            Some(zh.as_str())
+        );
+    }
+}
+
+#[test]
+fn feedback_respects_retry_wait_cancellation_and_a_single_final_network_suggestion() {
+    let mut status = job(42, true, "waiting");
+    status.error_code = "traversal.punch.timeout".into();
+    status.tcp_retry_recommended = true;
+    status.symmetric_nat_help_recommended = true;
+    localize_tunnel_job_feedback(Some("en"), &mut status, 30);
+    assert!(!status.tcp_retry_recommended && !status.symmetric_nat_help_recommended);
+    assert!(status.message.contains("retrying in 30s"));
+    assert!(!status.message.contains("different network"));
+
+    status.state = TunnelJobState::Failed;
+    status.tcp_retry_recommended = true;
+    status.symmetric_nat_help_recommended = true;
+    localize_tunnel_job_feedback(None, &mut status, 60);
+    assert!(status.tcp_retry_recommended && !status.symmetric_nat_help_recommended);
+    assert!(status.message.contains("TCP 优先") && !status.message.contains("对称"));
+
+    status.error_code = "connection.execution.peer_cancelled".into();
+    localize_tunnel_job_feedback(None, &mut status, 60);
+    assert_eq!(status.state, TunnelJobState::Cancelled);
+    assert!(!status.tcp_retry_recommended && !status.symmetric_nat_help_recommended);
+    assert_eq!(status.message, "对端已取消本次连接。");
+    let (_, last_result, code) = tunnel_job_lifecycle_projection(status.state, &status.error_code);
+    assert_eq!(last_result, TunnelLastResult::Cancelled);
+    assert_eq!(code.as_deref(), Some("connection.execution.peer_cancelled"));
+
+    status.state = TunnelJobState::Failed;
+    status.error_code = "traversal.execution.cancelled".into();
+    localize_tunnel_job_feedback(None, &mut status, 60);
+    assert_eq!(status.state, TunnelJobState::Cancelled);
+    assert_eq!(status.message, "本次连接已取消。");
+
+    status.state = TunnelJobState::Succeeded;
+    status.message = "connected".into();
+    status.tcp_retry_recommended = true;
+    localize_tunnel_job_feedback(None, &mut status, 60);
+    assert_eq!(status.message, "connected");
+    assert!(!status.tcp_retry_recommended);
+}
 fn monitor(generation: u64) -> WgvpnHealthControl {
     let (stop_tx, _) = watch::channel(false);
     let (speed_tx, _) = mpsc::unbounded_channel();

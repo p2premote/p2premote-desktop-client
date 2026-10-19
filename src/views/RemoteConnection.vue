@@ -148,12 +148,10 @@
             </div>
           </div>
 
-          <div v-if="activeJob?.tcp_retry_recommended" class="detail-section result-section">
-            <el-alert :title="$t('app.settings.tcp_failure_hint')" type="warning" :closable="false" />
+          <div v-if="activeJob?.state === 'failed' && activeJob?.tcp_retry_recommended" class="detail-section result-section">
             <el-button :loading="connecting" @click="disableTcpAndRetry">{{ $t('app.settings.disable_tcp_retry') }}</el-button>
           </div>
-          <div v-if="activeJob?.symmetric_nat_help_recommended" class="detail-section result-section">
-            <el-alert :title="$t('devices.message.symmetric_nat_help')" type="warning" :closable="false" />
+          <div v-else-if="activeJob?.state === 'failed' && activeJob?.symmetric_nat_help_recommended" class="detail-section result-section">
             <el-button @click="openSymmetricNatHelp">{{ $t('devices.message.view_network_help') }}</el-button>
           </div>
           <div v-if="activeJob?.state === 'succeeded'" class="detail-section result-section">

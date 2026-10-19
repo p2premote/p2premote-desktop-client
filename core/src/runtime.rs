@@ -70,9 +70,9 @@ use auto_keep_runtime::*;
 use ipc::*;
 use p2p_signal::*;
 use status::{
-    clear_active_tunnel_job_status, current_locale, relocalize_runtime_status,
-    tunnel_job_lifecycle_projection, update_active_tunnel_job_status, update_status,
-    upsert_tunnel_lifecycle,
+    clear_active_tunnel_job_status, current_locale, localize_tunnel_job_feedback,
+    relocalize_runtime_status, tunnel_job_lifecycle_projection, update_active_tunnel_job_status,
+    update_status, upsert_tunnel_lifecycle,
 };
 use tunnel_health::*;
 use tunnel_jobs::*;
@@ -1489,7 +1489,7 @@ mod tests {
         let mut status = RuntimeStatus {
             locale: Some("zh-CN".to_string()),
             active_tunnel_jobs: vec![TunnelJobStatus {
-                error_code: crate::error::ErrorCode::RuntimeExecutionUnclassified
+                error_code: crate::error::ErrorCode::TraversalPunchTimeout
                     .as_str()
                     .to_owned(),
                 is_active: true,
@@ -1535,12 +1535,12 @@ mod tests {
 
         assert_eq!(
             status.active_tunnel_jobs[0].message,
-            "Establishment failed: Timed out waiting for hole-punch response; retrying in 60s"
+            "Establishment failed: A direct connection could not be established this time; retrying in 60s"
         );
         assert_eq!(
             status.tunnel_lifecycles[0].message.as_deref(),
             Some(
-                "Establishment failed: Timed out waiting for hole-punch response; retrying in 60s"
+                "Establishment failed: A direct connection could not be established this time; retrying in 60s"
             )
         );
     }

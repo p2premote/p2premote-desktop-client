@@ -17,6 +17,10 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+#[path = "i18n/connection_failure_tests.rs"]
+mod connection_failure_tests;
+
 /// 当前支持的语言。locale 字符串归一化后只有两种：`zh-CN` / `en`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Locale {
@@ -65,6 +69,121 @@ pub fn localized_message(locale: Option<&str>, key: &str, params: &[(&str, &str)
         Locale::En => en_message(key),
     };
     interpolate(raw, params)
+}
+
+/// Explain a connection error without exposing dependency messages or changing retry policy.
+/// Waiting jobs use only the reason; final failures also include the next step.
+pub fn connection_failure_message(
+    locale: Option<&str>,
+    code: &str,
+    is_active: bool,
+    include_advice: bool,
+) -> String {
+    use crate::error::ErrorCode::*;
+    let code = crate::error::ErrorCode::parse(code);
+    let (reason, mut advice) = match &code {
+        ConnectionAuthorizeUnauthenticated => ("login", "login"),
+        ConnectionAuthorizeForbidden => ("forbidden", "authorization"),
+        ConnectionAuthorizeDailyLimitReached => ("limit", "limit"),
+        ConnectionPeerPrepareOffline => ("offline", "peer"),
+        ConnectionPeerPrepareTimeout => ("no_response", "peer"),
+        ConnectionPeerPrepareRejected => ("peer_prepare", "peer"),
+        ConnectionApprovalDenied => ("denied", "approval"),
+        ConnectionApprovalTimeout => ("approval_timeout", "approval"),
+        ConnectionApprovalBusy | ConnectionApprovalRequestMissing => {
+            ("approval_incomplete", "approval")
+        }
+        ConnectionCompatibilityClientUpgradeRequired | SignalTransportSelectPeerUpgradeRequired => {
+            ("upgrade", "upgrade")
+        }
+        ConnectionAuthorizeTimeout
+        | ConnectionAuthorizeUnavailable
+        | SignalSendTimeout
+        | SignalSendDisconnected
+        | SignalSendRejected
+        | SignalSendQueueFull
+        | SignalReceiveClosed
+        | SignalReceiveQueueFull => ("signaling", "network"),
+        TraversalKeyExchangeTimeout
+        | TraversalCapabilityExchangeTimeout
+        | TraversalPlanNegotiationTimeout
+        | TraversalRoundSyncTimeout
+        | TraversalRoundSyncPeerClosed
+        | TraversalAddressExchangeTimeout => ("negotiation_timeout", "peer"),
+        TraversalNatDetectionTimeout
+        | TraversalNatDetectionNoResult
+        | TraversalNatDetectionIoFailed => ("detection", "network"),
+        TraversalCandidateSelectionNoCommonNetwork
+        | TraversalCandidateSelectionNoUsableCandidate
+        | TraversalPunchTimeout
+        | TraversalPunchIoFailed
+        | TraversalPunchFailed
+        | TraversalLanProbeTimeout
+        | TraversalLanProbeFailed
+        | TraversalExecutionExhausted => ("direct", "direct"),
+        TraversalPunchIpv6Unavailable => ("ipv6", "ipv6"),
+        WireguardConfigurePermissionDenied => ("permission", "permission"),
+        WireguardConfigureBackendUnavailable
+        | TraversalLocalForwardInvalidAddress
+        | TraversalLocalForwardIoFailed
+        | NativeJniFailed => ("component", "service"),
+        WireguardConfigureInvalidConfig
+        | WireguardConfigureFailed
+        | WireguardHandshakeTimeout
+        | WireguardHandshakeFailed => ("tunnel", "service"),
+        RuntimeConfigLoadFailed => ("config", "service"),
+        RuntimeDeviceNotRegistered => ("registration", "registration"),
+        ConnectionRouteValidationOverlap => ("overlap", "lan"),
+        ConnectionRouteValidationInvalidCidr => ("cidr", "lan"),
+        ConnectionExecutionNetworkChanged => ("network_changed", "network_changed"),
+        ConnectionExecutionDeadlineExceeded => ("deadline", "network"),
+        ConnectionExecutionUserCancelled => ("user_cancelled", ""),
+        ConnectionExecutionPeerCancelled => ("peer_cancelled", ""),
+        TraversalExecutionCancelled | SignalReceiveCancelled => ("cancelled", ""),
+        SignalTransportSelectInvalidSelection
+        | SignalReceiveInvalidFrame
+        | SignalReceiveContextMismatch
+        | SignalReceiveStaleFrame
+        | SignalReceivePayloadTooLarge
+        | TraversalKeyExchangeInvalidPayload
+        | TraversalKeyExchangeCryptoFailed
+        | TraversalCapabilityExchangeInvalidPayload
+        | TraversalPlanNegotiationMismatch
+        | TraversalPlanNegotiationInvalidPayload
+        | TraversalRoundSyncInvalidSequence
+        | TraversalAddressExchangeInvalidPayload
+        | TraversalAddressExchangeCryptoFailed
+        | NativeDecodeInvalidPayload
+        | NativeEncodeFailed => ("protocol", "upgrade"),
+        ConnectionAuthorizeInvalidRequest | NativeInputInvalidArgument => ("request", "request"),
+        _ => ("unknown", "unknown"),
+    };
+    if !is_active
+        && matches!(
+            advice,
+            "peer" | "approval" | "direct" | "network" | "ipv6" | "network_changed"
+        )
+    {
+        advice = "passive";
+    }
+    let mut message = localized_message(locale, &format!("connection.failure.{reason}"), &[]);
+    if include_advice && !advice.is_empty() {
+        message.push(' ');
+        message.push_str(&localized_message(
+            locale,
+            &format!("connection.advice.{advice}"),
+            &[],
+        ));
+    }
+    if reason == "unknown" && p2premote_punch::error::valid_code(code.as_str()) {
+        message.push(' ');
+        message.push_str(&localized_message(
+            locale,
+            "connection.failure.code",
+            &[("code", code.as_str())],
+        ));
+    }
+    message
 }
 
 /// Localize a structured API error. New servers provide message_key and
@@ -186,6 +305,58 @@ fn api_error_key_for_code(code: i32) -> Option<&'static str> {
 /// 取中文词表。未命中返回 key 本身。
 fn zh_message(key: &str) -> &str {
     match key {
+        "connection.failure.login" => "登录状态已失效。",
+        "connection.failure.forbidden" => "本次连接没有获得授权。",
+        "connection.failure.limit" => "已达到当前连接次数限制。",
+        "connection.failure.offline" => "对端设备当前离线。",
+        "connection.failure.no_response" => "对端未响应。",
+        "connection.failure.peer_prepare" => "对端未能准备连接。",
+        "connection.failure.denied" => "本次连接请求未获允许。",
+        "connection.failure.approval_timeout" => "等待连接确认超时。",
+        "connection.failure.approval_incomplete" => "本次连接确认未完成。",
+        "connection.failure.upgrade" => "客户端版本不满足连接要求。",
+        "connection.failure.signaling" => "连接协调服务暂时不可用。",
+        "connection.failure.negotiation_timeout" => "连接协商超时。",
+        "connection.failure.detection" => "网络检测未能完成。",
+        "connection.failure.direct" => "本次未能建立直连。",
+        "connection.failure.ipv6" => "本次 IPv6 连接方式不可用。",
+        "connection.failure.permission" => "连接服务缺少必要权限。",
+        "connection.failure.component" => "必要的连接组件不可用。",
+        "connection.failure.tunnel" => "加密隧道未能就绪。",
+        "connection.failure.config" => "客户端配置未能加载。",
+        "connection.failure.registration" => "设备尚未完成注册。",
+        "connection.failure.overlap" => "共享网段与现有网络冲突。",
+        "connection.failure.cidr" => "共享网段配置无效。",
+        "connection.failure.network_changed" => "连接期间网络发生变化。",
+        "connection.failure.deadline" => "连接未在规定时间内完成。",
+        "connection.failure.user_cancelled" => "本次连接已由你取消。",
+        "connection.failure.peer_cancelled" => "对端已取消本次连接。",
+        "connection.failure.cancelled" => "本次连接已取消。",
+        "connection.failure.protocol" => "双方连接协议协商失败。",
+        "connection.failure.request" => "连接请求参数无效。",
+        "connection.failure.unknown" => "本次连接失败，暂时无法确定原因。",
+        "connection.failure.code" => "错误码：{code}",
+        "connection.advice.login" => "请重新登录后再连接。",
+        "connection.advice.authorization" => "请确认设备归属或联系设备所有者授权。",
+        "connection.advice.limit" => "请按连接次数限制说明，稍后重试。",
+        "connection.advice.peer" => "请确认对端客户端正在运行、网络正常，然后重试。",
+        "connection.advice.approval" => "请联系对端确认本次访问授权后重新连接。",
+        "connection.advice.upgrade" => "请确认双方客户端均已升级到支持的版本后重试。",
+        "connection.advice.network" => "请检查本机网络，稍后重试。",
+        "connection.advice.direct" => "请重试；仍失败时查看网络帮助或更换网络。",
+        "connection.advice.ipv6" => "请检查双方 IPv6 网络，或调整连接偏好后重试。",
+        "connection.advice.permission" => "请检查双方客户端服务的运行权限后重试。",
+        "connection.advice.service" => "请重试；仍失败时检查或修复双方客户端服务。",
+        "connection.advice.registration" => "请检查客户端登录和设备注册状态后重试。",
+        "connection.advice.lan" => "请检查双方 LAN 访问设置，调整共享网段后重试。",
+        "connection.advice.network_changed" => "请在网络稳定后重新连接。",
+        "connection.advice.request" => "请检查连接目标和连接设置后重试。",
+        "connection.advice.unknown" => "请重试；仍失败时联系支持并提供错误码。",
+        "connection.advice.passive" => "请确认双方客户端、网络和访问授权正常，再由发起方重试。",
+        "connection.advice.disable_tcp" => "本次已开启 TCP 优先，建议关闭后重试。",
+        "connection.advice.symmetric_nat" => {
+            "检测到对称型 NAT，当前网络条件可能影响直连。请查看网络帮助改善连接条件。"
+        }
         // ---- 设备身份通知（RuntimeStatus.device_identity_message）----
         "device_identity.cloned_rebuilt" => {
             "检测到当前系统由另一台设备复制，已自动创建新的设备身份。"
@@ -343,6 +514,56 @@ fn zh_message(key: &str) -> &str {
 /// 取英文词表。未命中回退到中文词表（避免英文缺失时显示 raw key）。
 fn en_message(key: &str) -> &str {
     match key {
+        "connection.failure.login" => "Your login session has expired.",
+        "connection.failure.forbidden" => "This connection is not authorized.",
+        "connection.failure.limit" => "The connection limit has been reached.",
+        "connection.failure.offline" => "The peer device is offline.",
+        "connection.failure.no_response" => "The peer did not respond.",
+        "connection.failure.peer_prepare" => "The peer could not prepare the connection.",
+        "connection.failure.denied" => "The connection request was not approved.",
+        "connection.failure.approval_timeout" => "Connection approval timed out.",
+        "connection.failure.approval_incomplete" => "Connection approval was not completed.",
+        "connection.failure.upgrade" => "A client version does not meet the connection requirements.",
+        "connection.failure.signaling" => "The connection coordination service is temporarily unavailable.",
+        "connection.failure.negotiation_timeout" => "Connection negotiation timed out.",
+        "connection.failure.detection" => "Network detection could not be completed.",
+        "connection.failure.direct" => "A direct connection could not be established this time.",
+        "connection.failure.ipv6" => "IPv6 is unavailable for this connection attempt.",
+        "connection.failure.permission" => "A connection service lacks the required permissions.",
+        "connection.failure.component" => "A required connection component is unavailable.",
+        "connection.failure.tunnel" => "The encrypted tunnel could not become ready.",
+        "connection.failure.config" => "The client configuration could not be loaded.",
+        "connection.failure.registration" => "Device registration is incomplete.",
+        "connection.failure.overlap" => "A shared subnet conflicts with an existing network.",
+        "connection.failure.cidr" => "The shared subnet configuration is invalid.",
+        "connection.failure.network_changed" => "The network changed while connecting.",
+        "connection.failure.deadline" => "The connection did not complete within the time limit.",
+        "connection.failure.user_cancelled" => "You cancelled this connection.",
+        "connection.failure.peer_cancelled" => "The peer cancelled this connection.",
+        "connection.failure.cancelled" => "This connection was cancelled.",
+        "connection.failure.protocol" => "Connection protocol negotiation failed.",
+        "connection.failure.request" => "The connection request parameters are invalid.",
+        "connection.failure.unknown" => "The connection failed; the cause could not be determined.",
+        "connection.failure.code" => "Error code: {code}",
+        "connection.advice.login" => "Sign in again, then reconnect.",
+        "connection.advice.authorization" => "Check device ownership or ask the device owner to grant access.",
+        "connection.advice.limit" => "Check the connection limit information and try again later.",
+        "connection.advice.peer" => "Check that the peer client is running and online, then retry.",
+        "connection.advice.approval" => "Contact the peer to confirm access approval, then reconnect.",
+        "connection.advice.upgrade" => "Check that both clients are updated to supported versions, then retry.",
+        "connection.advice.network" => "Check your network and try again later.",
+        "connection.advice.direct" => "Retry; if it still fails, see the network help or try a different network.",
+        "connection.advice.ipv6" => "Check IPv6 on both devices or adjust connection preferences, then retry.",
+        "connection.advice.permission" => "Check the client service permissions on both devices, then retry.",
+        "connection.advice.service" => "Retry; if it still fails, check or repair the client services on both devices.",
+        "connection.advice.registration" => "Check the client login and device registration, then retry.",
+        "connection.advice.lan" => "Check LAN access settings on both devices and adjust the shared subnets, then retry.",
+        "connection.advice.network_changed" => "Reconnect once the network is stable.",
+        "connection.advice.request" => "Check the target device and connection settings, then retry.",
+        "connection.advice.unknown" => "Retry; if it still fails, contact support with the error code.",
+        "connection.advice.passive" => "Check both clients, network access and approval, then ask the initiator to retry.",
+        "connection.advice.disable_tcp" => "TCP preference was enabled for this attempt. Try disabling it and reconnecting.",
+        "connection.advice.symmetric_nat" => "Symmetric NAT was detected and may affect direct connectivity. See the network help for ways to improve connectivity.",
         // ---- 设备身份通知 ----
         "device_identity.cloned_rebuilt" => "Detected this system was cloned from another device. A new device identity has been created automatically.",
         "device_identity.manual_rebuilding" => "Device identity has been rebuilt manually, re-registering.",
@@ -505,6 +726,98 @@ fn interpolate(template: &str, params: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_failures_explain_known_causes_and_next_steps_in_both_languages() {
+        let cases = [
+            (
+                "connection.authorize.unauthenticated",
+                "登录状态",
+                "Sign in again",
+            ),
+            (
+                "connection.authorize.forbidden",
+                "没有获得授权",
+                "grant access",
+            ),
+            (
+                "connection.authorize.daily_limit_reached",
+                "次数限制",
+                "try again later",
+            ),
+            (
+                "connection.peer_prepare.offline",
+                "当前离线",
+                "peer client is running",
+            ),
+            (
+                "connection.peer_prepare.timeout",
+                "未响应",
+                "peer client is running",
+            ),
+            ("connection.approval.denied", "未获允许", "access approval"),
+            ("connection.approval.timeout", "确认超时", "access approval"),
+            (
+                "connection.compatibility.client_upgrade_required",
+                "版本",
+                "supported versions",
+            ),
+            ("signal.send.disconnected", "协调服务", "Check your network"),
+            (
+                "traversal.punch.timeout",
+                "未能建立直连",
+                "different network",
+            ),
+            ("wireguard.handshake.timeout", "加密隧道", "client services"),
+            (
+                "wireguard.configure.permission_denied",
+                "必要权限",
+                "permissions",
+            ),
+            (
+                "wireguard.configure.backend_unavailable",
+                "连接组件",
+                "repair",
+            ),
+            (
+                "connection.route_validation.overlap",
+                "网段",
+                "shared subnets",
+            ),
+        ];
+        for (code, zh_reason, en_advice) in cases {
+            let zh = connection_failure_message(Some("zh-CN"), code, true, true);
+            let en = connection_failure_message(Some("en"), code, true, true);
+            assert!(zh.contains(zh_reason) && zh.contains("请"), "{code}: {zh}");
+            assert!(en.is_ascii() && en.contains(en_advice), "{code}: {en}");
+            assert!(!zh.contains("connection.failure.") && !en.contains("connection.advice."));
+        }
+        let timeout =
+            connection_failure_message(None, "connection.peer_prepare.timeout", true, true);
+        assert!(!timeout.contains("离线"));
+        let direct = connection_failure_message(None, "traversal.punch.timeout", true, true);
+        assert!(!direct.contains("运营商") && !direct.contains("对称"));
+    }
+
+    #[test]
+    fn unknown_codes_are_safe_and_passive_or_cancelled_connections_get_relevant_advice() {
+        let unknown = "future.connection.new_reason";
+        let message = connection_failure_message(None, unknown, true, true);
+        assert!(message.contains("无法确定原因") && message.contains(unknown));
+        let malformed = "future.secret\nhttps://private.example/token";
+        assert!(!connection_failure_message(None, malformed, true, true).contains(malformed));
+        let passive = connection_failure_message(None, "connection.approval.denied", false, true);
+        assert!(passive.contains("发起方重试") && !passive.contains("对端未允许"));
+        for (code, reason) in [
+            ("connection.execution.user_cancelled", "由你取消"),
+            ("connection.execution.peer_cancelled", "对端已取消"),
+        ] {
+            let text = connection_failure_message(None, code, true, true);
+            assert!(text.contains(reason) && !text.contains("失败") && !text.contains("重试"));
+        }
+        let reason = connection_failure_message(None, "traversal.punch.timeout", true, false);
+        assert_eq!(reason, "本次未能建立直连。");
+    }
 
     #[test]
     fn locale_default_is_zh() {

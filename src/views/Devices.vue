@@ -133,12 +133,12 @@
                 </div>
               </div>
 
-              <el-alert v-if="activeTunnelJobMap[selectedDevice.device_id]?.tcp_retry_recommended" type="warning" :closable="false" :title="$t('app.settings.tcp_failure_hint')">
+              <div v-if="failedActiveTunnelJob(selectedDevice)?.tcp_retry_recommended">
                 <el-button :loading="preparingTunnelIds.has(selectedDevice.device_id)" @click="disableTcpAndRetry(selectedDevice)">{{ $t('app.settings.disable_tcp_retry') }}</el-button>
-              </el-alert>
-              <el-alert v-if="activeTunnelJobMap[selectedDevice.device_id]?.symmetric_nat_help_recommended" type="warning" :closable="false" :title="$t('devices.message.symmetric_nat_help')">
+              </div>
+              <div v-else-if="failedActiveTunnelJob(selectedDevice)?.symmetric_nat_help_recommended">
                 <el-button @click="openSymmetricNatHelp">{{ $t('devices.message.view_network_help') }}</el-button>
-              </el-alert>
+              </div>
 			  <div class="action-groups">
 				<div class="action-group">
 				  <div class="action-group-label">{{ $t('devices.detail.connection.tunnel_group') }}</div>
@@ -689,6 +689,16 @@ function activeTunnelJob(device: DeviceInfo | null): TunnelJobStatus | null {
   return job
 }
 
+function failedActiveTunnelJob(device: DeviceInfo): TunnelJobStatus | null {
+  const lifecycle = deviceTunnelLifecycle(device)
+  const job = activeTunnelJobMap.value[device.device_id]
+  return lifecycle.role === 'active'
+    && lifecycle.state === 'not_established'
+    && lifecycle.last_result === 'attempt_failed'
+    && job?.state === 'failed'
+    ? job : null
+}
+
 function activeTunnelActionText(device: DeviceInfo | null): string {
   if (!device) return t('devices.detail.connection.tunnel_action')
   const lifecycle = deviceTunnelLifecycle(device)
@@ -723,7 +733,7 @@ function deviceTunnelLifecycle(device: DeviceInfo | null): TunnelLifecycleStatus
       updated_at: 0,
     }
   }
-  const job = activeTunnelJob(device)
+  const job = device ? activeTunnelJobMap.value[device.device_id] : undefined
   return {
     peer_device_id: device?.device_id || 0,
     role: 'active',
@@ -731,6 +741,7 @@ function deviceTunnelLifecycle(device: DeviceInfo | null): TunnelLifecycleStatus
     attempt: job?.attempt || 0,
     max_attempts: job?.max_attempts || 30,
     last_result: job?.state === 'failed' ? 'attempt_failed' : job?.state === 'cancelled' ? 'cancelled' : 'none',
+    error_code: job?.error_code,
     message: job?.message,
     updated_at: job?.updated_at || 0,
   }
@@ -1037,13 +1048,7 @@ function applyTunnelRuntimeStatus(runtime: any) {
       for (const job of wgvpnJobs as TunnelJobStatus[]) {
         if (!job.is_active) continue
         newJobMap[job.peer_device_id] = {
-          peer_device_id: job.peer_device_id,
-          peer_device_uuid: '',
-          state: job.state,
-          attempt: job.attempt,
-          max_attempts: job.max_attempts,
-          message: job.message,
-          updated_at: job.updated_at,
+          ...job,
         }
       }
     }

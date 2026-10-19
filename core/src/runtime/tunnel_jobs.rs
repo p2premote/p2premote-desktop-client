@@ -1028,7 +1028,7 @@ pub(super) fn remove_wgvpn_job_if_current(
 
 pub(super) fn update_wgvpn_job_status(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    status: TunnelJobStatus,
+    mut status: TunnelJobStatus,
     generation: Option<u64>,
 ) -> bool {
     let mut state = shared.lock();
@@ -1042,6 +1042,11 @@ pub(super) fn update_wgvpn_job_status(
             return false;
         }
     }
+    localize_tunnel_job_feedback(
+        state.status.locale.as_deref(),
+        &mut status,
+        WGVPN_JOB_BACKOFF_SECS,
+    );
     if let Some(existing) = state
         .status
         .wgvpn_jobs

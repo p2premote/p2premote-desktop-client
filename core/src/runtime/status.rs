@@ -8,9 +8,93 @@ use crate::control::{
     RuntimeStatus, TunnelJobState, TunnelJobStatus, TunnelLastResult, TunnelLifecycleRole,
     TunnelLifecycleState, TunnelLifecycleStatus,
 };
-use crate::i18n::localized_message;
+use crate::i18n::{connection_failure_message, localized_message};
 use parking_lot::Mutex;
 use std::sync::Arc;
+
+#[cfg(test)]
+#[path = "status_feedback_tests.rs"]
+mod feedback_tests;
+
+/// One presentation boundary for active/passive jobs and locale changes.
+/// Original errors remain in logs/reports; display text never drives scheduling.
+pub(super) fn localize_tunnel_job_feedback(
+    locale: Option<&str>,
+    job: &mut TunnelJobStatus,
+    backoff_secs: u64,
+) {
+    if job.state == TunnelJobState::Failed
+        && matches!(
+            ErrorCode::parse(&job.error_code),
+            ErrorCode::ConnectionExecutionUserCancelled
+                | ErrorCode::ConnectionExecutionPeerCancelled
+                | ErrorCode::TraversalExecutionCancelled
+                | ErrorCode::SignalReceiveCancelled
+        )
+    {
+        job.state = TunnelJobState::Cancelled;
+    }
+    if job.state != TunnelJobState::Failed || !job.is_active {
+        job.tcp_retry_recommended = false;
+        job.symmetric_nat_help_recommended = false;
+    }
+    // Prefer the actionable TCP suggestion to a second, overlapping network warning.
+    if job.tcp_retry_recommended {
+        job.symmetric_nat_help_recommended = false;
+    }
+    match job.state {
+        TunnelJobState::Failed => {
+            job.message = connection_failure_message(
+                locale,
+                &job.error_code,
+                job.is_active,
+                !job.tcp_retry_recommended && !job.symmetric_nat_help_recommended,
+            );
+            let advice = if job.tcp_retry_recommended {
+                Some("connection.advice.disable_tcp")
+            } else if job.symmetric_nat_help_recommended {
+                Some("connection.advice.symmetric_nat")
+            } else {
+                None
+            };
+            if let Some(advice) = advice {
+                job.message.push(' ');
+                job.message
+                    .push_str(&localized_message(locale, advice, &[]));
+            }
+        }
+        TunnelJobState::Waiting => {
+            let reason = connection_failure_message(locale, &job.error_code, job.is_active, false);
+            let key = if job.is_active {
+                "tunnel.job.attempt_failed_retry"
+            } else {
+                "wgvpn.job.attempt_failed_retry"
+            };
+            job.message = localized_message(
+                locale,
+                key,
+                &[
+                    ("attempt", &job.attempt.to_string()),
+                    ("reason", reason.trim_end_matches(['。', '.'])),
+                    ("secs", &backoff_secs.to_string()),
+                ],
+            );
+        }
+        TunnelJobState::Cancelled => {
+            let code = match ErrorCode::parse(&job.error_code) {
+                ErrorCode::ConnectionExecutionPeerCancelled => {
+                    "connection.execution.peer_cancelled"
+                }
+                ErrorCode::ConnectionExecutionUserCancelled => {
+                    "connection.execution.user_cancelled"
+                }
+                _ => "traversal.execution.cancelled",
+            };
+            job.message = connection_failure_message(locale, code, job.is_active, false);
+        }
+        _ => {}
+    }
+}
 
 /// Rebuild all service-owned display messages after the UI language changes.
 ///
@@ -36,31 +120,12 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                 "tunnel.job.attempt_total_secs",
                 &[("secs", &ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS.to_string())],
             ),
-            TunnelJobState::Waiting => localized_message(
-                locale.as_deref(),
-                "tunnel.job.attempt_failed_retry",
-                &[
-                    (
-                        "reason",
-                        &localized_message(
-                            locale.as_deref(),
-                            "errors.hole_punch_wait_timeout",
-                            &[],
-                        ),
-                    ),
-                    ("secs", &ACTIVE_TUNNEL_JOB_BACKOFF_SECS.to_string()),
-                ],
-            ),
             TunnelJobState::Succeeded => {
                 localized_message(locale.as_deref(), "tunnel.job.auto_established", &[])
             }
-            TunnelJobState::Failed => {
-                localized_message(locale.as_deref(), "tunnel.job.ended_not_established", &[])
-            }
-            TunnelJobState::Cancelled => {
-                localized_message(locale.as_deref(), "tunnel.job.cancelled", &[])
-            }
+            _ => String::new(), // Rebuilt from the error code below.
         };
+        localize_tunnel_job_feedback(locale.as_deref(), job, ACTIVE_TUNNEL_JOB_BACKOFF_SECS);
     }
 
     for job in &mut status.wgvpn_jobs {
@@ -73,37 +138,15 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                     ("max", &job.max_attempts.to_string()),
                 ],
             ),
-            TunnelJobState::Waiting => localized_message(
-                locale.as_deref(),
-                "wgvpn.job.attempt_failed_retry",
-                &[
-                    ("attempt", &job.attempt.to_string()),
-                    (
-                        "reason",
-                        &localized_message(
-                            locale.as_deref(),
-                            "errors.hole_punch_wait_timeout",
-                            &[],
-                        ),
-                    ),
-                    ("secs", &WGVPN_JOB_BACKOFF_SECS.to_string()),
-                ],
-            ),
             TunnelJobState::Succeeded => {
                 localized_message(locale.as_deref(), "tunnel.lifecycle.connected", &[])
             }
-            TunnelJobState::Failed => localized_message(
-                locale.as_deref(),
-                "wgvpn.job.all_attempts_failed",
-                &[("max", &job.max_attempts.to_string())],
-            ),
-            TunnelJobState::Cancelled => {
-                localized_message(locale.as_deref(), "wgvpn.job.cancelled", &[])
-            }
+            _ => String::new(),
         };
+        localize_tunnel_job_feedback(locale.as_deref(), job, WGVPN_JOB_BACKOFF_SECS);
     }
 
-    let job_messages: Vec<(i64, TunnelLifecycleRole, String)> = status
+    let job_messages: Vec<(i64, TunnelLifecycleRole, String, String, TunnelJobState)> = status
         .active_tunnel_jobs
         .iter()
         .map(|job| {
@@ -111,6 +154,8 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                 job.peer_device_id,
                 TunnelLifecycleRole::Active,
                 job.message.clone(),
+                job.error_code.clone(),
+                job.state,
             )
         })
         .chain(status.wgvpn_jobs.iter().map(|job| {
@@ -122,6 +167,8 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                     TunnelLifecycleRole::Passive
                 },
                 job.message.clone(),
+                job.error_code.clone(),
+                job.state,
             )
         }))
         .collect();
@@ -130,10 +177,10 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
         lifecycle.message = Some(match lifecycle.state {
             TunnelLifecycleState::Connecting => job_messages
                 .iter()
-                .find(|(device_id, role, _)| {
+                .find(|(device_id, role, _, _, _)| {
                     *device_id == lifecycle.peer_device_id && *role == lifecycle.role
                 })
-                .map(|(_, _, message)| message.clone())
+                .map(|(_, _, message, _, _)| message.clone())
                 .unwrap_or_else(|| {
                     localized_message(locale.as_deref(), "tunnel.job.waiting_passive", &[])
                 }),
@@ -157,12 +204,32 @@ pub(super) fn relocalize_runtime_status(status: &mut RuntimeStatus) {
                     "tunnel.lifecycle.passive_disconnected",
                     &[],
                 ),
-                TunnelLastResult::Cancelled => {
-                    localized_message(locale.as_deref(), "tunnel.job.cancelled", &[])
-                }
-                TunnelLastResult::AttemptFailed => {
-                    localized_message(locale.as_deref(), "tunnel.job.ended_not_established", &[])
-                }
+                TunnelLastResult::Cancelled => connection_failure_message(
+                    locale.as_deref(),
+                    lifecycle
+                        .error_code
+                        .as_deref()
+                        .unwrap_or("traversal.execution.cancelled"),
+                    lifecycle.role == TunnelLifecycleRole::Active,
+                    false,
+                ),
+                TunnelLastResult::AttemptFailed => job_messages
+                    .iter()
+                    .find(|(id, role, _, code, state)| {
+                        *id == lifecycle.peer_device_id
+                            && *role == lifecycle.role
+                            && Some(code.as_str()) == lifecycle.error_code.as_deref()
+                            && *state == TunnelJobState::Failed
+                    })
+                    .map(|(_, _, message, _, _)| message.clone())
+                    .unwrap_or_else(|| {
+                        connection_failure_message(
+                            locale.as_deref(),
+                            lifecycle.error_code.as_deref().unwrap_or(""),
+                            lifecycle.role == TunnelLifecycleRole::Active,
+                            true,
+                        )
+                    }),
                 TunnelLastResult::PeerDisconnected | TunnelLastResult::None => {
                     localized_message(locale.as_deref(), "tunnel.lifecycle.disconnected", &[])
                 }
@@ -274,16 +341,25 @@ pub(super) fn tunnel_job_lifecycle_projection(
         TunnelJobState::Cancelled => (
             TunnelLifecycleState::NotEstablished,
             TunnelLastResult::Cancelled,
-            Some("connection.execution.user_cancelled".to_string()),
+            Some(if error_code.is_empty() {
+                "connection.execution.user_cancelled".to_string()
+            } else {
+                error_code.to_string()
+            }),
         ),
     }
 }
 
 pub(super) fn update_active_tunnel_job_status(
     shared: &Arc<Mutex<SharedRuntimeState>>,
-    status: TunnelJobStatus,
+    mut status: TunnelJobStatus,
 ) {
     let mut state = shared.lock();
+    localize_tunnel_job_feedback(
+        state.status.locale.as_deref(),
+        &mut status,
+        ACTIVE_TUNNEL_JOB_BACKOFF_SECS,
+    );
     if let Some(existing) = state
         .status
         .active_tunnel_jobs

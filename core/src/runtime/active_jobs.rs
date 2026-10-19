@@ -961,6 +961,7 @@ pub(super) fn publish_active_tunnel_job_failed(
     error: anyhow::Error,
 ) {
     let error_code = code_of(&error).as_str().to_owned();
+    tracing::error!(peer_device_id, error_code, error = %format!("{error:#}"), "active connection failed before establishment");
     let message = error.to_string();
     update_active_tunnel_job_status(
         shared,
