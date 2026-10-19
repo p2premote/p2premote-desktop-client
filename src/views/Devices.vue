@@ -352,15 +352,14 @@
                   <span class="info-label">{{ $t('devices.detail.info.device_uuid') }}</span>
                   <span class="info-value uuid">{{ selectedDevice.device_uuid }}</span>
                 </div>
-				<div class="info-item">
-				  <span class="info-label">{{ $t('devices.detail.info.capabilities') }}</span>
-				  <span v-if="deviceCapabilities(selectedDevice).length" class="capability-list">
-					<el-tag v-for="capability in deviceCapabilities(selectedDevice)" :key="capability" size="small" type="info">
-					  {{ capabilityLabel(capability) }}
-					</el-tag>
-				  </span>
-				  <span v-else class="info-value">{{ $t('devices.detail.info.no_capabilities') }}</span>
-				</div>
+                <div v-if="supportedFeatures(selectedDevice).length" class="info-item">
+                  <span class="info-label">{{ $t('devices.detail.info.supported_features') }}</span>
+                  <span class="capability-list">
+                    <el-tag v-for="feature in supportedFeatures(selectedDevice)" :key="feature.capability" size="small" type="info">
+                      {{ $t(feature.label) }}
+                    </el-tag>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -852,10 +851,12 @@ function hasCapability(device: DeviceInfo | null, capability: string): boolean {
   return deviceCapabilities(device).includes(capability)
 }
 
-function capabilityLabel(capability: string): string {
-  return capability === 'rustdesk_tiny'
-    ? t('devices.detail.info.capability_rustdesk_tiny')
-    : capability
+function supportedFeatures(device: DeviceInfo | null) {
+  // Only explicitly named user-facing features belong in device details.
+  // Internal and unknown capability identifiers remain available to feature checks.
+  return [
+    { capability: 'rustdesk_tiny', label: 'devices.detail.info.capability_rustdesk_tiny' },
+  ].filter(feature => hasCapability(device, feature.capability))
 }
 
 /// 远程访问协议只认后端显式上报的 remote_access.protocol；
