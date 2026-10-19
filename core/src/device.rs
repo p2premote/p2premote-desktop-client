@@ -695,6 +695,10 @@ trait PublicNetworkProvider: Send + Sync {
     fn parse(&self, body: &[u8]) -> Option<PublicNetworkInfo>;
 }
 
+#[cfg(test)]
+#[path = "device_coverage_tests.rs"]
+mod coverage_tests;
+
 struct IpWhoIsProvider;
 impl PublicNetworkProvider for IpWhoIsProvider {
     fn name(&self) -> &'static str {

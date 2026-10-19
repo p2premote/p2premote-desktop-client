@@ -1,6 +1,9 @@
 //! WireGuard-over-P2P session lifecycle and platform integration.
 
 use super::*;
+
+#[path = "wgvpn_setup.rs"]
+mod setup;
 use crate::config::install_data_dir;
 use crate::error::{classified, coded, AppError, ErrorCode};
 use crate::gonc_ffi::{self, UdpTunnelRequest};
@@ -8,6 +11,7 @@ use crate::logging::{record_tunnel_audit, TunnelAuditAction, TunnelAuditEvent, T
 use crate::subnet_router::{self, LanMode};
 use crate::wgvpn::{self, PeerConfig, WgConfigBuilder};
 use crate::wgvpn_exchange;
+use setup::{configure_peer, finish_setup, LivePeerSetup};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -511,96 +515,34 @@ pub async fn start_active_wgvpn(
     // 4. 接口管理
     let conf_path = wg_dir.join(WG_CONF_NAME);
     let tunnel_existed = !uses_userspace_wg() && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
-    if !uses_userspace_wg() && !tunnel_existed {
-        if let Err(err) = ensure_wg_listen_port_available(WGVPN_LISTEN_PORT) {
-            let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-            return Err(classified(
-                err,
-                ErrorCode::WireguardConfigureFailed,
-                "WireGuard operation failed",
-            ));
-        }
-    }
     let local_endpoint = format!("127.0.0.1:{}", udp_tunnel.local_forward_port);
     let mut peer = PeerConfig::active(&peer_pubkey, &local_endpoint, &peer_ip);
     peer.allowed_ips
         .extend(peer_exposed_lan_cidrs.iter().cloned());
 
-    let mut userspace_wg_peer_handle = String::new();
-    let handle_result = if uses_userspace_wg() {
-        match gonc_ffi::start_userspace_wg_peer(
-            Path::new(&punch_lib),
-            &gonc_ffi::StartWindowsWgPeerRequest {
-                session_id: target_device_id,
-                peer_device_id,
-                role: "active".to_string(),
-                wg_private_key: priv_key.clone(),
-                peer_public_key: peer_pubkey.clone(),
-                local_tail_ip: my_ip.clone(),
-                peer_tail_ip: peer_ip.clone(),
-                peer_endpoint: local_endpoint.clone(),
-                listen_ip: "127.0.0.1".to_string(),
-                listen_port: WGVPN_LISTEN_PORT,
-                routes: peer_exposed_lan_cidrs.clone(),
-            },
-        ) {
-            Ok(result) => {
-                let handle_id = result.handle_id;
-                if let Err(err) = wait_for_windows_wg_peer(
-                    Path::new(&punch_lib),
-                    &handle_id,
-                    WIREGUARD_HANDSHAKE_TIMEOUT,
-                ) {
-                    let _ = gonc_ffi::stop_userspace_wg_peer(Path::new(&punch_lib), &handle_id);
-                    Err(err)
-                } else {
-                    userspace_wg_peer_handle = handle_id;
-                    Ok(wgvpn::TunnelHandle {
-                        tunnel_name: String::new(),
-                        conf_path: conf_path.clone(),
-                    })
-                }
-            }
-            Err(err) => Err(err),
-        }
-    } else if !tunnel_existed {
-        let conf = WgConfigBuilder::new()
-            .private_key(&priv_key)
-            .address(format!("{}/24", my_ip))
-            .listen_port(WGVPN_LISTEN_PORT)
-            .add_peer(peer)
-            .build_active();
-        if let Err(err) = conf.write_to(&conf_path) {
-            Err(err)
-        } else {
-            start_tunnel_and_wait(&conf_path)
-        }
-    } else {
-        if let Err(err) = wgvpn::add_peer(&wg_cli, WG_TUNNEL_NAME, &peer) {
-            Err(err)
-        } else {
-            let min_epoch = current_epoch_secs();
-            let wait_result = wait_for_handshake_with_peer(
-                &wg_cli,
-                WG_TUNNEL_NAME,
-                &peer_pubkey,
-                WIREGUARD_HANDSHAKE_TIMEOUT,
-                min_epoch,
-            );
-            if let Err(err) = wait_result {
-                let _ = wgvpn::remove_peer(&wg_cli, WG_TUNNEL_NAME, &peer_pubkey);
-                Err(err)
-            } else {
-                Ok(wgvpn::TunnelHandle {
-                    tunnel_name: WG_TUNNEL_NAME.to_string(),
-                    conf_path: conf_path.clone(),
-                })
-            }
-        }
+    let ops = LivePeerSetup {
+        library: Path::new(&punch_lib),
+        request: gonc_ffi::StartWindowsWgPeerRequest {
+            session_id: target_device_id,
+            peer_device_id,
+            role: "active".to_string(),
+            wg_private_key: priv_key.clone(),
+            peer_public_key: peer_pubkey.clone(),
+            local_tail_ip: my_ip.clone(),
+            peer_tail_ip: peer_ip.clone(),
+            peer_endpoint: local_endpoint.clone(),
+            listen_ip: "127.0.0.1".to_string(),
+            listen_port: WGVPN_LISTEN_PORT,
+            routes: peer_exposed_lan_cidrs.clone(),
+        },
+        conf_path: &conf_path,
+        wg_cli: &wg_cli,
+        peer: &peer,
+        private_key: &priv_key,
+        local_ip: &my_ip,
     };
-    let handle = match handle_result {
-        Ok(handle) => handle,
-        Err(err) => {
+    let setup_result = configure_peer(&ops, uses_userspace_wg(), tunnel_existed);
+    let (handle, userspace_result) = finish_setup(setup_result.map_err(|err| {
             tracing::error!(
                 "[wgvpn] WireGuard setup failed: role=active, peer_device_id={}, userspace_wg={}, tunnel_existed={}, endpoint={}, error={:#}",
                 target_device_id,
@@ -609,14 +551,13 @@ pub async fn start_active_wgvpn(
                 local_endpoint,
                 err
             );
-            let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-            return Err(classified(
-                err,
-                ErrorCode::WireguardConfigureFailed,
-                "WireGuard operation failed",
-            ));
-        }
-    };
+        err
+    }), || {
+        let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
+    })?;
+    let userspace_wg_peer_handle = userspace_result
+        .map(|result| result.handle_id)
+        .unwrap_or_default();
 
     let session = WgVpnSession {
         target_device_id,
@@ -738,7 +679,9 @@ pub async fn start_passive_wgvpn(
             Ok((assigned, my_ip_u32))
         },
     )
-    .await?;
+    .await;
+    let active_payload =
+        setup::finish_ip_exchange(active_payload, reserved_peer_ip, release_reserved_ip)?;
     let peer_pubkey = active_payload.pubkey;
     let peer_device_id = active_payload.device_id;
     let peer_wg_port = peer_wg_port(active_payload.wg_port);
@@ -812,95 +755,32 @@ pub async fn start_passive_wgvpn(
     let conf_path = wg_dir.join(WG_CONF_NAME);
     let use_userspace_router = uses_userspace_wg();
     let tunnel_existed = !use_userspace_router && wgvpn::tunnel_exists(&wg_cli, WG_TUNNEL_NAME);
-    if !use_userspace_router && !tunnel_existed {
-        if let Err(err) = ensure_wg_listen_port_available(WGVPN_LISTEN_PORT) {
-            release_reserved_ip(reserved_peer_ip);
-            let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-            return Err(classified(
-                err,
-                ErrorCode::WireguardConfigureFailed,
-                "WireGuard operation failed",
-            ));
-        }
-    }
     let local_endpoint = format!("127.0.0.1:{}", udp_tunnel.local_forward_port);
     let peer = PeerConfig::active(&peer_pubkey, &local_endpoint, &peer_ip);
 
-    let mut userspace_result = None;
-    let handle_result = if use_userspace_router {
-        match gonc_ffi::start_userspace_wg_peer(
-            Path::new(&punch_lib),
-            &gonc_ffi::StartWindowsWgPeerRequest {
-                session_id: source_device_id,
-                peer_device_id,
-                role: "passive".to_string(),
-                wg_private_key: priv_key.clone(),
-                peer_public_key: peer_pubkey.clone(),
-                local_tail_ip: my_ip.clone(),
-                peer_tail_ip: peer_ip.clone(),
-                peer_endpoint: local_endpoint.clone(),
-                listen_ip: "127.0.0.1".to_string(),
-                listen_port: WGVPN_LISTEN_PORT,
-                routes: passive_exposed_lan_cidrs.clone(),
-            },
-        ) {
-            Ok(result) => {
-                if let Err(err) = wait_for_windows_wg_peer(
-                    Path::new(&punch_lib),
-                    &result.handle_id,
-                    WIREGUARD_HANDSHAKE_TIMEOUT,
-                ) {
-                    let _ =
-                        gonc_ffi::stop_userspace_wg_peer(Path::new(&punch_lib), &result.handle_id);
-                    Err(err)
-                } else {
-                    userspace_result = Some(result);
-                    Ok(wgvpn::TunnelHandle {
-                        tunnel_name: String::new(),
-                        conf_path: conf_path.clone(),
-                    })
-                }
-            }
-            Err(err) => Err(err),
-        }
-    } else if !tunnel_existed {
-        let conf = WgConfigBuilder::new()
-            .private_key(&priv_key)
-            .address(format!("{}/24", my_ip))
-            .listen_port(WGVPN_LISTEN_PORT)
-            .add_peer(peer)
-            .build_active();
-        if let Err(err) = conf.write_to(&conf_path) {
-            Err(err)
-        } else {
-            start_tunnel_and_wait(&conf_path)
-        }
-    } else {
-        if let Err(err) = wgvpn::add_peer(&wg_cli, WG_TUNNEL_NAME, &peer) {
-            Err(err)
-        } else {
-            let min_epoch = current_epoch_secs();
-            let wait_result = wait_for_handshake_with_peer(
-                &wg_cli,
-                WG_TUNNEL_NAME,
-                &peer_pubkey,
-                WIREGUARD_HANDSHAKE_TIMEOUT,
-                min_epoch,
-            );
-            if let Err(err) = wait_result {
-                let _ = wgvpn::remove_peer(&wg_cli, WG_TUNNEL_NAME, &peer_pubkey);
-                Err(err)
-            } else {
-                Ok(wgvpn::TunnelHandle {
-                    tunnel_name: WG_TUNNEL_NAME.to_string(),
-                    conf_path: conf_path.clone(),
-                })
-            }
-        }
+    let ops = LivePeerSetup {
+        library: Path::new(&punch_lib),
+        request: gonc_ffi::StartWindowsWgPeerRequest {
+            session_id: source_device_id,
+            peer_device_id,
+            role: "passive".to_string(),
+            wg_private_key: priv_key.clone(),
+            peer_public_key: peer_pubkey.clone(),
+            local_tail_ip: my_ip.clone(),
+            peer_tail_ip: peer_ip.clone(),
+            peer_endpoint: local_endpoint.clone(),
+            listen_ip: "127.0.0.1".to_string(),
+            listen_port: WGVPN_LISTEN_PORT,
+            routes: passive_exposed_lan_cidrs.clone(),
+        },
+        conf_path: &conf_path,
+        wg_cli: &wg_cli,
+        peer: &peer,
+        private_key: &priv_key,
+        local_ip: &my_ip,
     };
-    let handle = match handle_result {
-        Ok(handle) => handle,
-        Err(err) => {
+    let setup_result = configure_peer(&ops, use_userspace_router, tunnel_existed);
+    let (handle, userspace_result) = finish_setup(setup_result.map_err(|err| {
             tracing::error!(
                 "[wgvpn] WireGuard setup failed: role=passive, peer_device_id={}, userspace_wg={}, tunnel_existed={}, endpoint={}, error={:#}",
                 source_device_id,
@@ -909,15 +789,11 @@ pub async fn start_passive_wgvpn(
                 local_endpoint,
                 err
             );
-            release_reserved_ip(reserved_peer_ip);
-            let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
-            return Err(classified(
-                err,
-                ErrorCode::WireguardConfigureFailed,
-                "WireGuard operation failed",
-            ));
-        }
-    };
+        err
+    }), || {
+        release_reserved_ip(reserved_peer_ip);
+        let _ = gonc_ffi::stop_udp_tunnel(&udp_tunnel.handle_id);
+    })?;
 
     let mut router = None;
     if !use_userspace_router && !passive_exposed_lan_cidrs.is_empty() {
@@ -1566,26 +1442,25 @@ fn start_tunnel_and_wait(conf_path: &Path) -> Result<wgvpn::TunnelHandle> {
     let wireguard_exe = resolve_wireguard_exe();
     let wg_cli = resolve_wg_cli();
     let min_handshake_epoch = current_epoch_secs();
-    let handle = wgvpn::start_tunnel(&wireguard_exe, &wg_cli, conf_path)?;
-    if let Err(err) = wait_for_handshake(
-        &wg_cli,
-        &handle.tunnel_name,
-        WIREGUARD_HANDSHAKE_TIMEOUT,
-        min_handshake_epoch,
-    ) {
-        if let Err(stop_err) = wgvpn::stop_tunnel(&wireguard_exe, &handle.tunnel_name) {
-            warn!(
-                "[wgvpn] failed to uninstall tunnel after handshake error: {:#}",
-                stop_err
-            );
-        }
-        return Err(classified(
-            err,
-            ErrorCode::WireguardConfigureFailed,
-            "WireGuard operation failed",
-        ));
-    }
-    Ok(handle)
+    setup::start_kernel_with(
+        || wgvpn::start_tunnel(&wireguard_exe, &wg_cli, conf_path),
+        |handle| {
+            wait_for_handshake(
+                &wg_cli,
+                &handle.tunnel_name,
+                WIREGUARD_HANDSHAKE_TIMEOUT,
+                min_handshake_epoch,
+            )
+        },
+        |handle| {
+            if let Err(stop_err) = wgvpn::stop_tunnel(&wireguard_exe, &handle.tunnel_name) {
+                warn!(
+                    "[wgvpn] failed to uninstall tunnel after handshake error: {:#}",
+                    stop_err
+                );
+            }
+        },
+    )
 }
 
 /// 等待 WireGuard 握手就绪。

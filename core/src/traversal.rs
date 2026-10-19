@@ -471,15 +471,53 @@ impl Drop for Registration {
     }
 }
 
-struct PendingTunnel(Option<UdpTunnelResult>);
-impl PendingTunnel {
+type TraversalFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>;
+
+trait TraversalBackend: Send + Sync {
+    fn ipv6_available(&self) -> Option<bool>;
+    fn evidence(&self, ipv6: Option<bool>) -> TraversalFuture<'_, Vec<NatEvidence>>;
+    fn send(&self, frame: Frame) -> TraversalFuture<'_, ()>;
+    fn punch<'a>(
+        &'a self,
+        request: &'a UdpTunnelRequest,
+        call: Option<Arc<p2premote_punch::easyp2p::signal::SignalCall>>,
+    ) -> TraversalFuture<'a, UdpTunnelResult>;
+    fn stop(&self, handle: &str);
+}
+
+struct LiveTraversal<'a>(&'a Session);
+impl TraversalBackend for LiveTraversal<'_> {
+    fn ipv6_available(&self) -> Option<bool> {
+        traversal_policy::ipv6_available()
+    }
+    fn evidence(&self, ipv6: Option<bool>) -> TraversalFuture<'_, Vec<NatEvidence>> {
+        Box::pin(async move { Ok(traversal_policy::collect_evidence(ipv6).await) })
+    }
+    fn send(&self, frame: Frame) -> TraversalFuture<'_, ()> {
+        Box::pin(self.0.send(frame))
+    }
+    fn punch<'a>(
+        &'a self,
+        request: &'a UdpTunnelRequest,
+        call: Option<Arc<p2premote_punch::easyp2p::signal::SignalCall>>,
+    ) -> TraversalFuture<'a, UdpTunnelResult> {
+        Box::pin(gonc_ffi::start_udp_tunnel_native_with_signal(request, call))
+    }
+    fn stop(&self, handle: &str) {
+        gonc_ffi::stop_udp_tunnel_native(handle);
+    }
+}
+
+struct PendingTunnel<'a>(Option<UdpTunnelResult>, &'a dyn TraversalBackend);
+impl PendingTunnel<'_> {
     fn close(&mut self) {
         if let Some(tunnel) = self.0.take() {
-            gonc_ffi::stop_udp_tunnel_native(&tunnel.handle_id);
+            self.1.stop(&tunnel.handle_id);
         }
     }
 }
-impl Drop for PendingTunnel {
+impl Drop for PendingTunnel<'_> {
     fn drop(&mut self) {
         self.close();
     }
@@ -553,19 +591,36 @@ impl Session {
     }
 
     pub async fn start(&self, template: &UdpTunnelRequest) -> Result<UdpTunnelResult> {
+        self.start_with_backend(template, &LiveTraversal(self))
+            .await
+    }
+
+    async fn send_with(&self, backend: &dyn TraversalBackend, frame: Frame) -> Result<()> {
+        self.check()?;
+        backend.send(frame).await
+    }
+
+    async fn start_with_backend(
+        &self,
+        template: &UdpTunnelRequest,
+        backend: &dyn TraversalBackend,
+    ) -> Result<UdpTunnelResult> {
         self.check()?;
         if let Some(signal) = &self.signal {
             signal.close_call("wg-config");
         }
-        let ipv6_available = traversal_policy::ipv6_available();
-        let evidence = traversal_policy::collect_evidence(ipv6_available).await;
+        let ipv6_available = backend.ipv6_available();
+        let evidence = backend.evidence(ipv6_available).await?;
         record_evidence_nat(&self.attempt_id, udp4_nat(&evidence), String::new());
-        self.send(Frame::Capabilities {
-            evidence: evidence.clone(),
-            ipv6_available,
-            ipv6_gate_supported: true,
-            lan_probe_budget_secs: Some(LAN_PROBE_BUDGET_SECS),
-        })
+        self.send_with(
+            backend,
+            Frame::Capabilities {
+                evidence: evidence.clone(),
+                ipv6_available,
+                ipv6_gate_supported: true,
+                lan_probe_budget_secs: Some(LAN_PROBE_BUDGET_SECS),
+            },
+        )
         .await?;
         let (remote, remote_ipv6, remote_gate, remote_lan_budget) = match self.wait(0, 0).await? {
             Frame::Capabilities {
@@ -606,9 +661,12 @@ impl Session {
         if self.active {
             tracing::info!(peer = self.peer, networks = ?networks, "traversal plan proposed to peer");
             record_plan(&self.attempt_id, Some(networks.join(",")), None);
-            self.send(Frame::Plan {
-                networks: networks.clone(),
-            })
+            self.send_with(
+                backend,
+                Frame::Plan {
+                    networks: networks.clone(),
+                },
+            )
             .await?;
             let accepted = match self.wait(0, 2).await? {
                 Frame::PlanAck { networks } => networks,
@@ -647,9 +705,12 @@ impl Session {
                 ));
             }
             record_plan(&self.attempt_id, None, Some(networks.join(",")));
-            self.send(Frame::PlanAck {
-                networks: networks.clone(),
-            })
+            self.send_with(
+                backend,
+                Frame::PlanAck {
+                    networks: networks.clone(),
+                },
+            )
             .await?;
         }
         // LAN eligibility is independent of public NAT classification.
@@ -675,13 +736,16 @@ impl Session {
                         )
                         .map_err(anyhow::Error::new)?;
                 }
-                self.send(Frame::Prepare {
-                    round,
-                    network,
-                    mode: mode.into(),
-                    token: req.token.clone(),
-                    timeout_secs,
-                })
+                self.send_with(
+                    backend,
+                    Frame::Prepare {
+                        round,
+                        network,
+                        mode: mode.into(),
+                        token: req.token.clone(),
+                        timeout_secs,
+                    },
+                )
                 .await?;
                 if !matches!(self.wait(round, 4).await?, Frame::Ready { .. }) {
                     return Err(coded(
@@ -721,7 +785,7 @@ impl Session {
                         ))
                     }
                 }
-                self.send(Frame::Ready { round }).await?;
+                self.send_with(backend, Frame::Ready { round }).await?;
             }
             // Never abandon this call: cancellation must drain a late handle.
             // Older v2 peers still require their original plan and round IDs.
@@ -756,8 +820,7 @@ impl Session {
                         })
                     })
                     .transpose()?;
-                let result =
-                    gonc_ffi::start_udp_tunnel_native_with_signal(&req, call.clone()).await;
+                let result = backend.punch(&req, call.clone()).await;
                 let signal_failure = result
                     .as_ref()
                     .err()
@@ -784,13 +847,16 @@ impl Session {
                 Ok(tunnel) => (Some(tunnel), None),
                 Err(error) => (None, if skip_ipv6 { None } else { Some(error) }),
             };
-            let mut owned = PendingTunnel(tunnel);
+            let mut owned = PendingTunnel(tunnel, backend);
             self.check()?;
-            self.send(Frame::Result {
-                round,
-                ok: owned.0.is_some(),
-                error: local_error.as_ref().map(RoundError::from_error),
-            })
+            self.send_with(
+                backend,
+                Frame::Result {
+                    round,
+                    ok: owned.0.is_some(),
+                    error: local_error.as_ref().map(RoundError::from_error),
+                },
+            )
             .await?;
             let (peer_ok, peer_error) = match self.wait_for(round, 5, timeout_secs + 12).await? {
                 Frame::Result { ok, error, .. } if !ok || error.is_none() => (ok, error),
@@ -803,11 +869,14 @@ impl Session {
             };
             let success = peer_ok && owned.0.is_some();
             if self.active {
-                self.send(if success {
-                    Frame::Commit { round }
-                } else {
-                    Frame::Close { round }
-                })
+                self.send_with(
+                    backend,
+                    if success {
+                        Frame::Commit { round }
+                    } else {
+                        Frame::Close { round }
+                    },
+                )
                 .await?;
                 let ack = self.wait(round, 7).await?;
                 if success && matches!(ack, Frame::Committed { .. }) {
@@ -822,7 +891,7 @@ impl Session {
             } else {
                 let decision = self.wait(round, 6).await?;
                 if success && matches!(decision, Frame::Commit { .. }) {
-                    self.send(Frame::Committed { round }).await?;
+                    self.send_with(backend, Frame::Committed { round }).await?;
                     return Ok(owned.0.take().unwrap());
                 }
                 if !matches!(decision, Frame::Close { .. }) {
@@ -832,7 +901,7 @@ impl Session {
                     ));
                 }
                 owned.close();
-                self.send(Frame::Closed { round }).await?;
+                self.send_with(backend, Frame::Closed { round }).await?;
             }
             drop(owned);
             if let Some(error) = choose_round_error(local_error, peer_error) {
@@ -854,255 +923,5 @@ impl Session {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn shared_round_errors_preserve_wire_identity_and_policy() {
-        let cases: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../p2premote-punch-rs/testdata/traversal-round-errors-v1.json"
-        ))
-        .unwrap();
-        for row in cases["cases"].as_array().unwrap() {
-            let local = row["local"]
-                .as_str()
-                .map(|code| coded(ErrorCode::parse(code), "local detail"));
-            let peer = row["peer"].as_str().map(|code| RoundError {
-                error_code: ErrorCode::parse(code),
-                message: "peer detail".into(),
-            });
-            let frame = Frame::Result {
-                round: 3,
-                ok: false,
-                error: peer,
-            };
-            let encoded = serde_json::to_string(&frame).unwrap();
-            let Frame::Result { error, .. } = serde_json::from_str(&encoded).unwrap() else {
-                unreachable!()
-            };
-            let selected = choose_round_error(local, error);
-            match row["selected"].as_str() {
-                Some(expected) => {
-                    let selected = selected.unwrap();
-                    assert_eq!(code_of(&selected).as_str(), expected, "{}", row["name"]);
-                    assert_eq!(
-                        code_of(&selected).retry_class() == "next_network_or_attempt",
-                        row["advance"].as_bool().unwrap()
-                    );
-                    let wrapped = selected.context("all rounds finished");
-                    assert_eq!(code_of(&wrapped).as_str(), expected);
-                }
-                None => assert!(selected.is_none()),
-            }
-        }
-    }
-    #[test]
-    fn shared_lan_budget_vectors_match_android() {
-        #[derive(Deserialize)]
-        struct BudgetCase {
-            local: Option<u64>,
-            remote: Option<u64>,
-            expected: Option<u64>,
-        }
-        #[derive(Deserialize)]
-        struct Vectors {
-            budget_cases: Vec<BudgetCase>,
-        }
-        let vectors: Vectors = serde_json::from_str(include_str!(
-            "../../../p2premote-punch-rs/testdata/traversal-policy-v2.json"
-        ))
-        .unwrap();
-        for case in vectors.budget_cases {
-            match case.expected {
-                Some(expected) => assert_eq!(
-                    negotiate_lan_probe_budget(case.local, case.remote).unwrap(),
-                    expected
-                ),
-                None => assert!(negotiate_lan_probe_budget(case.local, case.remote).is_err()),
-            }
-        }
-    }
-    fn session() -> Session {
-        let (tx, rx) = mpsc::channel(64);
-        Session {
-            attempt_id: "test".into(),
-            connection_id: "authorized".into(),
-            peer: 7,
-            grant: String::new(),
-            ws: ServiceWsClient::new(),
-            active: true,
-            negotiation: Negotiation {
-                version: 2,
-                preferences: Default::default(),
-            },
-            tx,
-            rx: tokio::sync::Mutex::new(rx),
-            cancelled: AtomicBool::new(false),
-            wake: Notify::new(),
-            signal: None,
-            ws_generation: 0,
-        }
-    }
-    #[tokio::test]
-    async fn discards_duplicates_but_rejects_future_rounds() {
-        let s = session();
-        s.tx.try_send(Frame::Result {
-            round: 1,
-            ok: false,
-            error: None,
-        })
-        .unwrap();
-        s.tx.try_send(Frame::Prepare {
-            round: 2,
-            network: "udp4".into(),
-            mode: "internet".into(),
-            token: "secret".into(),
-            timeout_secs: 30,
-        })
-        .unwrap();
-        assert!(matches!(
-            s.wait(2, 3).await.unwrap(),
-            Frame::Prepare { round: 2, .. }
-        ));
-        s.tx.try_send(Frame::Ready { round: 4 }).unwrap();
-        assert_eq!(code_of(&s.wait(3, 4).await.unwrap_err()), ErrorCode::TraversalRoundSyncInvalidSequence);
-    }
-    #[tokio::test]
-    async fn cancelled_session_cannot_advance() {
-        let s = session();
-        s.cancelled.store(true, Ordering::Release);
-        assert_eq!(code_of(&s.wait(1, 4).await.unwrap_err()), ErrorCode::TraversalExecutionCancelled);
-    }
-    #[tokio::test]
-    async fn empty_wait_uses_stage_specific_timeout_codes() {
-        for (stage, expected) in [
-            (0, ErrorCode::TraversalCapabilityExchangeTimeout),
-            (1, ErrorCode::TraversalPlanNegotiationTimeout),
-            (2, ErrorCode::TraversalPlanNegotiationTimeout),
-            (3, ErrorCode::TraversalRoundSyncTimeout),
-            (4, ErrorCode::TraversalRoundSyncTimeout),
-            (5, ErrorCode::TraversalRoundSyncTimeout),
-        ] {
-            let s = session();
-            assert_eq!(code_of(&s.wait_for(1, stage, 0).await.unwrap_err()), expected);
-        }
-    }
-    #[tokio::test]
-    async fn closed_signal_is_distinct_from_timeout_and_cancel() {
-        let s = session();
-        s.rx.lock().await.close();
-        assert_eq!(code_of(&s.wait_for(1, 4, 1).await.unwrap_err()), ErrorCode::SignalReceiveClosed);
-    }
-    #[tokio::test]
-    async fn same_round_old_stage_is_discarded_and_future_stage_is_rejected() {
-        let s = session();
-        s.tx.try_send(Frame::Ready { round: 1 }).unwrap();
-        s.tx.try_send(Frame::Result { round: 1, ok: false, error: None }).unwrap();
-        assert!(matches!(s.wait_for(1, 5, 1).await.unwrap(), Frame::Result { round: 1, .. }));
-        s.tx.try_send(Frame::Result { round: 1, ok: true, error: None }).unwrap();
-        assert_eq!(code_of(&s.wait_for(1, 4, 1).await.unwrap_err()), ErrorCode::TraversalRoundSyncInvalidSequence);
-    }
-    #[test]
-    fn udp4_evidence_extraction_skips_invalid_types() {
-        use crate::traversal_policy::NatEvidence;
-        let nat = |network: &str, nat_type: &str| NatEvidence {
-            network: network.into(),
-            nat_type: nat_type.into(),
-        };
-        assert_eq!(udp4_nat(&[nat("udp4", "easy")]), "easy");
-        assert_eq!(
-            udp4_nat(&[nat("udp6", "easy"), nat("udp4", "symm")]),
-            "symm"
-        );
-        assert_eq!(udp4_nat(&[nat("udp4", "unknown")]), "");
-        assert_eq!(udp4_nat(&[]), "");
-    }
-
-    #[test]
-    fn evidence_written_before_plan_survives_report_collection() {
-        let attempt = uuid::Uuid::new_v4().to_string();
-        record_evidence_nat(&attempt, "easy".into(), "symm".into());
-        record_plan(&attempt, Some("udp4".into()), Some("udp4".into()));
-        let report = take_plan(&attempt);
-        assert_eq!(report.local_nat, "easy");
-        assert_eq!(report.remote_nat, "symm");
-        assert_eq!(report.plan, "udp4");
-        assert_eq!(report.selection, "udp4");
-        assert_eq!(take_plan(&attempt).plan, "");
-    }
-
-    #[test]
-    fn report_capacity_evicts_only_the_oldest_new_entry() {
-        let now = std::time::Instant::now();
-        let mut reports = HashMap::new();
-        for index in 0..512 {
-            reports.insert(
-                format!("attempt-{index}"),
-                (now + Duration::from_secs(index), PlanRecord::default()),
-            );
-        }
-        plan_entry(&mut reports, "attempt-511").proposed = "udp4".into();
-        assert_eq!(reports.len(), 512);
-        plan_entry(&mut reports, "new").local_nat = "easy".into();
-        assert_eq!(reports.len(), 512);
-        assert!(!reports.contains_key("attempt-0"));
-        assert_eq!(reports["attempt-511"].1.proposed, "udp4");
-    }
-    #[test]
-    fn capability_address_family_is_optional_and_boolean() {
-        let frame: Frame =
-            serde_json::from_str(r#"{"kind":"capabilities","evidence":[]}"#).unwrap();
-        assert!(matches!(
-            frame,
-            Frame::Capabilities {
-                ipv6_available: None,
-                lan_probe_budget_secs: None,
-                ..
-            }
-        ));
-        let frame: Frame =
-            serde_json::from_str(r#"{"kind":"capabilities","evidence":[],"ipv6_available":false}"#)
-                .unwrap();
-        assert!(matches!(
-            frame,
-            Frame::Capabilities {
-                ipv6_available: Some(false),
-                ..
-            }
-        ));
-        assert!(serde_json::from_str::<Frame>(
-            r#"{"kind":"capabilities","evidence":[],"ipv6_available":"false"}"#
-        )
-        .is_err());
-    }
-    #[test]
-    fn lan_probe_failures_advance_but_signal_failures_end_the_attempt() {
-        for code in [ErrorCode::TraversalLanProbeTimeout, ErrorCode::TraversalLanProbeFailed] {
-            let error = choose_round_error(Some(coded(code.clone(), "LAN round ended")), None).unwrap();
-            assert_eq!(code_of(&error).retry_class(), "next_network_or_attempt");
-            let error = choose_round_error(Some(coded(code, "LAN round ended")), Some(RoundError {
-                error_code: ErrorCode::SignalSendTimeout, message: "delivery failed".into(),
-            })).unwrap();
-            assert_eq!(code_of(&error), ErrorCode::SignalSendTimeout);
-            assert_ne!(code_of(&error).retry_class(), "next_network_or_attempt");
-        }
-    }
-
-    #[test]
-    fn lan_probe_budget_is_short_only_when_both_peers_support_it() {
-        assert_eq!(negotiate_lan_probe_budget(Some(1), Some(1)).unwrap(), 1);
-        assert_eq!(
-            negotiate_lan_probe_budget(Some(1), None).unwrap(),
-            LEGACY_LAN_PROBE_BUDGET_SECS
-        );
-        assert_eq!(
-            negotiate_lan_probe_budget(None, Some(1)).unwrap(),
-            LEGACY_LAN_PROBE_BUDGET_SECS
-        );
-        assert_eq!(negotiate_lan_probe_budget(Some(1), Some(2)).unwrap(), 2);
-    }
-    #[test]
-    fn lan_probe_budget_rejects_out_of_range_values() {
-        assert!(negotiate_lan_probe_budget(Some(0), Some(1)).is_err());
-        assert!(negotiate_lan_probe_budget(Some(1), Some(7)).is_err());
-    }
-}
+#[path = "traversal_tests.rs"]
+mod tests;

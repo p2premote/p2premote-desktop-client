@@ -189,6 +189,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_identity_and_fingerprint_scheme_changes_preserve_existing_registration() {
+        for empty in [None,Some(""),Some("   ")] {
+            let mut config=MachineConfig::default();config.device_uuid=empty.map(str::to_owned);
+            assert!(ensure_device_uuid(&mut config));let created=config.device_uuid.clone();
+            assert!(Uuid::parse_str(created.as_deref().unwrap()).is_ok());
+            assert!(!ensure_device_uuid(&mut config));assert_eq!(config.device_uuid,created);
+        }
+        for (platform,version) in [("old-platform",DEVICE_FINGERPRINT_VERSION),("windows-smbios",0)] {
+            let mut config=MachineConfig::default();config.device_id=Some(42);config.device_uuid=Some("registered".into());
+            config.device_fingerprint=Some("old".into());config.device_fingerprint_platform=Some(platform.into());config.device_fingerprint_version=version;
+            assert_eq!(detect_clone_with(&mut config,Ok(Some(DeviceFingerprint {platform:"windows-smbios",value:"new".into()}))),CloneDetectionResult::BaselineCreated);
+            assert_eq!(config.device_id,Some(42));assert_eq!(config.device_uuid.as_deref(),Some("registered"));
+        }
+        let mut config=MachineConfig::default();config.device_fingerprint=Some(" ".into());
+        assert_eq!(detect_clone_with(&mut config,Ok(Some(DeviceFingerprint {platform:"test",value:"new".into()}))),CloneDetectionResult::BaselineCreated);
+    }
+
+    #[test]
+    fn normalized_uuid_rejects_sentinels_and_preserves_byte_order() {
+        assert!(normalize_uuid("invalid").is_none());
+        assert!(normalize_uuid("00000000-0000-0000-0000-000000000000").is_none());
+        assert!(normalize_uuid("ffffffff-ffff-ffff-ffff-ffffffffffff").is_none());
+        assert_eq!(normalize_uuid(" abcdef01-2345-6789-abcd-ef0123456789 ").unwrap(),"ABCDEF01-2345-6789-ABCD-EF0123456789");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn smbios_parser_handles_truncated_structures_strings_and_end_marker() {
+        fn raw(table:&[u8])->Vec<u8> {let mut raw=vec![0;4];raw.extend((table.len() as u32).to_le_bytes());raw.extend(table);raw}
+        for n in 0..8 {assert!(parse_raw_smbios_uuid(&vec![0;n]).is_err());}
+        for table in [vec![],vec![1,2,0,0],vec![1,40,0,0],vec![1,4,0,0,0,0],vec![127,4,0,0,0,0]] {assert!(parse_raw_smbios_uuid(&raw(&table)).is_err());}
+        let mut system=vec![1,24,0,0,0,0,0,0];system.extend(1u8..=16);
+        let mut table=vec![2,4,0,0,b's',b'm',b'b',0,0];table.extend(system.clone());
+        assert_eq!(parse_raw_smbios_uuid(&raw(&table)).unwrap(),"04030201-0605-0807-090A-0B0C0D0E0F10");
+        for byte in [0,255] {let mut invalid=vec![1,24,0,0,0,0,0,0];invalid.extend([byte;16]);assert!(parse_raw_smbios_uuid(&raw(&invalid)).is_err());}
+        let mut ended=vec![127,4,0,0,0,0];ended.extend(system);assert!(parse_raw_smbios_uuid(&raw(&ended)).is_err());
+    }
+
+    #[test]
     fn creates_baseline_without_replacing_legacy_identity() {
         let mut config = MachineConfig::default();
         config.device_id = Some(10);

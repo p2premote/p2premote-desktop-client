@@ -61,6 +61,10 @@ mod tunnel_health;
 mod tunnel_jobs;
 mod web_admin;
 
+#[cfg(test)]
+#[path = "runtime/coverage_tests.rs"]
+mod coverage_tests;
+
 use active_jobs::*;
 use auto_keep_runtime::*;
 use ipc::*;

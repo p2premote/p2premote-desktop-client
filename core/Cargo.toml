@@ -55,3 +55,6 @@ winreg = "0.52"
 windows-service = "0.7"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
 wmi = { version = "=0.14.0", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

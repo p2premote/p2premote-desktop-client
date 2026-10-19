@@ -2,6 +2,14 @@
 
 use super::*;
 
+#[path = "approval_effects.rs"]
+mod approval_effects;
+use approval_effects::{ApprovalEffects, LiveApproval};
+
+#[cfg(test)]
+#[path = "approval_tests.rs"]
+mod approval_tests;
+
 /// 被动端关闭 health 连接（FIN 已写入本机内核）后，留给 FIN 穿过 userspace
 /// WG/gonc UDP 数据面的时间；立即拆数据面会把 FIN 一起丢掉，主动端就只能等
 /// 60s Degraded + 300s 宽限超时。单会话（stop_wgvpn_job）与批量停止
@@ -244,7 +252,9 @@ pub(super) fn spawn_wgvpn_job_task(
                         .await
                         {
                             if let Some(attempt_id) = approval_attempt_id.as_deref() {
-                                let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
+                                if code_of(&err) == ErrorCode::ConnectionApprovalRequestMissing {
+                                    let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
+                                }
                                 let mut state = shared.lock();
                                 if state
                                     .pending_inbound_approval
@@ -259,25 +269,15 @@ pub(super) fn spawn_wgvpn_job_task(
                                 drop(state);
                                 refresh_pending_inbound_approvals(&shared);
                             }
-                            update_wgvpn_job_status(
+                            publish_approval_failure(
                                 &shared,
-                                TunnelJobStatus {
-                                    error_code: code_of(&err).as_str().to_owned(),
-                                    peer_device_uuid: String::new(),
-                                    result: None,
-                                    tcp_retry_recommended: false,
-                                    symmetric_nat_help_recommended: false,
-                                    peer_device_id,
-                                    is_active,
-                                    state: TunnelJobState::Failed,
-                                    attempt,
-                                    max_attempts,
-                                    message: err.to_string(),
-                                    updated_at: now_ts(),
-                                },
-                                Some(generation),
+                                peer_device_id,
+                                is_active,
+                                generation,
+                                attempt,
+                                max_attempts,
+                                &err,
                             );
-                            remove_wgvpn_job_if_current(&shared, peer_device_id, generation);
                             return;
                         }
                     }
@@ -479,6 +479,40 @@ mod approval_error_tests {
     }
 }
 
+fn publish_approval_failure(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    peer_device_id: i64,
+    is_active: bool,
+    generation: u64,
+    attempt: u8,
+    max_attempts: u8,
+    error: &anyhow::Error,
+) {
+    if code_of(error) == ErrorCode::TraversalExecutionCancelled {
+        publish_wgvpn_job_cancelled(shared, peer_device_id, is_active, generation);
+        return;
+    }
+    update_wgvpn_job_status(
+        shared,
+        TunnelJobStatus {
+            error_code: code_of(error).as_str().to_owned(),
+            peer_device_uuid: String::new(),
+            result: None,
+            tcp_retry_recommended: false,
+            symmetric_nat_help_recommended: false,
+            peer_device_id,
+            is_active,
+            state: TunnelJobState::Failed,
+            attempt,
+            max_attempts,
+            message: error.to_string(),
+            updated_at: now_ts(),
+        },
+        Some(generation),
+    );
+    remove_wgvpn_job_if_current(shared, peer_device_id, generation);
+}
+
 async fn await_passive_inbound_approval(
     shared: &Arc<Mutex<SharedRuntimeState>>,
     config: &crate::config::MachineConfig,
@@ -534,7 +568,53 @@ async fn await_passive_inbound_approval(
         )
     })?;
 
-    wgvpn_flow::set_wgvpn_allowed(config, peer_device_id, false).await?;
+    let cancel_rx = shared
+        .lock()
+        .wgvpn_job_cancels
+        .get(&peer_device_id)
+        .filter(|job| job.generation == generation)
+        .map(|job| job.cancel_tx.subscribe());
+    let backend = LiveApproval {
+        shared,
+        config,
+        peer: peer_device_id,
+        ws: context.4,
+        connection: context.1,
+        source: context.2,
+        grant: context.3,
+    };
+    await_approval_with(
+        shared,
+        peer_device_id,
+        attempt_id,
+        generation,
+        attempt,
+        max_attempts,
+        expires_at,
+        context.0,
+        cancel_rx,
+        &backend,
+    )
+    .await
+}
+
+async fn await_approval_with(
+    shared: &Arc<Mutex<SharedRuntimeState>>,
+    peer_device_id: i64,
+    attempt_id: &str,
+    generation: u64,
+    attempt: u8,
+    max_attempts: u8,
+    expires_at: i64,
+    mut decision_rx: watch::Receiver<PassiveApprovalDecision>,
+    mut cancel_rx: Option<watch::Receiver<bool>>,
+    backend: &dyn ApprovalEffects,
+) -> Result<()> {
+    let result=async {
+    if !is_current_wgvpn_job(shared,peer_device_id,generation) || cancel_rx.as_ref().is_some_and(|rx|*rx.borrow()) {
+        return Err(coded(ErrorCode::TraversalExecutionCancelled,"approval cancelled"));
+    }
+    backend.allowed(false).await?;
     refresh_pending_inbound_approvals(shared);
     update_wgvpn_job_status(
         shared,
@@ -558,87 +638,79 @@ async fn await_passive_inbound_approval(
         },
         Some(generation),
     );
-    refresh_wgvpn_sessions(shared);
-    send_p2p_attempt_message(
-        &context.4,
-        context.1.clone(),
-        context.2,
-        context.3.clone(),
-        P2PAttemptMessage::ApprovalRequired {
+    backend.refresh();
+    backend.send(P2PAttemptMessage::ApprovalRequired {
             protocol_version: 1,
             attempt_id: attempt_id.to_string(),
             expires_at,
-        },
-    )
+        })
     .await?;
 
-    let mut decision_rx = context.0;
     let decision = tokio::time::timeout(Duration::from_secs(60), async {
-        let decision = loop {
-            if *decision_rx.borrow() != PassiveApprovalDecision::Pending {
-                break *decision_rx.borrow();
+        loop {
+            if cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+                return Err(coded(ErrorCode::TraversalExecutionCancelled,"approval cancelled"));
             }
-            decision_rx.changed().await?;
-        };
-        Ok::<PassiveApprovalDecision, tokio::sync::watch::error::RecvError>(decision)
-    })
-    .await
-    .unwrap_or(Ok(PassiveApprovalDecision::Pending))
-    .unwrap_or(PassiveApprovalDecision::Pending);
+            if *decision_rx.borrow() != PassiveApprovalDecision::Pending {
+                return Ok(*decision_rx.borrow());
+            }
+            tokio::select! {
+                changed = decision_rx.changed() => { if changed.is_err() { return Ok(PassiveApprovalDecision::Pending); } }
+                _ = async { match cancel_rx.as_mut() { Some(rx) => { let _=rx.changed().await; }, None => std::future::pending::<()>().await } } => {
+                    if cancel_rx.as_ref().is_some_and(|rx|*rx.borrow() || rx.has_changed().is_err()) {
+                        return Err(coded(ErrorCode::TraversalExecutionCancelled,"approval cancelled"));
+                    }
+                }
+            }
+        }
+    }).await.unwrap_or(Ok(PassiveApprovalDecision::Pending))?;
+    if cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) ||
+        !is_current_wgvpn_job(shared,peer_device_id,generation) ||
+        !shared.lock().pending_inbound_approval.as_ref().is_some_and(|p|p.status.attempt_id==attempt_id) {
+        return Err(coded(ErrorCode::TraversalExecutionCancelled,"approval replaced or cancelled"));
+    }
 
     let result = match decision {
         PassiveApprovalDecision::Granted => {
-            wgvpn_flow::set_wgvpn_allowed(config, peer_device_id, true).await?;
-            send_p2p_attempt_message(
-                &context.4,
-                context.1.clone(),
-                context.2,
-                context.3.clone(),
-                P2PAttemptMessage::ApprovalGranted {
+            backend.allowed(true).await?;
+                if cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) || !is_current_wgvpn_job(shared, peer_device_id, generation) {
+                    return Err(coded(ErrorCode::TraversalExecutionCancelled, "approval cancelled during enable"));
+                }
+            backend.send(P2PAttemptMessage::ApprovalGranted {
                     protocol_version: 1,
                     attempt_id: attempt_id.to_string(),
-                },
-            )
+                })
             .await?;
             Ok(())
         }
         PassiveApprovalDecision::Denied => {
-            let _ = send_p2p_attempt_message(
-                &context.4,
-                context.1.clone(),
-                context.2,
-                context.3.clone(),
-                P2PAttemptMessage::ApprovalDenied {
+            let _ = backend.send(P2PAttemptMessage::ApprovalDenied {
                     protocol_version: 1,
                     attempt_id: attempt_id.to_string(),
-                },
-            )
+                })
             .await;
-            let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
             Err(coded(
                 ErrorCode::ConnectionApprovalDenied,
                 "approval denied",
             ))
         }
         PassiveApprovalDecision::Pending => {
-            let _ = send_p2p_attempt_message(
-                &context.4,
-                context.1.clone(),
-                context.2,
-                context.3.clone(),
-                P2PAttemptMessage::ApprovalTimeout {
+            let _ = backend.send(P2PAttemptMessage::ApprovalTimeout {
                     protocol_version: 1,
                     attempt_id: attempt_id.to_string(),
-                },
-            )
+                })
             .await;
-            let _ = wgvpn_flow::stop_wgvpn(config, peer_device_id).await;
             Err(coded(
                 ErrorCode::ConnectionApprovalTimeout,
                 "approval timed out",
             ))
         }
     };
+    result
+    }.await;
+    if result.is_err() && is_current_wgvpn_job(shared, peer_device_id, generation) {
+        backend.stop().await;
+    }
     {
         let mut state = shared.lock();
         if state

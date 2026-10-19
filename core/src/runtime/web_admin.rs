@@ -1763,16 +1763,30 @@ async fn set_web_auto_start(
 
     #[cfg(not(target_os = "linux"))]
     {
-        set_service_auto_start_type(enabled).map_err(|err| err.to_string())?;
-        if let Err(err) = dispatch_web_data(Data::SetAutoStartConfig { enabled }, state).await {
-            // 状态持久化失败则回滚服务启动类型，避免开关与实际自启状态漂移
-            if let Err(rollback) = set_service_auto_start_type(!enabled) {
-                error!("[WebAdmin] auto start rollback failed: {}", rollback);
-            }
-            return Err(err);
-        }
-        Ok(serde_json::Value::Null)
+        update_auto_start_with(
+            enabled,
+            set_service_auto_start_type,
+            dispatch_web_data(Data::SetAutoStartConfig { enabled }, state),
+        )
+        .await
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn update_auto_start_with(
+    enabled: bool,
+    set_type: impl Fn(bool) -> anyhow::Result<()>,
+    save: impl std::future::Future<Output = Result<Data, crate::control::CommandFailure>>,
+) -> Result<serde_json::Value, crate::control::CommandFailure> {
+    set_type(enabled).map_err(|err| err.to_string())?;
+    if let Err(err) = save.await {
+        // 状态持久化失败则回滚服务启动类型，避免开关与实际自启状态漂移
+        if let Err(rollback) = set_type(!enabled) {
+            error!("[WebAdmin] auto start rollback failed: {}", rollback);
+        }
+        return Err(err);
+    }
+    Ok(serde_json::Value::Null)
 }
 
 fn web_service_info() -> WebServiceInfo {
@@ -1903,6 +1917,10 @@ fn web_origin_allowed(headers: &HeaderMap) -> bool {
     // 远端 Web UI 仍要求 Origin 与 Host（含端口）精确一致。
     web_origin_matches_host(&uri, headers)
 }
+
+#[cfg(test)]
+#[path = "web_admin_coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {

@@ -438,6 +438,10 @@ fn jittered_backoff_secs(failures: u32) -> u64 {
 }
 
 #[cfg(test)]
+#[path = "auto_keep_coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

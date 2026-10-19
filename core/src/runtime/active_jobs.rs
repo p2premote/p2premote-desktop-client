@@ -1,6 +1,15 @@
 //! Active tunnel job orchestration, retry, cancellation, and peer notification.
 
 use super::*;
+use crate::config::MachineConfig;
+
+#[path = "active_job_effects.rs"]
+mod effects;
+use effects::{ActiveJobEffects, JobReport, LiveActiveJob};
+
+#[cfg(test)]
+#[path = "active_job_tests.rs"]
+mod execution_tests;
 
 struct AttemptWaiterRegistration {
     shared: Arc<Mutex<SharedRuntimeState>>,
@@ -214,7 +223,7 @@ fn launch_active_tunnel_job(
 pub(super) fn spawn_active_tunnel_job_task(
     shared: Arc<Mutex<SharedRuntimeState>>,
     ws_client: ServiceWsClient,
-    mut cancel_rx: watch::Receiver<bool>,
+    cancel_rx: watch::Receiver<bool>,
     peer_device_id: i64,
     peer_device_uuid: String,
     connect_code: Option<String>,
@@ -229,18 +238,12 @@ pub(super) fn spawn_active_tunnel_job_task(
         let _slot = ActiveTunnelJobSlot {
             shared: shared_for_task.clone(),
             peer_device_id,
+            owner: shared_for_task
+                .lock()
+                .active_tunnel_job_cancels
+                .get(&peer_device_id)
+                .cloned(),
         };
-        let mut last_message = String::new();
-        let mut last_code = ErrorCode::RuntimeExecutionUnclassified;
-        let mut last_attempt = 0;
-        let mut last_attempt_id = String::new();
-        // Punch diagnostics for the /api/v1/p2p/end report: last failure's
-        // NAT/network from the library diagnostic, plus task elapsed time.
-        let started_at = std::time::Instant::now();
-        let mut last_source_nat = String::new();
-        let mut last_target_nat = String::new();
-        let mut last_network = String::new();
-        let mut attempted_networks = Vec::new();
         let mut config = match load_machine_config() {
             Ok(config) => config,
             Err(err) => {
@@ -292,403 +295,360 @@ pub(super) fn spawn_active_tunnel_job_task(
             );
         }
 
-        for attempt in 1..=ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS {
-            last_attempt = attempt;
-            if *cancel_rx.borrow() {
-                publish_active_tunnel_job_cancelled(
-                    &shared_for_task,
-                    peer_device_id,
-                    target_uuid_for_task.clone(),
-                );
-                let _ = crate::p2p::close_active_p2p_job_with_nat(
-                    &config,
-                    &opened,
-                    peer_device_id,
-                    &last_attempt_id,
-                    false,
-                    last_source_nat.clone(),
-                    last_target_nat.clone(),
-                    last_network.clone(),
-                    started_at.elapsed().as_secs(),
-                    "connection.execution.user_cancelled".to_string(),
-                    "connection.execution.user_cancelled".to_string(),
-                )
-                .await;
-                return;
-            }
+        let backend = Arc::new(LiveActiveJob {
+            shared: shared_for_task.clone(),
+            ws: ws_client,
+            config: config.clone(),
+            opened,
+            peer: peer_device_id,
+            client_job_id,
+        });
+        run_active_job(
+            shared_for_task,
+            cancel_rx,
+            peer_device_id,
+            target_uuid_for_task,
+            config,
+            backend,
+        )
+        .await;
+    });
+}
 
-            update_active_tunnel_job_status(
+async fn run_active_job(
+    shared_for_task: Arc<Mutex<SharedRuntimeState>>,
+    mut cancel_rx: watch::Receiver<bool>,
+    peer_device_id: i64,
+    target_uuid_for_task: String,
+    config: MachineConfig,
+    backend: Arc<dyn ActiveJobEffects>,
+) {
+    let mut last_message = String::new();
+    let mut last_code = ErrorCode::RuntimeExecutionUnclassified;
+    let mut last_attempt = 0;
+    let mut last_attempt_id = String::new();
+    // Punch diagnostics for the /api/v1/p2p/end report: last failure's
+    // NAT/network from the library diagnostic, plus task elapsed time.
+    let started_at = std::time::Instant::now();
+    let mut last_source_nat = String::new();
+    let mut last_target_nat = String::new();
+    let mut last_network = String::new();
+    let mut attempted_networks = Vec::new();
+    for attempt in 1..=ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS {
+        last_attempt = attempt;
+        if *cancel_rx.borrow() {
+            publish_active_tunnel_job_cancelled(
                 &shared_for_task,
-                TunnelJobStatus {
-                    error_code: String::new(),
-                    is_active: true,
-                    tcp_retry_recommended: false,
-                    symmetric_nat_help_recommended: false,
-                    peer_device_id,
-                    peer_device_uuid: target_uuid_for_task.clone(),
-                    state: TunnelJobState::Running,
-                    attempt,
-                    max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
-                    message: localized_message(
-                        current_locale(&shared_for_task).as_deref(),
-                        "tunnel.job.attempt_total_secs",
-                        &[("secs", &ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS.to_string())],
-                    ),
-                    result: None,
-                    updated_at: now_ts(),
-                },
+                peer_device_id,
+                target_uuid_for_task.clone(),
             );
+            let _ = backend
+                .report(JobReport {
+                    attempt_id: (&last_attempt_id).to_string(),
+                    success: false,
+                    source_nat: last_source_nat.clone(),
+                    target_nat: last_target_nat.clone(),
+                    network: last_network.clone(),
+                    elapsed_secs: started_at.elapsed().as_secs(),
+                    error_code: "connection.execution.user_cancelled".to_string(),
+                    message: "connection.execution.user_cancelled".to_string(),
+                })
+                .await;
+            return;
+        }
 
-            let attempt_id = build_punch_token(&format!(
-                "attempt-{}-{}-{}",
+        update_active_tunnel_job_status(
+            &shared_for_task,
+            TunnelJobStatus {
+                error_code: String::new(),
+                is_active: true,
+                tcp_retry_recommended: false,
+                symmetric_nat_help_recommended: false,
                 peer_device_id,
+                peer_device_uuid: target_uuid_for_task.clone(),
+                state: TunnelJobState::Running,
                 attempt,
-                now_ts()
-            ));
-            last_attempt_id = attempt_id.clone();
-            let punch_token = build_punch_token(&format!(
-                "{}-{}-{}",
-                config.device_id.unwrap_or_default(),
-                peer_device_id,
-                now_ts()
-            ));
-            let attempt_shared = shared_for_task.clone();
-            let attempt_ws = ws_client.clone();
-            let attempt_config = config.clone();
-            let attempt_client_job_id = client_job_id.clone();
-            let attempt_opened = opened.clone();
-            let attempt_id_for_task = attempt_id.clone();
-            let mut attempt_handle = tokio::spawn(async move {
-                start_wgvpn_active_with_notify(
-                    &attempt_shared,
-                    &attempt_ws,
-                    &attempt_config,
-                    peer_device_id,
-                    &attempt_client_job_id,
-                    &attempt_opened,
-                    attempt,
-                    attempt_id_for_task,
-                    punch_token,
-                )
+                max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
+                message: localized_message(
+                    current_locale(&shared_for_task).as_deref(),
+                    "tunnel.job.attempt_total_secs",
+                    &[("secs", &ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS.to_string())],
+                ),
+                result: None,
+                updated_at: now_ts(),
+            },
+        );
+
+        let attempt_id = build_punch_token(&format!(
+            "attempt-{}-{}-{}",
+            peer_device_id,
+            attempt,
+            now_ts()
+        ));
+        last_attempt_id = attempt_id.clone();
+        let punch_token = build_punch_token(&format!(
+            "{}-{}-{}",
+            config.device_id.unwrap_or_default(),
+            peer_device_id,
+            now_ts()
+        ));
+        let attempt_backend = backend.clone();
+        let id_for_task = attempt_id.clone();
+        let mut attempt_handle = tokio::spawn(async move {
+            attempt_backend
+                .attempt(attempt, id_for_task, punch_token)
                 .await
-            });
+        });
 
-            let attempt_result = tokio::select! {
-                result = &mut attempt_handle => Some(match result {
-                    Ok(result) => result,
-                    Err(err) => Err(anyhow!("active attempt task failed: {}", err)),
-                }),
-                _ = tokio::time::sleep(Duration::from_secs(ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS)) => {
-                    crate::traversal::cancel(&attempt_id);
-                    let _ = send_p2p_attempt_message(
-                        &ws_client,
-                        opened.connection_id.clone(),
-                        peer_device_id,
-                        opened.access_grant.clone(),
-                        P2PAttemptMessage::AttemptCancel {
-                            protocol_version: 1,
-                            attempt_id: attempt_id.clone(),
-                            reason: "attempt_deadline_exceeded".to_string(),
-                        },
-                    ).await;
+        let attempt_result = tokio::select! {
+            result = &mut attempt_handle => Some(match result {
+                Ok(result) => result,
+                Err(err) => Err(anyhow!("active attempt task failed: {}", err)),
+            }),
+            _ = tokio::time::sleep(Duration::from_secs(ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS)) => {
+                backend.cancel(attempt_id.clone(), "attempt_deadline_exceeded").await;
                     let _ = attempt_handle.await;
-                    let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
-                    last_code = ErrorCode::ConnectionExecutionDeadlineExceeded;
-                    last_message = localized_message(
-                        current_locale(&shared_for_task).as_deref(),
-                        "tunnel.job.attempt_progress_secs",
-                        &[
-                            ("attempt", &attempt.to_string()),
-                            ("secs", &ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS.to_string()),
-                        ],
-                    );
-                    None
-                }
-                _ = cancel_rx.changed() => {
-                    if *cancel_rx.borrow() {
-                        crate::traversal::cancel(&attempt_id);
-                        let _ = send_p2p_attempt_message(
-                            &ws_client,
-                            opened.connection_id.clone(),
-                            peer_device_id,
-                            opened.access_grant.clone(),
-                            P2PAttemptMessage::AttemptCancel {
-                                protocol_version: 1,
-                                attempt_id: attempt_id.clone(),
-                                reason: "connection.execution.user_cancelled".to_string(),
-                            },
-                        ).await;
-                        let _ = attempt_handle.await;
-                        let _ = wgvpn_flow::stop_wgvpn(&config, peer_device_id).await;
-                        publish_active_tunnel_job_cancelled(
-                            &shared_for_task,
-                            peer_device_id,
-                            target_uuid_for_task.clone(),
-                        );
-                        let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, peer_device_id, &attempt_id,
-                            false, last_source_nat.clone(), last_target_nat.clone(),
-                            last_network.clone(), started_at.elapsed().as_secs(),
-                            "connection.execution.user_cancelled".to_string(), "connection.execution.user_cancelled".to_string()).await;
-                        return;
-                    }
-                    None
-                }
-            };
-
-            match attempt_result {
-                Some(Ok(result)) if result.success => {
-                    let source_nat_type = result.source_nat_type.clone();
-                    let target_nat_type = result.target_nat_type.clone();
-                    let success_network = result.network.clone();
-                    let result_for_status = result;
-                    let session_info = wgvpn_flow::snapshot_sessions()
-                        .into_iter()
-                        .find(|session| {
-                            session.peer_device_id == peer_device_id && session.is_active
-                        })
-                        .map(|session| (session.peer_virtual_ip, session.peer_health_port));
-                    if *cancel_rx.borrow() {
-                        publish_active_tunnel_job_cancelled(
-                            &shared_for_task,
-                            peer_device_id,
-                            target_uuid_for_task.clone(),
-                        );
-                        let _ = crate::p2p::close_active_p2p_job_with_nat(
-                            &config,
-                            &opened,
-                            peer_device_id,
-                            &attempt_id,
-                            false,
-                            source_nat_type,
-                            target_nat_type,
-                            success_network.clone(),
-                            started_at.elapsed().as_secs(),
-                            "connection.execution.user_cancelled".to_string(),
-                            "connection.execution.user_cancelled".to_string(),
-                        )
-                        .await;
-                        return;
-                    }
-                    update_active_tunnel_job_status(
+                let _ = backend.stop().await;
+                last_code = ErrorCode::ConnectionExecutionDeadlineExceeded;
+                last_message = localized_message(
+                    current_locale(&shared_for_task).as_deref(),
+                    "tunnel.job.attempt_progress_secs",
+                    &[
+                        ("attempt", &attempt.to_string()),
+                        ("secs", &ACTIVE_TUNNEL_JOB_ATTEMPT_TOTAL_SECS.to_string()),
+                    ],
+                );
+                None
+            }
+            _ = cancel_rx.changed() => {
+                if *cancel_rx.borrow() {
+                    backend.cancel(attempt_id.clone(), "connection.execution.user_cancelled").await;
+                    let _ = attempt_handle.await;
+                    let _ = backend.stop().await;
+                    publish_active_tunnel_job_cancelled(
                         &shared_for_task,
-                        TunnelJobStatus {
-                            error_code: String::new(),
-                            is_active: true,
-                            tcp_retry_recommended: false,
-                            symmetric_nat_help_recommended: false,
-                            peer_device_id,
-                            peer_device_uuid: target_uuid_for_task.clone(),
-                            state: TunnelJobState::Succeeded,
-                            attempt,
-                            max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
-                            message: localized_message(
-                                current_locale(&shared_for_task).as_deref(),
-                                "tunnel.job.auto_established",
-                                &[],
-                            ),
-                            result: Some(result_for_status),
-                            updated_at: now_ts(),
-                        },
-                    );
-                    shared_for_task
-                        .lock()
-                        .wgvpn_health_runtime
-                        .insert(peer_device_id, WgvpnHealthRuntime::default());
-                    refresh_wgvpn_sessions(&shared_for_task);
-                    if let Some((peer_virtual_ip, peer_health_port)) = session_info {
-                        if !peer_virtual_ip.is_empty() {
-                            spawn_wgvpn_health_monitor(
-                                shared_for_task.clone(),
-                                peer_device_id,
-                                peer_virtual_ip,
-                                peer_health_port,
-                            );
-                        } else {
-                            mark_wgvpn_health_degraded(
-                                shared_for_task.clone(),
-                                peer_device_id,
-                                "missing_peer_virtual_ip",
-                            );
-                        }
-                    } else {
-                        mark_wgvpn_health_degraded(
-                            shared_for_task.clone(),
-                            peer_device_id,
-                            "missing_peer_virtual_ip",
-                        );
-                    }
-                    let _ = crate::p2p::close_active_p2p_job_with_nat(
-                        &config,
-                        &opened,
                         peer_device_id,
-                        &attempt_id,
-                        true,
-                        source_nat_type,
-                        target_nat_type,
-                        success_network,
-                        started_at.elapsed().as_secs(),
-                        String::new(),
-                        String::new(),
-                    )
-                    .await;
+                        target_uuid_for_task.clone(),
+                    );
+                    let _ = backend.report(JobReport { attempt_id: (&attempt_id).to_string(), success: false, source_nat: last_source_nat.clone(), target_nat: last_target_nat.clone(), network: last_network.clone(), elapsed_secs: started_at.elapsed().as_secs(), error_code: "connection.execution.user_cancelled".to_string(), message: "connection.execution.user_cancelled".to_string() }).await;
                     return;
                 }
-                Some(Ok(result)) => {
-                    last_code = ErrorCode::TraversalPunchFailed;
-                    last_message = result.message;
+                None
+            }
+        };
+
+        match attempt_result {
+            Some(Ok(result)) if result.success => {
+                let source_nat_type = result.source_nat_type.clone();
+                let target_nat_type = result.target_nat_type.clone();
+                let success_network = result.network.clone();
+                let result_for_status = result;
+                if *cancel_rx.borrow() {
+                    backend.stop().await;
+                    publish_active_tunnel_job_cancelled(
+                        &shared_for_task,
+                        peer_device_id,
+                        target_uuid_for_task.clone(),
+                    );
+                    let _ = backend
+                        .report(JobReport {
+                            attempt_id: (&attempt_id).to_string(),
+                            success: false,
+                            source_nat: source_nat_type,
+                            target_nat: target_nat_type,
+                            network: success_network.clone(),
+                            elapsed_secs: started_at.elapsed().as_secs(),
+                            error_code: "connection.execution.user_cancelled".to_string(),
+                            message: "connection.execution.user_cancelled".to_string(),
+                        })
+                        .await;
+                    return;
                 }
-                Some(Err(err)) => {
-                    tracing::error!(
+                update_active_tunnel_job_status(
+                    &shared_for_task,
+                    TunnelJobStatus {
+                        error_code: String::new(),
+                        is_active: true,
+                        tcp_retry_recommended: false,
+                        symmetric_nat_help_recommended: false,
+                        peer_device_id,
+                        peer_device_uuid: target_uuid_for_task.clone(),
+                        state: TunnelJobState::Succeeded,
+                        attempt,
+                        max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
+                        message: localized_message(
+                            current_locale(&shared_for_task).as_deref(),
+                            "tunnel.job.auto_established",
+                            &[],
+                        ),
+                        result: Some(result_for_status),
+                        updated_at: now_ts(),
+                    },
+                );
+                backend.established();
+                let _ = backend
+                    .report(JobReport {
+                        attempt_id: (&attempt_id).to_string(),
+                        success: true,
+                        source_nat: source_nat_type,
+                        target_nat: target_nat_type,
+                        network: success_network,
+                        elapsed_secs: started_at.elapsed().as_secs(),
+                        error_code: String::new(),
+                        message: String::new(),
+                    })
+                    .await;
+                return;
+            }
+            Some(Ok(result)) => {
+                last_code = ErrorCode::TraversalPunchFailed;
+                last_message = result.message;
+            }
+            Some(Err(err)) => {
+                tracing::error!(
                         "[wgvpn] active job attempt failed: peer_device_id={}, attempt={}/{}, error={:#}",
                         peer_device_id,
                         attempt,
                         ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
                         err
                     );
-                    if let Some(failure) = err.downcast_ref::<crate::gonc_ffi::UdpTunnelFailure>() {
-                        if !failure.result.local_nat_type.is_empty() {
-                            last_source_nat = failure.result.local_nat_type.clone();
-                        }
-                        if !failure.result.remote_nat_type.is_empty() {
-                            last_target_nat = failure.result.remote_nat_type.clone();
-                        }
-                        if !failure.result.network.is_empty() {
-                            last_network = failure.result.network.clone();
-                        }
+                if let Some(failure) = err.downcast_ref::<crate::gonc_ffi::UdpTunnelFailure>() {
+                    if !failure.result.local_nat_type.is_empty() {
+                        last_source_nat = failure.result.local_nat_type.clone();
                     }
-                    last_code = code_of(&err);
-                    last_message = format!("{:#}", err);
-                }
-                None => {}
-            }
-
-            let report = crate::traversal::peek_plan(&attempt_id);
-            for network in report.attempted_networks {
-                if !attempted_networks.contains(&network) {
-                    attempted_networks.push(network);
-                }
-            }
-            if !report.local_nat.is_empty() {
-                last_source_nat = report.local_nat;
-            }
-            if !report.remote_nat.is_empty() {
-                last_target_nat = report.remote_nat;
-            }
-            if !report.network.is_empty() {
-                last_network = report.network;
-            }
-            if !retry_attempt(&last_code) {
-                break;
-            }
-
-            if attempt < ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS {
-                update_active_tunnel_job_status(
-                    &shared_for_task,
-                    TunnelJobStatus {
-                        error_code: last_code.as_str().to_owned(),
-                        is_active: true,
-                        tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(
-                            config.prefer_tcp,
-                            &last_code,
-                            &attempted_networks,
-                        ),
-                        symmetric_nat_help_recommended:
-                            crate::traversal_policy::symmetric_nat_help_recommended(
-                                last_code.as_str(),
-                                &last_source_nat,
-                                &last_target_nat,
-                            ),
-                        peer_device_id,
-                        peer_device_uuid: target_uuid_for_task.clone(),
-                        state: TunnelJobState::Waiting,
-                        attempt,
-                        max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
-                        message: localized_message(
-                            current_locale(&shared_for_task).as_deref(),
-                            "tunnel.job.attempt_failed_retry",
-                            &[
-                                ("reason", &last_message),
-                                ("secs", &ACTIVE_TUNNEL_JOB_BACKOFF_SECS.to_string()),
-                            ],
-                        ),
-                        result: None,
-                        updated_at: now_ts(),
-                    },
-                );
-                tokio::select! {
-                    _ = cancel_rx.changed() => {
-                        if *cancel_rx.borrow() {
-                            publish_active_tunnel_job_cancelled(
-                                &shared_for_task,
-                                peer_device_id,
-                                target_uuid_for_task.clone(),
-                            );
-                            let _ = crate::p2p::close_active_p2p_job_with_nat(&config, &opened, peer_device_id, &attempt_id,
-                                false, last_source_nat.clone(), last_target_nat.clone(),
-                                last_network.clone(), started_at.elapsed().as_secs(),
-                                "connection.execution.user_cancelled".to_string(), "connection.execution.user_cancelled".to_string()).await;
-                            return;
-                        }
+                    if !failure.result.remote_nat_type.is_empty() {
+                        last_target_nat = failure.result.remote_nat_type.clone();
                     }
-                    _ = tokio::time::sleep(Duration::from_secs(ACTIVE_TUNNEL_JOB_BACKOFF_SECS)) => {}
+                    if !failure.result.network.is_empty() {
+                        last_network = failure.result.network.clone();
+                    }
                 }
+                last_code = code_of(&err);
+                last_message = format!("{:#}", err);
             }
+            None => {}
         }
 
-        update_active_tunnel_job_status(
-            &shared_for_task,
-            TunnelJobStatus {
-                error_code: last_code.as_str().to_owned(),
-                is_active: true,
-                tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(
-                    config.prefer_tcp,
-                    &last_code,
-                    &attempted_networks,
-                ),
-                symmetric_nat_help_recommended:
-                    crate::traversal_policy::symmetric_nat_help_recommended(
-                        last_code.as_str(),
-                        &last_source_nat,
-                        &last_target_nat,
+        let report = crate::traversal::peek_plan(&attempt_id);
+        for network in report.attempted_networks {
+            if !attempted_networks.contains(&network) {
+                attempted_networks.push(network);
+            }
+        }
+        if !report.local_nat.is_empty() {
+            last_source_nat = report.local_nat;
+        }
+        if !report.remote_nat.is_empty() {
+            last_target_nat = report.remote_nat;
+        }
+        if !report.network.is_empty() {
+            last_network = report.network;
+        }
+        if !retry_attempt(&last_code) {
+            break;
+        }
+
+        if attempt < ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS {
+            update_active_tunnel_job_status(
+                &shared_for_task,
+                TunnelJobStatus {
+                    error_code: last_code.as_str().to_owned(),
+                    is_active: true,
+                    tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(
+                        config.prefer_tcp,
+                        &last_code,
+                        &attempted_networks,
                     ),
-                peer_device_id,
-                peer_device_uuid: target_uuid_for_task,
-                state: TunnelJobState::Failed,
-                attempt: last_attempt,
-                max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
-                message: if last_message.is_empty() {
-                    localized_message(
+                    symmetric_nat_help_recommended:
+                        crate::traversal_policy::symmetric_nat_help_recommended(
+                            last_code.as_str(),
+                            &last_source_nat,
+                            &last_target_nat,
+                        ),
+                    peer_device_id,
+                    peer_device_uuid: target_uuid_for_task.clone(),
+                    state: TunnelJobState::Waiting,
+                    attempt,
+                    max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
+                    message: localized_message(
                         current_locale(&shared_for_task).as_deref(),
-                        "tunnel.job.ended_not_established",
-                        &[],
-                    )
-                } else {
-                    localized_message(
-                        current_locale(&shared_for_task).as_deref(),
-                        "tunnel.job.ended_not_established_with_reason",
-                        &[("reason", &last_message)],
-                    )
+                        "tunnel.job.attempt_failed_retry",
+                        &[
+                            ("reason", &last_message),
+                            ("secs", &ACTIVE_TUNNEL_JOB_BACKOFF_SECS.to_string()),
+                        ],
+                    ),
+                    result: None,
+                    updated_at: now_ts(),
                 },
-                result: None,
-                updated_at: now_ts(),
-            },
-        );
-        let error_code = last_code.as_str().to_string();
-        let _ = crate::p2p::close_active_p2p_job_with_nat(
-            &config,
-            &opened,
+            );
+            tokio::select! {
+                _ = cancel_rx.changed() => {
+                    if *cancel_rx.borrow() {
+                        publish_active_tunnel_job_cancelled(
+                            &shared_for_task,
+                            peer_device_id,
+                            target_uuid_for_task.clone(),
+                        );
+                        let _ = backend.report(JobReport { attempt_id: (&attempt_id).to_string(), success: false, source_nat: last_source_nat.clone(), target_nat: last_target_nat.clone(), network: last_network.clone(), elapsed_secs: started_at.elapsed().as_secs(), error_code: "connection.execution.user_cancelled".to_string(), message: "connection.execution.user_cancelled".to_string() }).await;
+                        return;
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(ACTIVE_TUNNEL_JOB_BACKOFF_SECS)) => {}
+            }
+        }
+    }
+
+    update_active_tunnel_job_status(
+        &shared_for_task,
+        TunnelJobStatus {
+            error_code: last_code.as_str().to_owned(),
+            is_active: true,
+            tcp_retry_recommended: crate::traversal_policy::tcp_retry_recommended(
+                config.prefer_tcp,
+                &last_code,
+                &attempted_networks,
+            ),
+            symmetric_nat_help_recommended: crate::traversal_policy::symmetric_nat_help_recommended(
+                last_code.as_str(),
+                &last_source_nat,
+                &last_target_nat,
+            ),
             peer_device_id,
-            &last_attempt_id,
-            false,
-            last_source_nat,
-            last_target_nat,
-            last_network,
-            started_at.elapsed().as_secs(),
-            error_code,
-            last_message,
-        )
+            peer_device_uuid: target_uuid_for_task,
+            state: TunnelJobState::Failed,
+            attempt: last_attempt,
+            max_attempts: ACTIVE_TUNNEL_JOB_MAX_ATTEMPTS,
+            message: if last_message.is_empty() {
+                localized_message(
+                    current_locale(&shared_for_task).as_deref(),
+                    "tunnel.job.ended_not_established",
+                    &[],
+                )
+            } else {
+                localized_message(
+                    current_locale(&shared_for_task).as_deref(),
+                    "tunnel.job.ended_not_established_with_reason",
+                    &[("reason", &last_message)],
+                )
+            },
+            result: None,
+            updated_at: now_ts(),
+        },
+    );
+    let error_code = last_code.as_str().to_string();
+    let _ = backend
+        .report(JobReport {
+            attempt_id: (&last_attempt_id).to_string(),
+            success: false,
+            source_nat: last_source_nat,
+            target_nat: last_target_nat,
+            network: last_network,
+            elapsed_secs: started_at.elapsed().as_secs(),
+            error_code: error_code,
+            message: last_message,
+        })
         .await;
-    });
 }
 
 pub(super) async fn start_wgvpn_active_with_notify(
@@ -1024,14 +984,20 @@ pub(super) fn publish_active_tunnel_job_failed(
 struct ActiveTunnelJobSlot {
     shared: Arc<Mutex<SharedRuntimeState>>,
     peer_device_id: i64,
+    owner: Option<watch::Sender<bool>>,
 }
 
 impl Drop for ActiveTunnelJobSlot {
     fn drop(&mut self) {
-        self.shared
-            .lock()
+        let mut state = self.shared.lock();
+        if state
             .active_tunnel_job_cancels
-            .remove(&self.peer_device_id);
+            .get(&self.peer_device_id)
+            .zip(self.owner.as_ref())
+            .is_some_and(|(current, owner)| current.same_channel(owner))
+        {
+            state.active_tunnel_job_cancels.remove(&self.peer_device_id);
+        }
     }
 }
 
@@ -1151,6 +1117,7 @@ mod lifecycle_tests {
         let slot = ActiveTunnelJobSlot {
             shared: shared.clone(),
             peer_device_id: 42,
+            owner: shared.lock().active_tunnel_job_cancels.get(&42).cloned(),
         };
         publish_active_tunnel_job_cancelled(&shared, 42, "peer".into());
         tokio::task::yield_now().await;

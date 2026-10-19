@@ -22,6 +22,10 @@ use std::time::Duration;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
 
+#[cfg(test)]
+#[path = "control_coverage_tests.rs"]
+mod coverage_tests;
+
 // ---- 平台 IPC 路径 ----
 
 #[cfg(windows)]
