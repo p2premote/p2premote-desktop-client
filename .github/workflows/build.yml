@@ -30,9 +30,8 @@
 # 签名与公证需导入证书 secrets（APPLE_SIGNING_IDENTITY /
 # APPLE_NOTARY_KEYCHAIN_PROFILE）后去掉 --unsigned，或继续用专用 Mac 编译机。
 #
-# Linux aarch64 使用 build-linux.sh --arch aarch64 走与本地相同的交叉架构
-# 容器构建链路，并由 setup-qemu-action 注册 binfmt；构建后分别启动裸二进制和
-# Docker 镜像做 QEMU smoke test。QEMU 全模拟编译较慢，因此独立于 x86_64 job。
+# Linux aarch64 在原生 ARM64 runner 上使用 build-linux.sh --arch aarch64，
+# 保留 Debian 10 容器构建链路；构建和裸二进制、Docker 镜像 smoke test 均原生执行。
 #
 # Windows 7 包（windows-win7-x64 job）：独立工具链线（rust 1.77.2 +
 # tauri.win7.conf.json + WebView2 v109 离线安装器 + RustDeskTinyLegacy）。
@@ -302,9 +301,9 @@ jobs:
           if-no-files-found: error
 
   linux-headless-aarch64:
-    name: Linux headless + Docker ARM64（QEMU）
+    name: Linux headless + Docker ARM64（原生）
     needs: resolve-version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 240
     env:
       RUSTUP_DIST_SERVER: https://static.rust-lang.org
@@ -333,11 +332,8 @@ jobs:
           mv "$GITHUB_WORKSPACE/p2premote-punch-rs" "$GITHUB_WORKSPACE/../p2premote-punch-rs"
           mv "$GITHUB_WORKSPACE/p2premote-wg-ffi" "$GITHUB_WORKSPACE/../p2premote-wg-ffi"
 
-      # 同时供 builder 容器、裸 ARM64 ELF 和最终运行镜像使用。
-      - name: Enable ARM64 emulation
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      - name: Verify native ARM64 runner
+        run: test "$(uname -m)" = aarch64
 
       - name: Cache ARM64 compile image
         id: compile-image
@@ -359,7 +355,7 @@ jobs:
         if: steps.compile-image.outputs.cache-hit != 'true'
         run: docker save -o /tmp/p2premote-linux-compile-image-arm64.tar "$COMPILE_IMAGE"
 
-      - name: QEMU smoke test ARM64 binary tarball
+      - name: Native smoke test ARM64 binary tarball
         run: |
           mapfile -t tarballs < <(find artifacts/linux-headless -maxdepth 1 -type f \
             -name 'p2premote-headless_*_aarch64-linux-gnu.tar.gz')
@@ -380,11 +376,11 @@ jobs:
           set -e
           cat /tmp/p2premote-arm64-service.log
           if [[ $status -ne 124 ]]; then
-            echo "::error::ARM64 service exited before the QEMU smoke-test timeout (status $status)"
+            echo "::error::ARM64 service exited before the native smoke-test timeout (status $status)"
             exit 1
           fi
 
-      - name: QEMU smoke test ARM64 Docker image
+      - name: Native smoke test ARM64 Docker image
         env:
           IMAGE_TAG: p2premote/client:${{ needs.resolve-version.outputs.version }}
         run: |
@@ -397,7 +393,7 @@ jobs:
           docker logs "$container"
           if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != true ]]; then
             docker inspect -f 'exit={{.State.ExitCode}} error={{.State.Error}}' "$container"
-            echo "::error::ARM64 Docker container exited during the QEMU smoke test"
+            echo "::error::ARM64 Docker container exited during the native smoke test"
             exit 1
           fi
 
