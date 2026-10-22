@@ -576,6 +576,11 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Create all-platform ZIP with checksums
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: python3 release-source/scripts/bundle-release.py release-assets "release-assets/p2premote-${RELEASE_VERSION}-all-platforms.zip" --version "$RELEASE_VERSION"
+
       - name: Attach compiled files to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -583,3 +588,36 @@ jobs:
           body_path: ${{ runner.temp }}/release-notes.md
           generate_release_notes: false
           fail_on_unmatched_files: true
+
+      # A rebuilt tag produces filenames with a new commit suffix. Remove stale
+      # compiled assets only after their replacements have uploaded successfully.
+      - name: Remove superseded compiled release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          tag = os.environ['RELEASE_TAG']
+          release = json.loads(subprocess.check_output([
+              'gh', 'api', f'repos/{repository}/releases/tags/{tag}'
+          ]))
+          current = {path.name: path.stat().st_size for path in Path('release-assets').rglob('*') if path.is_file()}
+          uploaded = {asset['name']: asset['size'] for asset in release['assets'] if asset['state'] == 'uploaded'}
+          if any(uploaded.get(name) != size for name, size in current.items()):
+              raise RuntimeError('Replacement assets are incomplete; keeping previous assets')
+          prefixes = ('p2pRemote_', 'p2premote_', 'p2premote-headless_',
+                      'p2premote-headless-', 'p2premote-headless-docker_')
+          extensions = ('.exe', '.pkg', '.deb', '.rpm', '.tar.gz', '.tar', '-all-platforms.zip')
+          for asset in release['assets']:
+              name = asset['name']
+              if name not in current and name.startswith(prefixes) and name.endswith(extensions):
+                  subprocess.run(['gh', 'api', '--method', 'DELETE',
+                                  f"repos/{repository}/releases/assets/{asset['id']}"], check=True)
+                  print(f'Removed superseded asset: {name}')
+          PY
