@@ -94,7 +94,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun hdiutil ditto file; do
+for command in cargo rustup go npm npx lipo install_name_tool codesign xcrun hdiutil ditto file python3; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
 done
 if [[ "$use_sccache" == 1 ]]; then
@@ -176,6 +176,7 @@ fi
 }
 rm -rf "$resources_dir/RustDeskTiny.app"
 cp -a "$tiny_app" "$resources_dir/RustDeskTiny.app"
+python3 "$repo_dir/scripts/verify-macos-app-links.py" "$tiny_app" "$resources_dir/RustDeskTiny.app"
 rustup target add x86_64-apple-darwin aarch64-apple-darwin
 mkdir -p "$resources_dir" "$build_dir/x86_64" "$build_dir/arm64"
 
@@ -240,21 +241,21 @@ macos_config="$build_dir/tauri.macos.conf.json"
 } > "$macos_config"
 (
   cd "$repo_dir"
-  if [[ "$unsigned" == 1 ]]; then
-    env -u APPLE_SIGNING_IDENTITY \
-      P2PREMOTE_CLIENT_VERSION="$build_version" \
-      P2PREMOTE_PREBUILT_RESOURCES=1 \
-      npx tauri build --target universal-apple-darwin --bundles app --config "$macos_config"
-  else
+  # Sign/notarize only after the nested app has been copied into the bundle.
+  env -u APPLE_SIGNING_IDENTITY \
     P2PREMOTE_CLIENT_VERSION="$build_version" \
     P2PREMOTE_PREBUILT_RESOURCES=1 \
-    APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" \
-      npx tauri build --target universal-apple-darwin --bundles app --config "$macos_config"
-  fi
+    npx tauri build --target universal-apple-darwin --bundles app --config "$macos_config"
 )
 
 app_path="$(find "$cargo_target_dir/universal-apple-darwin/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
 [[ -n "$app_path" ]] || { echo "Universal app bundle was not produced." >&2; exit 1; }
+# Tauri v1 resource copying dereferences framework links. Copy the whole nested
+# app with ditto instead, before the final signature seals the outer app.
+bundled_tiny_app="$app_path/Contents/Resources/resources/RustDeskTiny.app"
+rm -rf "$bundled_tiny_app"
+ditto "$resources_dir/RustDeskTiny.app" "$bundled_tiny_app"
+python3 "$repo_dir/scripts/verify-macos-app-links.py" "$resources_dir/RustDeskTiny.app" "$bundled_tiny_app"
 if [[ "$unsigned" == 1 ]]; then
   codesign --force --deep \
     --entitlements "$repo_dir/src-tauri/Entitlements.plist" \
@@ -316,7 +317,9 @@ chmod +x "$repo_dir/scripts/macos-pkg/postinstall" "$repo_dir/scripts/macos-pkg/
 pkg_staging="$build_dir/pkg-root"
 rm -rf "$pkg_staging"
 mkdir -p "$pkg_staging/Applications" "$pkg_staging/Library/LaunchDaemons"
-cp -R "$app_path" "$pkg_staging/Applications/$(basename "$app_path")"
+ditto "$app_path" "$pkg_staging/Applications/$(basename "$app_path")"
+python3 "$repo_dir/scripts/verify-macos-app-links.py" "$bundled_tiny_app" \
+  "$pkg_staging/Applications/$(basename "$app_path")/Contents/Resources/resources/RustDeskTiny.app"
 cp "$repo_dir/src-tauri/macos/top.p2premote.service.plist" \
   "$pkg_staging/Library/LaunchDaemons/top.p2premote.service.plist"
 pkg_path="$dist_dir/p2pRemote_${build_version}_macos-universal.pkg"

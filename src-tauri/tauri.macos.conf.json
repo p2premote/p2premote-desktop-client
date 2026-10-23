@@ -18,7 +18,6 @@
       "resources": [
         "resources/p2premote-service",
         "resources/p2premote-cli",
-        "resources/RustDeskTiny.app/**/*",
         "resources/libp2premote-wg.dylib",
         "resources/.p2premote_default.json",
         "resources/web/**/*"
