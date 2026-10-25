@@ -206,6 +206,29 @@ mod tests {
     }
 
     #[test]
+    fn expired_device_login_localizes_reason_and_quota() {
+        let json = r#"{"code":2053,"msg":"fallback","message_key":"membership.expired_device_limit","message_params":{"count":4,"limit":3},"data":null}"#;
+        let resp: ApiResponse<Option<Payload>> = serde_json::from_str(json).unwrap();
+        let zh = resp.localized_error_message(Some("zh-CN"));
+        assert!(zh.contains("已到期"));
+        assert!(zh.contains("4 台设备"));
+        assert!(zh.contains("3 台上限"));
+        let en = resp.localized_error_message(Some("en"));
+        assert!(en.contains("Pro membership or trial has expired"));
+        assert!(en.contains("4 registered devices"));
+        assert!(en.contains("Free limit of 3"));
+        let error = crate::control::CommandError::from_legacy_message(&en).unwrap();
+        assert_eq!(error.code, "MEMBERSHIP_EXPIRED_DEVICE_LIMIT");
+        assert!(!error.retryable);
+        assert_eq!(
+            crate::control::CommandError::from_legacy_message(&zh)
+                .unwrap()
+                .code,
+            error.code
+        );
+    }
+
+    #[test]
     fn old_server_error_falls_back_to_msg_when_code_is_unknown() {
         let json = r#"{"code":9999,"msg":"legacy message","data":null}"#;
         let resp: ApiResponse<Option<Payload>> = serde_json::from_str(json).unwrap();

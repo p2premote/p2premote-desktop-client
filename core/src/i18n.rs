@@ -296,6 +296,7 @@ fn api_error_key_for_code(code: i32) -> Option<&'static str> {
         2004 => "membership.expired",
         2051 => "device.limit_reached.free",
         2052 => "device.limit_reached.pro",
+        2053 => "membership.expired_device_limit",
         2101 => "payment.disabled",
         2102 => "payment.plan.invalid",
         _ => return None,
@@ -482,6 +483,7 @@ fn zh_message(key: &str) -> &str {
         "membership.trial_expired" => "试用期已结束，请升级 Pro",
         "membership.trial_already_used" => "试用机会已使用",
         "membership.expired" => "会员已过期，请续费",
+        "membership.expired_device_limit" => "Pro 会员或试用已到期，账号已注册 {count} 台设备，超过 Free 的 {limit} 台上限，无法登录设备。请续费 Pro 后重试",
         "payment.disabled" => "支付功能暂未开启",
         "payment.plan.invalid" => "无效的会员类型",
 
@@ -681,6 +683,7 @@ fn en_message(key: &str) -> &str {
         "membership.trial_expired" => "Trial expired. Upgrade to Pro.",
         "membership.trial_already_used" => "The trial has already been used",
         "membership.expired" => "Membership expired. Please renew.",
+        "membership.expired_device_limit" => "Pro membership or trial has expired. This account has {count} registered devices, exceeding the Free limit of {limit}. Device login is unavailable. Renew Pro and try again.",
         "payment.disabled" => "Payments are currently unavailable",
         "payment.plan.invalid" => "Invalid subscription plan",
 

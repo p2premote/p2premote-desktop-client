@@ -56,7 +56,11 @@ impl CommandError {
     /// Compatibility boundary for commands still returning diagnostic strings.
     pub fn from_legacy_message(message: &str) -> Option<Self> {
         let value = message.to_lowercase();
-        let code = if value.contains("saved")
+        let code = if value.contains("pro 会员或试用已到期")
+            || value.contains("pro membership or trial has expired")
+        {
+            "MEMBERSHIP_EXPIRED_DEVICE_LIMIT"
+        } else if value.contains("saved")
             && value.contains("session")
             && (value.contains("expired") || value.contains("invalid"))
         {
@@ -115,7 +119,10 @@ impl CommandError {
             !code.starts_with("AUTH_")
                 && !matches!(
                     code,
-                    "SERVICE_PERMISSION_DENIED" | "SERVICE_NOT_INSTALLED" | "SERVICE_DISABLED"
+                    "SERVICE_PERMISSION_DENIED"
+                        | "SERVICE_NOT_INSTALLED"
+                        | "SERVICE_DISABLED"
+                        | "MEMBERSHIP_EXPIRED_DEVICE_LIMIT"
                 ),
         ))
     }

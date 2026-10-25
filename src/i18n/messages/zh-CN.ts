@@ -718,6 +718,7 @@ export default {
     auth_saved_session_expired: '保存的登录信息已失效，请重新输入密码',
     device_offline: '对方设备当前离线',
     device_limit_reached: '设备数量已达到账号上限，请先删除不用的设备',
+    membership_expired_device_limit: 'Pro 会员或试用已到期，注册设备数量超过 Free 上限，无法登录设备。请续费 Pro 后重试',
     tunnel_timeout: '建立连接超时，请检查双方网络后重试',
   },
 }

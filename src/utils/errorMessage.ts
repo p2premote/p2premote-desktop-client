@@ -26,6 +26,7 @@ const ERROR_MESSAGE_KEYS: Record<string, string> = {
   AUTH_SAVED_SESSION_EXPIRED: 'errors.auth_saved_session_expired',
   DEVICE_OFFLINE: 'errors.device_offline',
   DEVICE_LIMIT_REACHED: 'errors.device_limit_reached',
+  MEMBERSHIP_EXPIRED_DEVICE_LIMIT: 'errors.membership_expired_device_limit',
   TUNNEL_TIMEOUT: 'errors.tunnel_timeout',
 }
 
@@ -61,6 +62,7 @@ function safeLegacyBusinessMessage(error: unknown): string {
 function classifyLegacyError(message: string): string | null {
   if (message.trim() === 'AUTO_KEEP_ACTIVE_SIDE_REQUIRED') return 'AUTO_KEEP_ACTIVE_SIDE_REQUIRED'
   const value = message.toLowerCase()
+  if (/pro 会员或试用已到期|pro membership or trial has expired/.test(value)) return 'MEMBERSHIP_EXPIRED_DEVICE_LIMIT'
   if (/saved[_ -]session.*expired/.test(value)) return 'AUTH_SAVED_SESSION_EXPIRED'
   if (/invalid (?:token|credential)|unauthorized|session.*expired/.test(value)) return 'AUTH_SESSION_EXPIRED'
   if (/permission denied|access denied|authorization check failed/.test(value)) return 'SERVICE_PERMISSION_DENIED'
@@ -81,7 +83,7 @@ export function normalizeClientError(error: unknown): ClientError {
   const code = classifyLegacyError(message)
   if (code) {
     const retryable = !code.startsWith('AUTH_')
-      && !['SERVICE_PERMISSION_DENIED', 'SERVICE_NOT_INSTALLED', 'SERVICE_DISABLED', 'DEVICE_LIMIT_REACHED'].includes(code)
+      && !['SERVICE_PERMISSION_DENIED', 'SERVICE_NOT_INSTALLED', 'SERVICE_DISABLED', 'DEVICE_LIMIT_REACHED', 'MEMBERSHIP_EXPIRED_DEVICE_LIMIT'].includes(code)
     return { code, retryable }
   }
 

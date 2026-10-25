@@ -265,6 +265,9 @@ async fn resume_saved_token_session(
     }
 
     let bundle = refresh_with_config(&mut config).await?;
+    // A saved token does not exempt an existing device from login admission.
+    // Register before publishing a logged-in state so the refusal reaches UI.
+    let device = register_current_device_auto(&mut config).await?;
     crate::config::update_machine_settings(|config| {
         config.auto_login = auto_login;
         Ok(())
@@ -273,6 +276,10 @@ async fn resume_saved_token_session(
     let user_json = serde_json::to_value(&bundle.user).unwrap_or(serde_json::Value::Null);
     update_status(shared, |s| {
         s.logged_in = true;
+        s.device_id = Some(device.device_id);
+        s.device_uuid = Some(device.device_uuid.clone());
+        s.current_device = Some(device);
+        s.device_registration_error = None;
     });
     {
         let mut state = shared.lock();

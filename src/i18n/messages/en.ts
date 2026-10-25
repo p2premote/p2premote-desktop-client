@@ -693,6 +693,7 @@ const en = {
     auth_saved_session_expired: 'The saved sign-in has expired. Enter your password again.',
     device_offline: 'The remote device is offline.',
     device_limit_reached: 'The device limit has been reached. Remove an unused device first.',
+    membership_expired_device_limit: 'Pro membership or trial has expired and the registered device count exceeds the Free limit. Device login is unavailable. Renew Pro and try again.',
     tunnel_timeout: 'The connection timed out. Check both networks and try again.',
   },
 } satisfies MessageSchema<typeof zhCN>
