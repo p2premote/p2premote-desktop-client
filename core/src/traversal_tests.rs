@@ -141,6 +141,7 @@ async fn legacy_ipv6_round_is_coordinated_but_never_invokes_native_without_a_sou
 
 struct ScriptedBackend<'a> {
     session: &'a Session,
+    evidence: Vec<NatEvidence>,
     outcomes: Mutex<VecDeque<Result<UdpTunnelResult>>>,
     requests: Mutex<Vec<UdpTunnelRequest>>,
     sent: Mutex<Vec<Frame>>,
@@ -153,6 +154,7 @@ impl<'a> ScriptedBackend<'a> {
     fn new(session: &'a Session, outcomes: Vec<Result<UdpTunnelResult>>) -> Self {
         Self {
             session,
+            evidence: Vec::new(),
             outcomes: Mutex::new(outcomes.into()),
             requests: Mutex::new(Vec::new()),
             sent: Mutex::new(Vec::new()),
@@ -168,7 +170,7 @@ impl TraversalBackend for ScriptedBackend<'_> {
         Some(false)
     }
     fn evidence(&self, _: Option<bool>) -> TraversalFuture<'_, Vec<NatEvidence>> {
-        Box::pin(async { Ok(Vec::new()) })
+        Box::pin(async { Ok(self.evidence.clone()) })
     }
     fn send(&self, frame: Frame) -> TraversalFuture<'_, ()> {
         Box::pin(async move {
@@ -267,6 +269,107 @@ fn successful_frames(active: bool, budget: Option<u64>) -> Vec<Frame> {
             Frame::Commit { round: 1 }
         },
     ]
+}
+
+#[tokio::test]
+async fn initiator_preferences_control_internet_order_for_both_roles() {
+    for prefer_tcp in [false, true] {
+        let networks: Vec<String> = if prefer_tcp {
+            ["tcp4", "udp4"]
+        } else {
+            ["udp4", "tcp4"]
+        }
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let evidence: Vec<_> = ["tcp4", "udp4"]
+            .into_iter()
+            .map(|network| NatEvidence {
+                network: network.into(),
+                nat_type: "easy".into(),
+            })
+            .collect();
+        for active in [false, true] {
+            let mut frames = vec![
+                Frame::Capabilities {
+                    evidence: evidence.clone(),
+                    ipv6_available: Some(false),
+                    ipv6_gate_supported: true,
+                    lan_probe_budget_secs: Some(1),
+                },
+                if active {
+                    Frame::PlanAck {
+                        networks: networks.clone(),
+                    }
+                } else {
+                    Frame::Plan {
+                        networks: networks.clone(),
+                    }
+                },
+                if active {
+                    Frame::Ready { round: 1 }
+                } else {
+                    prepare(1, "lan", 1)
+                },
+                Frame::Result {
+                    round: 1,
+                    ok: false,
+                    error: None,
+                },
+                if active {
+                    Frame::Closed { round: 1 }
+                } else {
+                    Frame::Close { round: 1 }
+                },
+            ];
+            let mut internet = prepare(2, "internet", 30);
+            if let Frame::Prepare { network, .. } = &mut internet {
+                *network = networks[0].clone();
+            }
+            frames.extend([
+                if active {
+                    Frame::Ready { round: 2 }
+                } else {
+                    internet
+                },
+                Frame::Result {
+                    round: 2,
+                    ok: true,
+                    error: None,
+                },
+                if active {
+                    Frame::Committed { round: 2 }
+                } else {
+                    Frame::Commit { round: 2 }
+                },
+            ]);
+            let mut s = scripted_session(active, frames);
+            s.negotiation.preferences.prefer_tcp = prefer_tcp;
+            let mut backend = ScriptedBackend::new(
+                &s,
+                vec![
+                    Err(coded(ErrorCode::TraversalLanProbeTimeout, "LAN expired")),
+                    native_ok("internet"),
+                ],
+            );
+            backend.evidence = evidence.clone();
+            let mut template = UdpTunnelRequest::wgvpn(
+                "test-token",
+                if active { "active" } else { "passive" },
+                41118,
+            );
+            template.network = if prefer_tcp { "udp4" } else { "tcp4" }.into();
+            s.start_with_backend(&template, &backend).await.unwrap();
+            assert_eq!(backend.requests.lock()[1].network, networks[0]);
+            assert!(backend.sent.lock().iter().any(|frame| match frame {
+                Frame::Plan { networks: actual } | Frame::PlanAck { networks: actual } => {
+                    actual == &networks
+                }
+                _ => false,
+            }));
+            take_plan(&s.attempt_id);
+        }
+    }
 }
 
 #[tokio::test]
