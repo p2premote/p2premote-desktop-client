@@ -2479,6 +2479,7 @@ dependencies = [
  "byteorder",
  "color_quant",
  "num-traits",
+ "png",
 ]
 
 [[package]]
@@ -3292,6 +3293,7 @@ name = "p2premote"
 version = "1.13.7"
 dependencies = [
  "chrono",
+ "image",
  "once_cell",
  "p2premote-core",
  "parking_lot",
@@ -3303,6 +3305,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 

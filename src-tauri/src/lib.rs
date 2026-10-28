@@ -2,6 +2,8 @@
 //! 对应原 Wails: client/internal/app/app.go
 
 mod commands;
+#[cfg(windows)]
+mod tray_windows;
 
 /// 应用版本号
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -364,6 +366,10 @@ pub fn run() {
             // Closing the native window keeps the GUI process and tray icon alive.
             // A full exit remains available through the tray's "完全关闭" action.
             if let Some(main_window) = app.get_window("main") {
+                #[cfg(windows)]
+                if let Err(error) = tray_windows::install(&main_window) {
+                    warn!("[p2premote] Failed to enable tray icon refresh: {error}");
+                }
                 let main_window_for_close = main_window.clone();
                 main_window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
