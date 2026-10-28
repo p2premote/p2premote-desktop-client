@@ -140,6 +140,9 @@ fn target_remote_access(data: &P2POpenData) -> (u16, RemoteAccessInfo) {
 }
 #[derive(Serialize)]
 struct NotifyP2PEndRequest {
+    client_type: String,
+    client_version: String,
+    client_os: String,
     connection_id: String,
     log_id: i64,
     success: bool,
@@ -833,6 +836,9 @@ pub async fn close_active_p2p_job_with_nat(
         selected_network
     };
     let request = NotifyP2PEndRequest {
+        client_type: crate::device::current_device_type(),
+        client_version: crate::device::client_version(),
+        client_os: crate::device::current_system_version(),
         connection_id: opened.connection_id.clone(),
         log_id: opened.log_id,
         success,

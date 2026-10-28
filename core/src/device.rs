@@ -94,7 +94,11 @@ use device_windows::{current_remote_access, get_system_version};
 #[cfg(windows)]
 pub(crate) use device_windows::{get_rdp_port_from_registry, is_rdp_enabled};
 
-fn current_device_type() -> String {
+pub(crate) fn current_system_version() -> String {
+    get_system_version()
+}
+
+pub(crate) fn current_device_type() -> String {
     resolve_device_type(
         option_env!("P2PREMOTE_RELEASE_TARGET"),
         std::env::consts::OS,
