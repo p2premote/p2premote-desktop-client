@@ -4,6 +4,10 @@ English | [简体中文](README_zh.md)
 
 The p2pRemote desktop client provides P2P remote access, remote desktop control, and a WireGuard virtual LAN. Remote traffic flows directly between peers without passing through the server.
 
+**Point-to-network access without per-device client installs.** Install p2pRemote on one remote device, enable LAN access, and configure allowed subnets to reach NAS boxes, printers, cameras, and other computers on those subnets. Keep the remote gateway device online.
+
+![p2pRemote desktop client showing devices and an active LAN tunnel](docs/images/client-preview-en.png)
+
 ## Official Links
 
 - Website: <https://www.p2premote.top>

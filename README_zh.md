@@ -4,6 +4,10 @@
 
 p2pRemote 桌面客户端提供 P2P 远程访问、远程桌面和 WireGuard 虚拟局域网。远程流量由两端直接传输，不经过服务端。
 
+**支持点到网连接，多设备无需逐台安装客户端。** 在远端一台设备上安装 p2pRemote，开启 LAN 访问并配置允许访问的网段，即可访问该网段内的 NAS、打印机、摄像头和其他电脑。远端网关设备需保持在线。
+
+![p2pRemote 桌面客户端设备列表与 LAN 隧道连接状态](docs/images/client-preview.png)
+
 ## 官方链接
 
 - 官网：<https://www.p2premote.top>
